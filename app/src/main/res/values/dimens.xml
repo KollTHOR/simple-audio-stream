@@ -1,0 +1,10 @@
+<resources>
+    <dimen name="screen_padding">12dp</dimen>
+    <dimen name="card_spacing">10dp</dimen>
+    <dimen name="card_inner_padding">12dp</dimen>
+    <dimen name="content_max_width">520dp</dimen>
+    <dimen name="title_text_size">18sp</dimen>
+    <dimen name="btn_height">48dp</dimen>
+    <dimen name="toggle_height">44dp</dimen>
+    <dimen name="progress_height">8dp</dimen>
+</resources>

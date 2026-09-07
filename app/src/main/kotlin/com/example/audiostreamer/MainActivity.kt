@@ -2,18 +2,18 @@ package com.example.audiostreamer
 
 import android.Manifest
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Color
+import android.content.res.ColorStateList
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import android.view.View
-import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.ProgressBar
-import android.widget.RadioButton
-import android.widget.RadioGroup
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -22,6 +22,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.button.MaterialButtonToggleGroup
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
 import kotlinx.coroutines.launch
@@ -33,16 +35,17 @@ class MainActivity : AppCompatActivity() {
         RECEIVER
     }
 
-    private lateinit var tvMyIp: TextView
-    private lateinit var tvIpHint: TextView
-    private lateinit var rgMode: RadioGroup
-    private lateinit var rbTransmitter: RadioButton
-    private lateinit var rbReceiver: RadioButton
+    private lateinit var layoutIpPill: LinearLayout
+    private lateinit var tvHeaderIp: TextView
+    private lateinit var toggleModeGroup: MaterialButtonToggleGroup
+    private lateinit var btnModeTransmitter: MaterialButton
+    private lateinit var btnModeReceiver: MaterialButton
+    private lateinit var tvModeGuide: TextView
     private lateinit var tilTargetIp: TextInputLayout
     private lateinit var etTargetIp: TextInputEditText
     private lateinit var tilPort: TextInputLayout
     private lateinit var etPort: TextInputEditText
-    private lateinit var btnAction: Button
+    private lateinit var btnAction: MaterialButton
 
     // Telemetry views
     private lateinit var tvBadgeStatus: TextView
@@ -110,11 +113,12 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        tvMyIp = findViewById(R.id.tv_my_ip)
-        tvIpHint = findViewById(R.id.tv_ip_hint)
-        rgMode = findViewById(R.id.rg_mode)
-        rbTransmitter = findViewById(R.id.rb_transmitter)
-        rbReceiver = findViewById(R.id.rb_receiver)
+        layoutIpPill = findViewById(R.id.layout_ip_pill)
+        tvHeaderIp = findViewById(R.id.tv_header_ip)
+        toggleModeGroup = findViewById(R.id.toggle_mode_group)
+        btnModeTransmitter = findViewById(R.id.btn_mode_transmitter)
+        btnModeReceiver = findViewById(R.id.btn_mode_receiver)
+        tvModeGuide = findViewById(R.id.tv_mode_guide)
         tilTargetIp = findViewById(R.id.til_target_ip)
         etTargetIp = findViewById(R.id.et_target_ip)
         tilPort = findViewById(R.id.til_port)
@@ -130,13 +134,24 @@ class MainActivity : AppCompatActivity() {
 
         refreshLocalIp()
 
-        rgMode.setOnCheckedChangeListener { _, checkedId ->
-            currentMode = if (checkedId == R.id.rb_transmitter) {
-                Mode.TRANSMITTER
-            } else {
-                Mode.RECEIVER
+        layoutIpPill.setOnClickListener {
+            refreshLocalIp()
+            detectedLocalIp?.let { ip ->
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("IP Address", ip))
+                Toast.makeText(this, "IP copied: $ip", Toast.LENGTH_SHORT).show()
             }
-            updateModeAndButtonUi()
+        }
+
+        toggleModeGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (isChecked) {
+                currentMode = if (checkedId == R.id.btn_mode_transmitter) {
+                    Mode.TRANSMITTER
+                } else {
+                    Mode.RECEIVER
+                }
+                updateModeAndButtonUi()
+            }
         }
 
         btnAction.setOnClickListener {
@@ -168,10 +183,10 @@ class MainActivity : AppCompatActivity() {
 
         if (AudioCaptureService.isRunning.get()) {
             currentMode = Mode.TRANSMITTER
-            rbTransmitter.isChecked = true
+            toggleModeGroup.check(R.id.btn_mode_transmitter)
         } else if (AudioSinkService.isRunning.get()) {
             currentMode = Mode.RECEIVER
-            rbReceiver.isChecked = true
+            toggleModeGroup.check(R.id.btn_mode_receiver)
         }
         updateModeAndButtonUi()
     }
@@ -179,12 +194,14 @@ class MainActivity : AppCompatActivity() {
     private fun refreshLocalIp() {
         detectedLocalIp = NetworkUtils.getLocalIpAddress()
         if (detectedLocalIp != null) {
-            tvMyIp.text = detectedLocalIp
-            if (etTargetIp.text.isNullOrEmpty() || etTargetIp.text.toString() == "192.168.1.255" || etTargetIp.text.toString() == "192.168.43.255") {
+            tvHeaderIp.text = detectedLocalIp
+            if (etTargetIp.text.isNullOrEmpty() ||
+                etTargetIp.text.toString() == "192.168.1.255" ||
+                etTargetIp.text.toString() == "192.168.43.255") {
                 etTargetIp.setText(NetworkUtils.getSuggestedBroadcastIp())
             }
         } else {
-            tvMyIp.text = "Not Connected to Wi-Fi"
+            tvHeaderIp.text = "Offline"
         }
     }
 
@@ -204,23 +221,23 @@ class MainActivity : AppCompatActivity() {
 
         if (!isSenderRunning && !isSinkRunning) {
             tvBadgeStatus.text = "IDLE"
-            tvBadgeStatus.setBackgroundColor(Color.parseColor("#9E9E9E"))
+            tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_gray))
             tvEndpointInfo.text = "Not connected"
-            tvPacketsStat.text = "Packets: 0 (0 pkts/s | 0 KB/s)"
+            tvPacketsStat.text = "Packets: 0 (0 pkts/s • 0 KB/s)"
             pbAudioLevel.progress = 0
             tvAudioLevelVal.text = "0%"
 
             tvDiagnosticTip.text = if (currentMode == Mode.RECEIVER) {
-                "💡 On the DAP: Click 'Start Listening'. Then enter this IP (${detectedLocalIp ?: "IP"}) on your phone."
+                "💡 On receiver: Tap 'Start Listening'. Then enter ${detectedLocalIp ?: "this IP"} on your transmitter phone."
             } else {
-                "💡 On the Phone: Enter the DAP's IP address (displayed on the DAP screen) and click 'Start Streaming'."
+                "💡 On transmitter: Enter the receiver's IP (displayed on receiver screen) and tap 'Start Streaming'."
             }
             return
         }
 
         if (isSenderRunning) {
             tvBadgeStatus.text = "TRANSMITTING"
-            tvBadgeStatus.setBackgroundColor(Color.parseColor("#1976D2"))
+            tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
             tvEndpointInfo.text = "Target: ${t.remoteEndpoint ?: "Configuring..."}"
             val kbps = (t.bytesPerSec * 8) / 1000
             tvPacketsStat.text = "Sent: ${t.packetsTotal} pkts (${t.packetsPerSec} pkts/s • ${kbps} kbps)"
@@ -230,36 +247,36 @@ class MainActivity : AppCompatActivity() {
             tvDiagnosticTip.text = if (t.audioPeakPercent > 1) {
                 "🟢 Audio signal detected! Sending live system audio to target."
             } else {
-                "ℹ️ Capturing system audio, but signal is currently silent. Start playing audio/music on your phone."
+                "ℹ️ Capturing system audio, but signal is currently silent. Start playing music or media on this device."
             }
         } else if (isSinkRunning) {
             val hasReceivedPackets = t.packetsTotal > 0
             if (hasReceivedPackets) {
-                tvBadgeStatus.text = "RECEIVING & PLAYING"
-                tvBadgeStatus.setBackgroundColor(Color.parseColor("#388E3C"))
-                tvEndpointInfo.text = "Connected from: ${t.remoteEndpoint ?: "Unknown"}"
+                tvBadgeStatus.text = "PLAYING"
+                tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_green))
+                tvEndpointInfo.text = "From: ${t.remoteEndpoint ?: "Unknown"}"
                 val kbps = (t.bytesPerSec * 8) / 1000
                 tvPacketsStat.text = "Received: ${t.packetsTotal} pkts (${t.packetsPerSec} pkts/s • ${kbps} kbps)"
                 pbAudioLevel.progress = t.audioPeakPercent
                 tvAudioLevelVal.text = "${t.audioPeakPercent}%"
 
                 tvDiagnosticTip.text = if (t.audioPeakPercent > 1) {
-                    "🟢 Audio playing through AudioTrack. Adjust media volume on this device if needed."
+                    "🟢 Audio playing through AudioTrack. Adjust device volume if needed."
                 } else {
-                    "ℹ️ Packets arriving, but audio data is silent. Ensure the transmitter phone is playing media."
+                    "ℹ️ Packets arriving, but audio data is silent. Ensure transmitter phone is playing media."
                 }
             } else {
-                tvBadgeStatus.text = "WAITING FOR PACKETS"
-                tvBadgeStatus.setBackgroundColor(Color.parseColor("#F57C00"))
+                tvBadgeStatus.text = "WAITING"
+                tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_orange))
                 tvEndpointInfo.text = "Listening on ${detectedLocalIp ?: "0.0.0.0"}:${etPort.text}"
                 tvPacketsStat.text = "Packets: 0 (Waiting for transmitter...)"
                 pbAudioLevel.progress = 0
                 tvAudioLevelVal.text = "0%"
 
-                tvDiagnosticTip.text = "⚠️ No UDP packets received yet!\n" +
-                        "1. Verify both devices are on the same Wi-Fi.\n" +
-                        "2. On your transmitter phone, set Target IP to: ${detectedLocalIp ?: "this device's IP"}\n" +
-                        "3. Ensure Target Port matches: ${etPort.text}"
+                tvDiagnosticTip.text = "⚠️ Waiting for audio packets!\n" +
+                        "1. Ensure both devices are on the same Wi-Fi.\n" +
+                        "2. On your phone, set Target IP to: ${detectedLocalIp ?: "this device IP"}\n" +
+                        "3. Port: ${etPort.text}"
             }
         }
     }
@@ -353,35 +370,41 @@ class MainActivity : AppCompatActivity() {
     private fun updateModeAndButtonUi() {
         val isSenderActive = AudioCaptureService.isRunning.get()
         val isSinkActive = AudioSinkService.isRunning.get()
+        val isAnyActive = isSenderActive || isSinkActive
+
+        btnModeTransmitter.isEnabled = !isAnyActive
+        btnModeReceiver.isEnabled = !isAnyActive
 
         when (currentMode) {
             Mode.TRANSMITTER -> {
+                tvModeGuide.text = "Capture & stream system audio to a receiver device"
                 tilTargetIp.visibility = View.VISIBLE
-                tvIpHint.text = "Tip: Enter your DAP's IP address below."
                 etTargetIp.isEnabled = !isSenderActive
                 etPort.isEnabled = !isSenderActive
-                rgMode.getChildAt(1).isEnabled = !isSenderActive
 
                 if (isSenderActive) {
                     btnAction.text = getString(R.string.stop_stream)
-                    btnAction.setBackgroundColor(Color.parseColor("#D32F2F"))
+                    btnAction.setIconResource(R.drawable.ic_stop)
+                    btnAction.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_red))
                 } else {
                     btnAction.text = getString(R.string.start_stream)
-                    btnAction.setBackgroundColor(Color.parseColor("#1976D2"))
+                    btnAction.setIconResource(R.drawable.ic_play)
+                    btnAction.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
                 }
             }
             Mode.RECEIVER -> {
+                tvModeGuide.text = "Play raw audio stream received from transmitter"
                 tilTargetIp.visibility = View.GONE
-                tvIpHint.text = "💡 Enter ${detectedLocalIp ?: "this IP"} in the Target IP field on your phone."
                 etPort.isEnabled = !isSinkActive
-                rgMode.getChildAt(0).isEnabled = !isSinkActive
 
                 if (isSinkActive) {
                     btnAction.text = getString(R.string.stop_receiver)
-                    btnAction.setBackgroundColor(Color.parseColor("#D32F2F"))
+                    btnAction.setIconResource(R.drawable.ic_stop)
+                    btnAction.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_red))
                 } else {
                     btnAction.text = getString(R.string.start_receiver)
-                    btnAction.setBackgroundColor(Color.parseColor("#388E3C"))
+                    btnAction.setIconResource(R.drawable.ic_play)
+                    btnAction.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_green))
                 }
             }
         }
