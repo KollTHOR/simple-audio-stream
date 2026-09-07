@@ -29,6 +29,8 @@ object DiscoveryManager {
     val discoveredDevices: StateFlow<List<DiscoveredDevice>> = _discoveredDevices.asStateFlow()
 
     private var discoveryJob: Job? = null
+    @Volatile
+    private var activeSocket: DatagramSocket? = null
 
     fun getLocalDeviceName(): String {
         val manufacturer = Build.MANUFACTURER.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
@@ -48,6 +50,7 @@ object DiscoveryManager {
                     soTimeout = 2000
                     bind(InetSocketAddress(0))
                 }
+                activeSocket = socket
 
                 // Send initial probe
                 sendProbe(socket)
@@ -99,6 +102,7 @@ object DiscoveryManager {
             } catch (e: Exception) {
                 Log.w(TAG, "Discovery loop exception: ${e.message}")
             } finally {
+                activeSocket = null
                 socket?.close()
             }
         }
@@ -107,45 +111,48 @@ object DiscoveryManager {
     fun stopDiscovery() {
         discoveryJob?.cancel()
         discoveryJob = null
+        activeSocket?.close()
+        activeSocket = null
     }
 
-    fun scanNow(scope: CoroutineScope) {
-        scope.launch(Dispatchers.IO) {
-            var socket: DatagramSocket? = null
-            try {
-                socket = DatagramSocket(null).apply {
-                    reuseAddress = true
-                    broadcast = true
-                    bind(InetSocketAddress(0))
+    fun triggerScan(scope: CoroutineScope) {
+        if (discoveryJob?.isActive != true) {
+            startDiscovery(scope)
+        } else {
+            scope.launch(Dispatchers.IO) {
+                val sock = activeSocket
+                if (sock != null && !sock.isClosed) {
+                    sendProbe(sock)
                 }
-                sendProbe(socket)
-            } catch (e: Exception) {
-                Log.w(TAG, "scanNow error: ${e.message}")
-            } finally {
-                socket?.close()
             }
         }
     }
 
     private fun sendProbe(socket: DatagramSocket) {
-        try {
-            val broadcastIp = NetworkUtils.getSuggestedBroadcastIp()
-            val address = InetAddress.getByName(broadcastIp)
-            val buffer = ByteArray(AudioConfig.HEADER_SIZE)
-            buffer[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
-            buffer[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
-            buffer[2] = 0
-            buffer[3] = 0
-            buffer[4] = 0
-            buffer[5] = AudioConfig.FLAG_DISCOVERY_PROBE
-            buffer[6] = 0
-            buffer[7] = 0
+        val targets = mutableSetOf<String>()
+        targets.addAll(NetworkUtils.getAllBroadcastAddresses())
+        targets.addAll(NetworkUtils.getArpClientIps())
+        targets.add("255.255.255.255")
 
-            val packet = DatagramPacket(buffer, buffer.size, address, AudioConfig.DEFAULT_PORT)
-            socket.send(packet)
-            Log.d(TAG, "Sent discovery probe to $broadcastIp:${AudioConfig.DEFAULT_PORT}")
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed sending probe: ${e.message}")
+        val buffer = ByteArray(AudioConfig.HEADER_SIZE)
+        buffer[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
+        buffer[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
+        buffer[2] = 0
+        buffer[3] = 0
+        buffer[4] = 0
+        buffer[5] = AudioConfig.FLAG_DISCOVERY_PROBE
+        buffer[6] = 0
+        buffer[7] = 0
+
+        for (targetIp in targets) {
+            try {
+                val address = InetAddress.getByName(targetIp)
+                val packet = DatagramPacket(buffer, buffer.size, address, AudioConfig.DEFAULT_PORT)
+                socket.send(packet)
+                Log.d(TAG, "Sent discovery probe to $targetIp:${AudioConfig.DEFAULT_PORT}")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed sending probe to $targetIp: ${e.message}")
+            }
         }
     }
 

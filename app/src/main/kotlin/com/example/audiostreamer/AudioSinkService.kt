@@ -188,10 +188,9 @@ class AudioSinkService : Service() {
                 )
             }
 
-            // Send initial discovery announcement broadcast to local subnet
+            // Send initial discovery announcement broadcast across all active interfaces
             Thread({
                 try {
-                    val bcastIp = NetworkUtils.getSuggestedBroadcastIp()
                     val deviceName = DiscoveryManager.getLocalDeviceName()
                     val nameBytes = deviceName.toByteArray(Charsets.UTF_8).take(64).toByteArray()
                     val announceBuf = ByteArray(AudioConfig.HEADER_SIZE + nameBytes.size)
@@ -202,9 +201,17 @@ class AudioSinkService : Service() {
                     announceBuf[6] = (nameBytes.size shr 8).toByte()
                     announceBuf[7] = (nameBytes.size and 0xFF).toByte()
                     System.arraycopy(nameBytes, 0, announceBuf, AudioConfig.HEADER_SIZE, nameBytes.size)
-                    val bcastPacket = DatagramPacket(announceBuf, announceBuf.size, InetAddress.getByName(bcastIp), port)
-                    socket.send(bcastPacket)
-                    Log.d(TAG, "Sent initial discovery announce broadcast to $bcastIp:$port")
+
+                    val targets = NetworkUtils.getAllBroadcastAddresses()
+                    for (bcastIp in targets) {
+                        try {
+                            val bcastPacket = DatagramPacket(announceBuf, announceBuf.size, InetAddress.getByName(bcastIp), port)
+                            socket.send(bcastPacket)
+                            Log.d(TAG, "Sent initial discovery announce broadcast to $bcastIp:$port")
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed sending announce to $bcastIp: ${e.message}")
+                        }
+                    }
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to send initial discovery announce: ${e.message}")
                 }

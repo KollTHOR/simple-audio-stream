@@ -169,8 +169,8 @@ class MainActivity : AppCompatActivity() {
         fabSettings = findViewById(R.id.fab_settings)
 
         btnScanReceivers.setOnClickListener {
-            DiscoveryManager.startDiscovery(lifecycleScope)
-            Toast.makeText(this, "Scanning for receivers...", Toast.LENGTH_SHORT).show()
+            DiscoveryManager.triggerScan(lifecycleScope)
+            Toast.makeText(this, "Scanning all network interfaces...", Toast.LENGTH_SHORT).show()
         }
 
         lifecycleScope.launch {
@@ -306,15 +306,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshLocalIp() {
-        detectedLocalIp = NetworkUtils.getLocalIpAddress()
-        if (detectedLocalIp != null) {
-            tvHeaderIp.text = detectedLocalIp
+        val allIps = NetworkUtils.getAllLocalIpAddresses()
+        if (allIps.isNotEmpty()) {
+            detectedLocalIp = allIps.first()
+            tvHeaderIp.text = if (allIps.size > 1) allIps.joinToString(" | ") else allIps.first()
             if (etTargetIp.text.isNullOrEmpty() ||
                 etTargetIp.text.toString() == "192.168.1.255" ||
                 etTargetIp.text.toString() == "192.168.43.255") {
                 etTargetIp.setText(NetworkUtils.getSuggestedBroadcastIp())
             }
         } else {
+            detectedLocalIp = null
             tvHeaderIp.text = "Offline"
         }
     }
