@@ -74,6 +74,8 @@ class MainActivity : AppCompatActivity() {
 
     private var currentMode: Mode = Mode.TRANSMITTER
     private var detectedLocalIp: String? = null
+    private var isStarting: Boolean = false
+    private var isStopping: Boolean = false
 
     private val screenCaptureLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -91,9 +93,12 @@ class MainActivity : AppCompatActivity() {
                 putExtra(AudioCaptureService.EXTRA_TARGET_IP, ip)
                 putExtra(AudioCaptureService.EXTRA_TARGET_PORT, port)
             }
+            isStarting = true
+            isStopping = false
             ContextCompat.startForegroundService(this, serviceIntent)
             updateModeAndButtonUi()
         } else {
+            isStarting = false
             Toast.makeText(this, "Screen capture permission denied", Toast.LENGTH_SHORT).show()
             updateModeAndButtonUi()
         }
@@ -201,6 +206,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnAction.setOnClickListener {
+            if (isStarting || isStopping) return@setOnClickListener
+
             when (currentMode) {
                 Mode.TRANSMITTER -> {
                     if (AudioCaptureService.isRunning.get()) {
@@ -268,6 +275,23 @@ class MainActivity : AppCompatActivity() {
     private fun renderTelemetry(t: Telemetry) {
         val isSenderRunning = AudioCaptureService.isRunning.get()
         val isSinkRunning = AudioSinkService.isRunning.get()
+
+        if (isSenderRunning || isSinkRunning) {
+            isStarting = false
+        }
+        if (!isSenderRunning && !isSinkRunning) {
+            isStopping = false
+        }
+
+        if (isSenderRunning && currentMode != Mode.TRANSMITTER) {
+            currentMode = Mode.TRANSMITTER
+            toggleModeGroup.check(R.id.btn_mode_transmitter)
+        } else if (isSinkRunning && currentMode != Mode.RECEIVER) {
+            currentMode = Mode.RECEIVER
+            toggleModeGroup.check(R.id.btn_mode_receiver)
+        }
+
+        updateModeAndButtonUi()
 
         if (currentMode == Mode.TRANSMITTER) {
             val curVol = AudioCaptureService.remoteVolumePercent.get()
@@ -455,6 +479,8 @@ class MainActivity : AppCompatActivity() {
         val stopIntent = Intent(this, AudioCaptureService::class.java).apply {
             action = AudioCaptureService.ACTION_STOP
         }
+        isStopping = true
+        isStarting = false
         startService(stopIntent)
         updateModeAndButtonUi()
     }
@@ -485,6 +511,8 @@ class MainActivity : AppCompatActivity() {
             action = AudioSinkService.ACTION_START
             putExtra(AudioSinkService.EXTRA_PORT, port)
         }
+        isStarting = true
+        isStopping = false
         ContextCompat.startForegroundService(this, serviceIntent)
         updateModeAndButtonUi()
     }
@@ -493,6 +521,8 @@ class MainActivity : AppCompatActivity() {
         val stopIntent = Intent(this, AudioSinkService::class.java).apply {
             action = AudioSinkService.ACTION_STOP
         }
+        isStopping = true
+        isStarting = false
         startService(stopIntent)
         updateModeAndButtonUi()
     }
@@ -500,7 +530,7 @@ class MainActivity : AppCompatActivity() {
     private fun updateModeAndButtonUi() {
         val isSenderActive = AudioCaptureService.isRunning.get()
         val isSinkActive = AudioSinkService.isRunning.get()
-        val isAnyActive = isSenderActive || isSinkActive
+        val isAnyActive = isSenderActive || isSinkActive || isStarting || isStopping
 
         btnModeTransmitter.isEnabled = !isAnyActive
         btnModeReceiver.isEnabled = !isAnyActive
@@ -508,6 +538,7 @@ class MainActivity : AppCompatActivity() {
         // Update Toggle buttons styling for dark mode clarity
         val colorPrimary = ContextCompat.getColor(this, R.color.primary)
         val colorGreen = ContextCompat.getColor(this, R.color.status_green)
+        val colorRed = ContextCompat.getColor(this, R.color.status_red)
         val colorCard = ContextCompat.getColor(this, R.color.card_bg)
         val colorTextSecondary = ContextCompat.getColor(this, R.color.text_secondary)
 
@@ -524,17 +555,34 @@ class MainActivity : AppCompatActivity() {
                 tvModeGuide.text = "Capture & stream system audio to a receiver device"
                 tilTargetIp.visibility = View.VISIBLE
                 layoutVolumeControl.visibility = View.VISIBLE
-                etTargetIp.isEnabled = !isSenderActive
-                etPort.isEnabled = !isSenderActive
+                etTargetIp.isEnabled = !isSenderActive && !isStarting && !isStopping
+                etPort.isEnabled = !isSenderActive && !isStarting && !isStopping
 
-                if (isSenderActive) {
-                    btnAction.text = getString(R.string.stop_stream)
-                    btnAction.setIconResource(R.drawable.ic_stop)
-                    btnAction.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_red))
-                } else {
-                    btnAction.text = getString(R.string.start_stream)
-                    btnAction.setIconResource(R.drawable.ic_play)
-                    btnAction.backgroundTintList = ColorStateList.valueOf(colorPrimary)
+                when {
+                    isStarting -> {
+                        btnAction.isEnabled = false
+                        btnAction.text = "Starting..."
+                        btnAction.setIconResource(R.drawable.ic_play)
+                        btnAction.backgroundTintList = ColorStateList.valueOf(colorPrimary)
+                    }
+                    isStopping -> {
+                        btnAction.isEnabled = false
+                        btnAction.text = "Stopping..."
+                        btnAction.setIconResource(R.drawable.ic_stop)
+                        btnAction.backgroundTintList = ColorStateList.valueOf(colorRed)
+                    }
+                    isSenderActive -> {
+                        btnAction.isEnabled = true
+                        btnAction.text = getString(R.string.stop_stream)
+                        btnAction.setIconResource(R.drawable.ic_stop)
+                        btnAction.backgroundTintList = ColorStateList.valueOf(colorRed)
+                    }
+                    else -> {
+                        btnAction.isEnabled = true
+                        btnAction.text = getString(R.string.start_stream)
+                        btnAction.setIconResource(R.drawable.ic_play)
+                        btnAction.backgroundTintList = ColorStateList.valueOf(colorPrimary)
+                    }
                 }
             }
             Mode.RECEIVER -> {
@@ -549,16 +597,33 @@ class MainActivity : AppCompatActivity() {
                 tvModeGuide.text = "Play raw audio stream received from transmitter"
                 tilTargetIp.visibility = View.GONE
                 layoutVolumeControl.visibility = View.GONE
-                etPort.isEnabled = !isSinkActive
+                etPort.isEnabled = !isSinkActive && !isStarting && !isStopping
 
-                if (isSinkActive) {
-                    btnAction.text = getString(R.string.stop_receiver)
-                    btnAction.setIconResource(R.drawable.ic_stop)
-                    btnAction.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_red))
-                } else {
-                    btnAction.text = getString(R.string.start_receiver)
-                    btnAction.setIconResource(R.drawable.ic_play)
-                    btnAction.backgroundTintList = ColorStateList.valueOf(colorGreen)
+                when {
+                    isStarting -> {
+                        btnAction.isEnabled = false
+                        btnAction.text = "Starting..."
+                        btnAction.setIconResource(R.drawable.ic_play)
+                        btnAction.backgroundTintList = ColorStateList.valueOf(colorGreen)
+                    }
+                    isStopping -> {
+                        btnAction.isEnabled = false
+                        btnAction.text = "Stopping..."
+                        btnAction.setIconResource(R.drawable.ic_stop)
+                        btnAction.backgroundTintList = ColorStateList.valueOf(colorRed)
+                    }
+                    isSinkActive -> {
+                        btnAction.isEnabled = true
+                        btnAction.text = getString(R.string.stop_receiver)
+                        btnAction.setIconResource(R.drawable.ic_stop)
+                        btnAction.backgroundTintList = ColorStateList.valueOf(colorRed)
+                    }
+                    else -> {
+                        btnAction.isEnabled = true
+                        btnAction.text = getString(R.string.start_receiver)
+                        btnAction.setIconResource(R.drawable.ic_play)
+                        btnAction.backgroundTintList = ColorStateList.valueOf(colorGreen)
+                    }
                 }
             }
         }
