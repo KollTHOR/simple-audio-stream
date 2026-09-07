@@ -40,6 +40,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var btnBack: ImageView
     private lateinit var tvAppVersion: TextView
     private lateinit var btnGithubRepo: MaterialButton
+    private lateinit var btnAppInfo: MaterialButton
     private lateinit var btnAccessibilitySettings: MaterialButton
     private lateinit var tvUpdateStatus: TextView
     private lateinit var pbDownload: ProgressBar
@@ -89,11 +90,20 @@ class SettingsActivity : AppCompatActivity() {
             startActivity(intent)
         }
 
+        btnAppInfo = findViewById(R.id.btn_app_info)
+        btnAppInfo.setOnClickListener {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", packageName, null)
+            }
+            startActivity(intent)
+            Toast.makeText(this, "Tap the 3 dots at top-right -> Allow restricted settings", Toast.LENGTH_LONG).show()
+        }
+
         btnAccessibilitySettings.setOnClickListener {
             if (VolumeKeyInterceptorService.isRunning) {
                 Toast.makeText(this, "Background volume key interception is active", Toast.LENGTH_SHORT).show()
             } else {
-                Toast.makeText(this, "Enable Simple Audio Stream in Accessibility settings to allow volume keys in background", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Turn on Audio Streamer in Accessibility settings", Toast.LENGTH_LONG).show()
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             }
         }
@@ -115,15 +125,22 @@ class SettingsActivity : AppCompatActivity() {
     private fun updateAccessibilityButton() {
         val isServiceActive = VolumeKeyInterceptorService.isRunning
         if (isServiceActive) {
-            btnAccessibilitySettings.text = "Background Keys: Active"
+            btnAccessibilitySettings.text = "Step 2: Accessibility (Active)"
             val colorGreen = ContextCompat.getColor(this, R.color.status_green)
             btnAccessibilitySettings.setTextColor(colorGreen)
             btnAccessibilitySettings.strokeColor = ColorStateList.valueOf(colorGreen)
+            btnAppInfo.text = "Step 1: App Info (Completed)"
+            btnAppInfo.setTextColor(colorGreen)
+            btnAppInfo.strokeColor = ColorStateList.valueOf(colorGreen)
         } else {
-            btnAccessibilitySettings.text = "Enable in Accessibility Settings"
+            btnAccessibilitySettings.text = "Step 2: Enable in Accessibility Settings"
             val colorPrimary = ContextCompat.getColor(this, R.color.primary)
             btnAccessibilitySettings.setTextColor(colorPrimary)
             btnAccessibilitySettings.strokeColor = ColorStateList.valueOf(colorPrimary)
+            btnAppInfo.text = "Step 1: Open App Info (Allow Restricted Settings)"
+            val colorSecondary = ContextCompat.getColor(this, R.color.text_primary)
+            btnAppInfo.setTextColor(colorSecondary)
+            btnAppInfo.strokeColor = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.card_stroke))
         }
     }
 

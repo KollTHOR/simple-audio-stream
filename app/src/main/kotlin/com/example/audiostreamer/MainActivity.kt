@@ -11,8 +11,10 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.media.AudioManager
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.KeyEvent
 import android.view.View
 import android.widget.LinearLayout
@@ -30,6 +32,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.button.MaterialButtonToggleGroup
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.google.android.material.slider.Slider
 import com.google.android.material.textfield.TextInputEditText
@@ -372,16 +375,52 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkAccessibilityAndProceed() {
+        if (VolumeKeyInterceptorService.isRunning) {
+            launchMediaProjectionConsent()
+            return
+        }
+
         val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
         val hasPrompted = prefs.getBoolean("has_prompted_accessibility", false)
+        if (hasPrompted) {
+            launchMediaProjectionConsent()
+            return
+        }
 
-        if (!VolumeKeyInterceptorService.isRunning && !hasPrompted) {
-            prefs.edit().putBoolean("has_prompted_accessibility", true).apply()
-            com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+        prefs.edit().putBoolean("has_prompted_accessibility", true).apply()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("Background Volume Setup")
+                .setMessage(
+                    "Android restricts accessibility on sideloaded APKs by default with 'Restricted setting'.\n\n" +
+                    "To enable background volume buttons in 2 steps:\n" +
+                    "1. Tap 'Step 1: App Info' -> tap 3 dots at top-right -> 'Allow restricted settings'.\n" +
+                    "2. Tap 'Step 2: Accessibility' -> turn on Audio Streamer.\n\n" +
+                    "(You can also skip; in-app slider and notification volume buttons work without permissions)."
+                )
+                .setPositiveButton("Step 1: App Info") { _, _ ->
+                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.fromParts("package", packageName, null)
+                    }
+                    startActivity(intent)
+                    showAccessibilityStepTwoDialog()
+                }
+                .setNeutralButton("Step 2: Accessibility") { _, _ ->
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    launchMediaProjectionConsent()
+                }
+                .setNegativeButton("Skip") { _, _ ->
+                    launchMediaProjectionConsent()
+                }
+                .setCancelable(false)
+                .show()
+        } else {
+            MaterialAlertDialogBuilder(this)
                 .setTitle("Background Volume Control")
                 .setMessage("To adjust DAP volume using your phone's hardware volume buttons when the screen is locked or in other apps, enable Audio Streamer in Accessibility settings.")
                 .setPositiveButton("Enable") { _, _ ->
-                    startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                     launchMediaProjectionConsent()
                 }
                 .setNegativeButton("Not Now") { _, _ ->
@@ -389,9 +428,22 @@ class MainActivity : AppCompatActivity() {
                 }
                 .setCancelable(false)
                 .show()
-        } else {
-            launchMediaProjectionConsent()
         }
+    }
+
+    private fun showAccessibilityStepTwoDialog() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Step 2: Enable Accessibility")
+            .setMessage("After selecting 'Allow restricted settings' in App Info, tap 'Open Accessibility' to turn on Audio Streamer.")
+            .setPositiveButton("Open Accessibility") { _, _ ->
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                launchMediaProjectionConsent()
+            }
+            .setNegativeButton("Skip") { _, _ ->
+                launchMediaProjectionConsent()
+            }
+            .setCancelable(false)
+            .show()
     }
 
     private fun launchMediaProjectionConsent() {
