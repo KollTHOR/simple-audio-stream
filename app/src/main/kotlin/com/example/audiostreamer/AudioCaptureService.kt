@@ -138,8 +138,11 @@ class AudioCaptureService : Service() {
         volumeProvider?.currentVolume = clamped
         Log.d(TAG, "Remote volume updated: $clamped%")
 
-        // Dispatch immediate control packet
-        sendControlPacket(clamped)
+        // If streaming is actively running, streamThread transmits the new volume in the next 5ms audio packet.
+        // Only dispatch out-of-band UDP control packet if streaming is idle.
+        if (streamThread == null || !streamThread!!.isAlive) {
+            sendControlPacket(clamped)
+        }
 
         // Update notification
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -152,6 +155,10 @@ class AudioCaptureService : Service() {
             try {
                 val address = InetAddress.getByName(currentTargetIp)
                 val buffer = ByteArray(AudioConfig.HEADER_SIZE)
+                val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+                val profile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
+                val profileFlag = if (profile == AudioConfig.PROFILE_LOW_LATENCY) AudioConfig.FLAG_PROFILE_LOW_LATENCY else AudioConfig.FLAG_PROFILE_MUSIC
+
                 // Magic "SA"
                 buffer[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
                 buffer[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
@@ -160,8 +167,8 @@ class AudioCaptureService : Service() {
                 buffer[3] = 0
                 // Volume
                 buffer[4] = volume.toByte()
-                // Flags = CONTROL_ONLY
-                buffer[5] = AudioConfig.FLAG_CONTROL_ONLY
+                // Flags = CONTROL_ONLY combined with current profile flag
+                buffer[5] = (AudioConfig.FLAG_CONTROL_ONLY.toInt() or profileFlag.toInt()).toByte()
                 // Payload length = 0
                 buffer[6] = 0
                 buffer[7] = 0

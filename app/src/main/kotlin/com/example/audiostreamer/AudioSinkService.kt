@@ -171,6 +171,12 @@ class AudioSinkService : Service() {
             }
             datagramSocket = socket
 
+            // Set system media volume to maximum once at startup so software AudioTrack.setVolume has full dynamic range
+            try {
+                val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVol, 0)
+            } catch (ignored: Exception) {}
+
             val localIp = NetworkUtils.getLocalIpAddress() ?: "0.0.0.0"
             StreamState.update {
                 it.copy(
@@ -215,40 +221,43 @@ class AudioSinkService : Service() {
                                 val flags = data[offset + 5]
                                 val payloadLen = ((data[offset + 6].toInt() and 0xFF) shl 8) or (data[offset + 7].toInt() and 0xFF)
 
-                                // Extract server streaming profile from flags (client strictly follows server)
+                                val isDisconnect = (flags.toInt() and AudioConfig.FLAG_DISCONNECT.toInt()) != 0
+                                val isControlOnly = (flags.toInt() and AudioConfig.FLAG_CONTROL_ONLY.toInt()) != 0
                                 val isServerLowLatency = (flags.toInt() and AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt()) != 0
-                                val isServer24Bit = !isServerLowLatency && ((flags.toInt() and AudioConfig.FLAG_24BIT.toInt()) != 0 || payloadLen == AudioConfig.PACKET_SIZE_24BIT)
-                                val serverProfile = if (isServerLowLatency) AudioConfig.PROFILE_LOW_LATENCY else AudioConfig.PROFILE_MUSIC
-                                if (serverProfile != currentProfile) {
-                                    currentProfile = serverProfile
-                                    jitterBuffer.setProfile(serverProfile)
-                                    Log.i(TAG, "Adapted client buffer to server profile: $serverProfile")
+
+                                // Only adapt profile and reconfigure AudioTrack on audio packets (never on control-only packets)
+                                if (!isControlOnly && !isDisconnect) {
+                                    val isServer24Bit = !isServerLowLatency && ((flags.toInt() and AudioConfig.FLAG_24BIT.toInt()) != 0 || payloadLen == AudioConfig.PACKET_SIZE_24BIT)
+                                    val serverProfile = if (isServerLowLatency) AudioConfig.PROFILE_LOW_LATENCY else AudioConfig.PROFILE_MUSIC
+                                    if (serverProfile != currentProfile) {
+                                        currentProfile = serverProfile
+                                        jitterBuffer.setProfile(serverProfile)
+                                        Log.i(TAG, "Adapted client buffer to server profile: $serverProfile")
+                                    }
+
+                                    val targetEncoding = if (isServer24Bit && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                        AudioFormat.ENCODING_PCM_24BIT_PACKED
+                                    } else {
+                                        AudioConfig.ENCODING
+                                    }
+                                    val targetPerfMode = if (isServerLowLatency) AudioTrack.PERFORMANCE_MODE_LOW_LATENCY else AudioTrack.PERFORMANCE_MODE_NONE
+                                    // Fast-path: skip @Synchronized call if nothing has changed
+                                    if (targetEncoding != currentEncoding || targetPerfMode != currentPerformanceMode) {
+                                        configureAudioTrack(targetEncoding, isServerLowLatency, currentRemoteVolume)
+                                    }
                                 }
 
-                                val targetEncoding = if (isServer24Bit && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                    AudioFormat.ENCODING_PCM_24BIT_PACKED
-                                } else {
-                                    AudioConfig.ENCODING
-                                }
-                                val targetPerfMode = if (isServerLowLatency) AudioTrack.PERFORMANCE_MODE_LOW_LATENCY else AudioTrack.PERFORMANCE_MODE_NONE
-                                // Fast-path: skip @Synchronized call if nothing has changed
-                                val activeTrack = if (targetEncoding != currentEncoding || targetPerfMode != currentPerformanceMode) {
-                                    configureAudioTrack(targetEncoding, isServerLowLatency, currentRemoteVolume)
-                                } else {
-                                    audioTrack ?: configureAudioTrack(targetEncoding, isServerLowLatency, currentRemoteVolume)
-                                }
+                                val activeTrack = audioTrack ?: configureAudioTrack(
+                                    currentEncoding,
+                                    currentProfile == AudioConfig.PROFILE_LOW_LATENCY,
+                                    currentRemoteVolume
+                                )
 
-                                // Apply remote volume control if changed
+                                // Apply remote volume control if changed — 0ms software scaling, zero IPC, zero cutouts!
                                 if (volume != currentRemoteVolume) {
                                     currentRemoteVolume = volume
                                     val floatVol = (volume / 100.0f).coerceIn(0.0f, 1.0f)
                                     activeTrack.setVolume(floatVol)
-
-                                    try {
-                                        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                                        val targetVol = ((volume * maxVol) / 100).coerceIn(0, maxVol)
-                                        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetVol, 0)
-                                    } catch (ignored: Exception) {}
                                     Log.d(TAG, "Applied remote volume: $volume%")
                                 }
 
@@ -260,8 +269,6 @@ class AudioSinkService : Service() {
                                 }
 
                                 // Route PCM audio to JitterBuffer
-                                val isDisconnect = (flags.toInt() and AudioConfig.FLAG_DISCONNECT.toInt()) != 0
-                                val isControlOnly = (flags.toInt() and AudioConfig.FLAG_CONTROL_ONLY.toInt()) != 0
                                 if ((payloadLen == AudioConfig.PACKET_SIZE_16BIT || payloadLen == AudioConfig.PACKET_SIZE_24BIT) && !isDisconnect && !isControlOnly) {
                                     val pcmOffset = offset + AudioConfig.HEADER_SIZE
                                     val effectivePayloadLen: Int
