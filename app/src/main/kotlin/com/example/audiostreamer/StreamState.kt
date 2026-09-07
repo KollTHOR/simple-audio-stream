@@ -12,7 +12,15 @@ data class Telemetry(
     val bytesPerSec: Int = 0,
     val audioPeakPercent: Int = 0, // 0 - 100%
     val remoteEndpoint: String? = null,
-    val statusDetail: String = "Idle"
+    val statusDetail: String = "Idle",
+    val bufferFillPercent: Int = 0,
+    val bufferSlotsUsed: Int = 0,
+    val bufferSlotsTotal: Int = AudioConfig.MUSIC_JITTER_BUFFER_SLOTS,
+    val streamProfileName: String = "Music Mode",
+    val sampleRate: Int = AudioConfig.SAMPLE_RATE,
+    val bitDepth: Int = 16,
+    val channels: Int = AudioConfig.CHANNELS,
+    val bitrateKbps: Int = 1536
 )
 
 object StreamState {

@@ -24,10 +24,12 @@ import android.os.IBinder
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
+import android.view.KeyEvent
 import androidx.core.app.NotificationCompat
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.SocketException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -58,6 +60,7 @@ class AudioCaptureService : Service() {
     private var audioRecord: AudioRecord? = null
     private var udpSocket: DatagramSocket? = null
     private var streamThread: Thread? = null
+    private var controlListenerThread: Thread? = null
     private var mediaSession: MediaSession? = null
     private var volumeProvider: VolumeProvider? = null
     private var previousPhoneVolume: Int? = null
@@ -358,6 +361,35 @@ class AudioCaptureService : Service() {
                 }
                 udpSocket = socket
 
+                val listenerSocket = socket
+                controlListenerThread = Thread({
+                    val recvBuf = ByteArray(64)
+                    val recvPacket = DatagramPacket(recvBuf, recvBuf.size)
+                    while (isRunning.get() && !Thread.currentThread().isInterrupted) {
+                        try {
+                            listenerSocket.receive(recvPacket)
+                            if (recvPacket.length >= AudioConfig.HEADER_SIZE) {
+                                val magic = ((recvBuf[0].toInt() and 0xFF) shl 8) or (recvBuf[1].toInt() and 0xFF)
+                                if (magic == AudioConfig.MAGIC_HEADER.toInt()) {
+                                    val flags = recvBuf[5]
+                                    if (flags == AudioConfig.FLAG_DISCONNECT) {
+                                        Log.i(TAG, "Received client disconnect signal from ${recvPacket.address?.hostAddress}. Pausing media.")
+                                        pauseSystemMediaPlayback()
+                                    }
+                                }
+                            }
+                        } catch (e: SocketException) {
+                            break
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Error in control listener loop: ${e.message}")
+                        }
+                    }
+                    Log.d(TAG, "Control listener thread exited")
+                }, "AudioCaptureControlListener").apply {
+                    isDaemon = true
+                    start()
+                }
+
                 val sendBuffer = ByteArray(AudioConfig.HEADER_SIZE + AudioConfig.PACKET_SIZE)
                 val packet = DatagramPacket(sendBuffer, sendBuffer.size, address, targetPort)
 
@@ -469,6 +501,9 @@ class AudioCaptureService : Service() {
         }
         Log.i(TAG, "Stopping audio capture service")
 
+        controlListenerThread?.interrupt()
+        controlListenerThread = null
+
         streamThread?.interrupt()
         streamThread = null
 
@@ -536,6 +571,23 @@ class AudioCaptureService : Service() {
         } else {
             @Suppress("DEPRECATION")
             stopForeground(true)
+        }
+    }
+
+    private fun pauseSystemMediaPlayback() {
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PAUSE))
+            audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PAUSE))
+            Log.i(TAG, "Paused system media playback via KEYCODE_MEDIA_PAUSE")
+            StreamState.update {
+                it.copy(
+                    statusDetail = "Client disconnected - Media paused",
+                    audioPeakPercent = 0
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed pausing media playback: ${e.message}")
         }
     }
 

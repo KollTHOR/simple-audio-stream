@@ -387,6 +387,95 @@
                             android:progressTint="@color/status_green"
                             android:layout_marginBottom="10dp" />
 
+                        <!-- Audio Pipeline & Buffer Monitor -->
+                        <LinearLayout
+                            android:id="@+id/layout_pipeline_details"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:background="@color/input_bg"
+                            android:padding="10dp"
+                            android:layout_marginBottom="10dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="horizontal"
+                                android:gravity="center_vertical"
+                                android:layout_marginBottom="4dp">
+
+                                <TextView
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="AUDIO PIPELINE"
+                                    android:textSize="11sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_hint"
+                                    android:letterSpacing="0.05" />
+
+                                <TextView
+                                    android:id="@+id/tv_pipeline_profile"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Music Mode"
+                                    android:textSize="10sp"
+                                    android:textStyle="bold"
+                                    android:paddingStart="6dp"
+                                    android:paddingEnd="6dp"
+                                    android:paddingTop="2dp"
+                                    android:paddingBottom="2dp"
+                                    android:textColor="@color/primary"
+                                    android:background="@drawable/bg_badge"
+                                    android:backgroundTint="#242436" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:id="@+id/tv_pipeline_format"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:text="48.0 kHz • 16-bit Stereo PCM • 1536 kbps"
+                                android:textSize="12sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary"
+                                android:layout_marginBottom="6dp" />
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="horizontal"
+                                android:gravity="center_vertical"
+                                android:layout_marginBottom="4dp">
+
+                                <TextView
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="Jitter Buffer Health"
+                                    android:textSize="11sp"
+                                    android:textColor="@color/text_secondary" />
+
+                                <TextView
+                                    android:id="@+id/tv_buffer_health_val"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="0% (0 slots)"
+                                    android:textSize="11sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/primary" />
+                            </LinearLayout>
+
+                            <ProgressBar
+                                android:id="@+id/pb_buffer_health"
+                                style="?android:attr/progressBarStyleHorizontal"
+                                android:layout_width="match_parent"
+                                android:layout_height="@dimen/progress_height"
+                                android:max="100"
+                                android:progress="0"
+                                android:progressBackgroundTint="#272732"
+                                android:progressTint="@color/primary" />
+                        </LinearLayout>
+
                         <!-- Diagnostic Hint -->
                         <TextView
                             android:id="@+id/tv_diagnostic_tip"

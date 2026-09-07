@@ -1,7 +1,9 @@
 package com.example.audiostreamer
 
+import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
+import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -20,6 +22,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.button.MaterialButtonToggleGroup
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -45,6 +48,10 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var tvUpdateStatus: TextView
     private lateinit var pbDownload: ProgressBar
     private lateinit var btnCheckUpdate: MaterialButton
+    private lateinit var toggleProfileGroup: MaterialButtonToggleGroup
+    private lateinit var btnProfileMusic: MaterialButton
+    private lateinit var btnProfileLowLatency: MaterialButton
+    private lateinit var tvProfileDescription: TextView
 
     private var latestApkUrl: String? = null
     private var downloadedApkFile: File? = null
@@ -79,6 +86,31 @@ class SettingsActivity : AppCompatActivity() {
         tvUpdateStatus = findViewById(R.id.tv_update_status)
         pbDownload = findViewById(R.id.pb_download)
         btnCheckUpdate = findViewById(R.id.btn_check_update)
+        toggleProfileGroup = findViewById(R.id.toggle_profile_group)
+        btnProfileMusic = findViewById(R.id.btn_profile_music)
+        btnProfileLowLatency = findViewById(R.id.btn_profile_low_latency)
+        tvProfileDescription = findViewById(R.id.tv_profile_description)
+
+        val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+        val currentProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
+        if (currentProfile == AudioConfig.PROFILE_LOW_LATENCY) {
+            toggleProfileGroup.check(R.id.btn_profile_low_latency)
+        } else {
+            toggleProfileGroup.check(R.id.btn_profile_music)
+        }
+        updateProfileUi(currentProfile)
+
+        toggleProfileGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (isChecked) {
+                val selected = if (checkedId == R.id.btn_profile_low_latency) {
+                    AudioConfig.PROFILE_LOW_LATENCY
+                } else {
+                    AudioConfig.PROFILE_MUSIC
+                }
+                prefs.edit().putString(AudioConfig.PREF_KEY_PROFILE, selected).apply()
+                updateProfileUi(selected)
+            }
+        }
 
         btnBack.setOnClickListener { finish() }
 
@@ -120,6 +152,26 @@ class SettingsActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         updateAccessibilityButton()
+    }
+
+    private fun updateProfileUi(profile: String) {
+        val colorPrimary = ContextCompat.getColor(this, R.color.primary)
+        val colorCard = ContextCompat.getColor(this, R.color.card_bg)
+        val colorTextSecondary = ContextCompat.getColor(this, R.color.text_secondary)
+
+        if (profile == AudioConfig.PROFILE_LOW_LATENCY) {
+            btnProfileLowLatency.backgroundTintList = ColorStateList.valueOf(colorPrimary)
+            btnProfileLowLatency.setTextColor(Color.WHITE)
+            btnProfileMusic.backgroundTintList = ColorStateList.valueOf(colorCard)
+            btnProfileMusic.setTextColor(colorTextSecondary)
+            tvProfileDescription.text = "Low Latency Mode: 30ms pre-roll cushion with a compact 240ms buffer. Optimized for video, gaming, and real-time audio sync."
+        } else {
+            btnProfileMusic.backgroundTintList = ColorStateList.valueOf(colorPrimary)
+            btnProfileMusic.setTextColor(Color.WHITE)
+            btnProfileLowLatency.backgroundTintList = ColorStateList.valueOf(colorCard)
+            btnProfileLowLatency.setTextColor(colorTextSecondary)
+            tvProfileDescription.text = "Music Mode: 200ms pre-roll cushion with a 1.28s jitter buffer. Ideal for uninterrupted lossless audio listening."
+        }
     }
 
     private fun updateAccessibilityButton() {

@@ -64,13 +64,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvRemoteVolLabel: TextView
     private lateinit var sliderRemoteVol: Slider
 
-    // Telemetry views
     private lateinit var tvBadgeStatus: TextView
     private lateinit var tvEndpointInfo: TextView
     private lateinit var tvPacketsStat: TextView
     private lateinit var pbAudioLevel: ProgressBar
     private lateinit var tvAudioLevelVal: TextView
     private lateinit var tvDiagnosticTip: TextView
+    private lateinit var layoutPipelineDetails: LinearLayout
+    private lateinit var tvPipelineProfile: TextView
+    private lateinit var tvPipelineFormat: TextView
+    private lateinit var tvBufferHealthVal: TextView
+    private lateinit var pbBufferHealth: ProgressBar
 
     private var currentMode: Mode = Mode.TRANSMITTER
     private var detectedLocalIp: String? = null
@@ -178,6 +182,11 @@ class MainActivity : AppCompatActivity() {
         pbAudioLevel = findViewById(R.id.pb_audio_level)
         tvAudioLevelVal = findViewById(R.id.tv_audio_level_val)
         tvDiagnosticTip = findViewById(R.id.tv_diagnostic_tip)
+        layoutPipelineDetails = findViewById(R.id.layout_pipeline_details)
+        tvPipelineProfile = findViewById(R.id.tv_pipeline_profile)
+        tvPipelineFormat = findViewById(R.id.tv_pipeline_format)
+        tvBufferHealthVal = findViewById(R.id.tv_buffer_health_val)
+        pbBufferHealth = findViewById(R.id.pb_buffer_health)
 
         refreshLocalIp()
 
@@ -301,6 +310,16 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+        val savedProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
+        val activeProfileName = if (isSinkRunning) {
+            t.streamProfileName
+        } else {
+            if (savedProfile == AudioConfig.PROFILE_LOW_LATENCY) "Low Latency (30ms)" else "Music Mode (200ms)"
+        }
+        tvPipelineProfile.text = activeProfileName
+        tvPipelineFormat.text = "${t.sampleRate / 1000.0} kHz • ${t.bitDepth}-bit Stereo PCM • ${t.bitrateKbps} kbps"
+
         if (!isSenderRunning && !isSinkRunning) {
             tvBadgeStatus.text = "IDLE"
             tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_gray))
@@ -308,6 +327,8 @@ class MainActivity : AppCompatActivity() {
             tvPacketsStat.text = "Packets: 0 (0 pkts/s • 0 KB/s)"
             pbAudioLevel.progress = 0
             tvAudioLevelVal.text = "0%"
+            pbBufferHealth.progress = 0
+            tvBufferHealthVal.text = "0% (0/${AudioConfig.getJitterBufferSlots(savedProfile)} slots)"
 
             tvDiagnosticTip.text = if (currentMode == Mode.RECEIVER) {
                 "On receiver: Tap 'Start Listening'. Then enter ${detectedLocalIp ?: "this IP"} on your transmitter phone."
@@ -315,6 +336,15 @@ class MainActivity : AppCompatActivity() {
                 "On transmitter: Enter the receiver's IP (displayed on receiver screen) and tap 'Start Streaming'."
             }
             return
+        }
+
+        if (isSinkRunning) {
+            pbBufferHealth.progress = t.bufferFillPercent
+            val bufferMs = t.bufferSlotsUsed * AudioConfig.FRAME_SIZE_MS
+            tvBufferHealthVal.text = "${t.bufferFillPercent}% (${t.bufferSlotsUsed}/${t.bufferSlotsTotal} slots • ~${bufferMs}ms)"
+        } else {
+            pbBufferHealth.progress = if (t.audioPeakPercent > 0) 100 else 0
+            tvBufferHealthVal.text = if (t.audioPeakPercent > 0) "Capture active (500ms buffer)" else "Idle"
         }
 
         if (isSenderRunning) {

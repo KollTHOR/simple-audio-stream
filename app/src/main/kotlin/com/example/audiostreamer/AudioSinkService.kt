@@ -46,8 +46,11 @@ class AudioSinkService : Service() {
     private var datagramSocket: DatagramSocket? = null
     private var receiverThread: Thread? = null
     private var playbackThread: Thread? = null
-    private val jitterBuffer = JitterBuffer()
+    private var jitterBuffer = JitterBuffer()
     private var currentRemoteVolume = 100
+    private var lastSenderAddress: java.net.InetAddress? = null
+    private var lastSenderPort: Int? = null
+    private var currentProfile: String = AudioConfig.PROFILE_MUSIC
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -95,12 +98,20 @@ class AudioSinkService : Service() {
                 .setChannelMask(AudioConfig.CHANNEL_OUT_MASK)
                 .build()
 
+            val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+            currentProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
+            val slotCount = AudioConfig.getJitterBufferSlots(currentProfile)
+            val preRoll = AudioConfig.getPreRollPackets(currentProfile)
+            val maxUnderrun = AudioConfig.getMaxUnderrunFrames(currentProfile)
+            val waitTimeout = AudioConfig.getReceiverWaitTimeoutMs(currentProfile)
+            jitterBuffer = JitterBuffer(slotCount, AudioConfig.PACKET_SIZE, preRoll, maxUnderrun, waitTimeout)
+
             val minBufferSize = AudioTrack.getMinBufferSize(
                 AudioConfig.SAMPLE_RATE,
                 AudioConfig.CHANNEL_OUT_MASK,
                 AudioConfig.ENCODING
             )
-            val bufferSize = maxOf(minBufferSize * 2, AudioConfig.PACKET_SIZE * AudioConfig.PRE_ROLL_PACKETS * 2)
+            val bufferSize = maxOf(minBufferSize * 2, AudioConfig.PACKET_SIZE * preRoll * 2)
 
             val track = AudioTrack.Builder()
                 .setAudioAttributes(audioAttributes)
@@ -161,6 +172,9 @@ class AudioSinkService : Service() {
                             // Verify magic header "SA"
                             val magic = ((data[offset].toInt() and 0xFF) shl 8) or (data[offset + 1].toInt() and 0xFF)
                             if (magic == AudioConfig.MAGIC_HEADER.toInt()) {
+                                lastSenderAddress = packet.address
+                                lastSenderPort = packet.port
+
                                 val volume = data[offset + 4].toInt() and 0xFF
                                 val flags = data[offset + 5]
                                 val payloadLen = ((data[offset + 6].toInt() and 0xFF) shl 8) or (data[offset + 7].toInt() and 0xFF)
@@ -209,6 +223,10 @@ class AudioSinkService : Service() {
                             val bps = ((intervalBytes * 1000L) / dt).toInt()
                             val peakPercent = ((maxSampleInInterval * 100) / 32768).coerceIn(0, 100)
                             val senderHost = packet.address?.hostAddress ?: "Transmitter"
+                            val fill = jitterBuffer.getFillLevel()
+                            val usedSlots = jitterBuffer.getAvailableCount()
+                            val totalSlots = jitterBuffer.getSlotCount()
+                            val profileName = if (currentProfile == AudioConfig.PROFILE_LOW_LATENCY) "Low Latency (30ms)" else "Music Mode (200ms)"
 
                             StreamState.update {
                                 it.copy(
@@ -219,7 +237,11 @@ class AudioSinkService : Service() {
                                     bytesPerSec = bps,
                                     audioPeakPercent = peakPercent,
                                     remoteEndpoint = "$senderHost:${packet.port} (Vol: $currentRemoteVolume%)",
-                                    statusDetail = if (peakPercent > 1) "Playing Audio (Vol: $currentRemoteVolume%)" else "Receiving (Silent)"
+                                    statusDetail = if (peakPercent > 1) "Playing Audio (Vol: $currentRemoteVolume%)" else "Receiving (Silent)",
+                                    bufferFillPercent = fill,
+                                    bufferSlotsUsed = usedSlots,
+                                    bufferSlotsTotal = totalSlots,
+                                    streamProfileName = profileName
                                 )
                             }
 
@@ -383,6 +405,22 @@ class AudioSinkService : Service() {
         playbackThread?.interrupt()
         receiverThread = null
         playbackThread = null
+
+        // Notify transmitter phone that client is disconnecting to pause media playback
+        try {
+            lastSenderAddress?.let { addr ->
+                val targetPort = lastSenderPort ?: AudioConfig.DEFAULT_PORT
+                val disconnectBuf = ByteArray(AudioConfig.HEADER_SIZE)
+                disconnectBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
+                disconnectBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
+                disconnectBuf[5] = AudioConfig.FLAG_DISCONNECT
+                val packet = DatagramPacket(disconnectBuf, disconnectBuf.size, addr, targetPort)
+                datagramSocket?.send(packet)
+                Log.i(TAG, "Sent disconnect notification to transmitter $addr:$targetPort")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not send disconnect notification: ${e.message}")
+        }
 
         try {
             datagramSocket?.close()

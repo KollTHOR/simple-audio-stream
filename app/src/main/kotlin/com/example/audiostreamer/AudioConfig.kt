@@ -18,18 +18,44 @@ object AudioConfig {
     const val FLAG_NORMAL: Byte = 0x00
     const val FLAG_MUTE: Byte = 0x01
     const val FLAG_CONTROL_ONLY: Byte = 0x02
+    const val FLAG_DISCONNECT: Byte = 0x04
 
     const val DEFAULT_PORT = 50005
 
-    // Jitter buffer sizing on receiver
-    // 256 slots * 960 bytes = 245,760 bytes (~1,280ms buffer capacity to absorb network bursts)
-    const val JITTER_BUFFER_SLOTS = 256
-    // Pre-roll threshold: 40 packets = 200ms of buffered audio before playback begins
-    const val PRE_ROLL_PACKETS = 40
-    // Maximum consecutive concealed frames before entering re-buffering (~150ms)
-    const val MAX_UNDERRUN_CONCEAL_FRAMES = 30
-    // Wait timeout in ms for packet arrival on receiver read
-    const val RECEIVER_WAIT_TIMEOUT_MS = 20L
+    // Streaming Profiles
+    const val PROFILE_MUSIC = "MUSIC"
+    const val PROFILE_LOW_LATENCY = "LOW_LATENCY"
+    const val PREF_KEY_PROFILE = "streaming_profile"
+
+    // Music Mode: Deep cushion for lossless, uninterrupted playback
+    const val MUSIC_JITTER_BUFFER_SLOTS = 256 // ~1,280ms
+    const val MUSIC_PRE_ROLL_PACKETS = 40 // 200ms
+    const val MUSIC_MAX_UNDERRUN_FRAMES = 30 // ~150ms
+    const val MUSIC_WAIT_TIMEOUT_MS = 20L
+
+    // Low Latency Mode: Optimized for video/gaming real-time responsiveness
+    const val LOW_LATENCY_JITTER_BUFFER_SLOTS = 48 // ~240ms
+    const val LOW_LATENCY_PRE_ROLL_PACKETS = 6 // 30ms
+    const val LOW_LATENCY_MAX_UNDERRUN_FRAMES = 6 // ~30ms
+    const val LOW_LATENCY_WAIT_TIMEOUT_MS = 6L
+
+    // Defaults (Music Mode)
+    const val JITTER_BUFFER_SLOTS = MUSIC_JITTER_BUFFER_SLOTS
+    const val PRE_ROLL_PACKETS = MUSIC_PRE_ROLL_PACKETS
+    const val MAX_UNDERRUN_CONCEAL_FRAMES = MUSIC_MAX_UNDERRUN_FRAMES
+    const val RECEIVER_WAIT_TIMEOUT_MS = MUSIC_WAIT_TIMEOUT_MS
+
+    fun getJitterBufferSlots(profile: String): Int =
+        if (profile == PROFILE_LOW_LATENCY) LOW_LATENCY_JITTER_BUFFER_SLOTS else MUSIC_JITTER_BUFFER_SLOTS
+
+    fun getPreRollPackets(profile: String): Int =
+        if (profile == PROFILE_LOW_LATENCY) LOW_LATENCY_PRE_ROLL_PACKETS else MUSIC_PRE_ROLL_PACKETS
+
+    fun getMaxUnderrunFrames(profile: String): Int =
+        if (profile == PROFILE_LOW_LATENCY) LOW_LATENCY_MAX_UNDERRUN_FRAMES else MUSIC_MAX_UNDERRUN_FRAMES
+
+    fun getReceiverWaitTimeoutMs(profile: String): Long =
+        if (profile == PROFILE_LOW_LATENCY) LOW_LATENCY_WAIT_TIMEOUT_MS else MUSIC_WAIT_TIMEOUT_MS
 
     // OS Socket Buffers
     const val SOCKET_SEND_BUFFER_BYTES = 524288 // 512 KB

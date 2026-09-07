@@ -136,4 +136,12 @@ class JitterBuffer(
             return (availableCount * 100) / slotCount
         }
     }
+
+    fun getAvailableCount(): Int {
+        lock.withLock {
+            return availableCount
+        }
+    }
+
+    fun getSlotCount(): Int = slotCount
 }
