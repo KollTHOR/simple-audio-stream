@@ -182,43 +182,6 @@ class AudioSinkService : Service() {
                 )
             }
 
-            // Periodic discovery announcement thread across all active interfaces
-            Thread({
-                while (isRunning.get() && !Thread.currentThread().isInterrupted) {
-                    try {
-                        val deviceName = DiscoveryManager.getLocalDeviceName()
-                        val nameBytes = deviceName.toByteArray(Charsets.UTF_8).take(64).toByteArray()
-                        val announceBuf = ByteArray(AudioConfig.HEADER_SIZE + nameBytes.size)
-                        announceBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
-                        announceBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
-                        announceBuf[4] = currentRemoteVolume.toByte()
-                        announceBuf[5] = AudioConfig.FLAG_DISCOVERY_ANNOUNCE
-                        announceBuf[6] = (nameBytes.size shr 8).toByte()
-                        announceBuf[7] = (nameBytes.size and 0xFF).toByte()
-                        System.arraycopy(nameBytes, 0, announceBuf, AudioConfig.HEADER_SIZE, nameBytes.size)
-
-                        val targets = NetworkUtils.getAllBroadcastAddresses()
-                        for (bcastIp in targets) {
-                            try {
-                                val bcastPacket = DatagramPacket(announceBuf, announceBuf.size, InetAddress.getByName(bcastIp), port)
-                                socket.send(bcastPacket)
-                            } catch (ignored: Exception) {}
-                        }
-                    } catch (e: Exception) {
-                        Log.d(TAG, "Sink announce loop error: ${e.message}")
-                    }
-
-                    try {
-                        Thread.sleep(3000)
-                    } catch (e: InterruptedException) {
-                        break
-                    }
-                }
-            }, "SinkAnnounceThread").apply {
-                isDaemon = true
-                start()
-            }
-
             // 1. Dedicated UDP Receiver Thread
             receiverThread = Thread({
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
@@ -249,26 +212,9 @@ class AudioSinkService : Service() {
                             if (magic == AudioConfig.MAGIC_HEADER.toInt()) {
                                 val flags = data[offset + 5]
 
-                                // Discovery probe from transmitter: respond with announcement containing device name
-                                val isDiscoveryProbe = (flags.toInt() and AudioConfig.FLAG_DISCOVERY_PROBE.toInt()) != 0
-                                if (isDiscoveryProbe) {
-                                    try {
-                                        val deviceName = DiscoveryManager.getLocalDeviceName()
-                                        val nameBytes = deviceName.toByteArray(Charsets.UTF_8).take(64).toByteArray()
-                                        val replyBuf = ByteArray(AudioConfig.HEADER_SIZE + nameBytes.size)
-                                        replyBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
-                                        replyBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
-                                        replyBuf[4] = currentRemoteVolume.toByte()
-                                        replyBuf[5] = AudioConfig.FLAG_DISCOVERY_ANNOUNCE
-                                        replyBuf[6] = (nameBytes.size shr 8).toByte()
-                                        replyBuf[7] = (nameBytes.size and 0xFF).toByte()
-                                        System.arraycopy(nameBytes, 0, replyBuf, AudioConfig.HEADER_SIZE, nameBytes.size)
-                                        val replyPacket = DatagramPacket(replyBuf, replyBuf.size, packet.address, packet.port)
-                                        socket.send(replyPacket)
-                                        Log.d(TAG, "Sent discovery reply to ${packet.address}:${packet.port}")
-                                    } catch (e: Exception) {
-                                        Log.w(TAG, "Error sending discovery reply: ${e.message}")
-                                    }
+                                // Drop any discovery probes or announcements (handled on dedicated port 50006)
+                                val isDiscovery = (flags.toInt() and (AudioConfig.FLAG_DISCOVERY_PROBE.toInt() or AudioConfig.FLAG_DISCOVERY_ANNOUNCE.toInt())) != 0
+                                if (isDiscovery) {
                                     continue
                                 }
 
@@ -289,9 +235,10 @@ class AudioSinkService : Service() {
                                 val isDisconnect = (flags.toInt() and AudioConfig.FLAG_DISCONNECT.toInt()) != 0
                                 val isControlOnly = (flags.toInt() and AudioConfig.FLAG_CONTROL_ONLY.toInt()) != 0
                                 val isServerLowLatency = (flags.toInt() and AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt()) != 0
+                                val isAudioPayload = (payloadLen == AudioConfig.PACKET_SIZE_16BIT || payloadLen == AudioConfig.PACKET_SIZE_24BIT)
 
-                                // Only adapt profile and reconfigure AudioTrack on audio packets (never on control-only packets)
-                                if (!isControlOnly && !isDisconnect && !isSilence) {
+                                // Only adapt profile and reconfigure AudioTrack on genuine audio packets (never on control/silence packets)
+                                if (!isControlOnly && !isDisconnect && !isSilence && isAudioPayload) {
                                     val isServer24Bit = !isServerLowLatency && ((flags.toInt() and AudioConfig.FLAG_24BIT.toInt()) != 0 || payloadLen == AudioConfig.PACKET_SIZE_24BIT)
                                     val serverProfile = if (isServerLowLatency) AudioConfig.PROFILE_LOW_LATENCY else AudioConfig.PROFILE_MUSIC
                                     if (serverProfile != currentProfile) {

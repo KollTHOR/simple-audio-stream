@@ -48,13 +48,22 @@ object DiscoveryManager {
         discoveryJob = scope.launch(Dispatchers.IO) {
             var socket: DatagramSocket? = null
             try {
-                socket = DatagramSocket(null).apply {
-                    reuseAddress = true
-                    broadcast = true
-                    soTimeout = 2000
-                    bind(InetSocketAddress(0))
+                socket = try {
+                    DatagramSocket(null).apply {
+                        reuseAddress = true
+                        broadcast = true
+                        soTimeout = 2000
+                        bind(InetSocketAddress(AudioConfig.DISCOVERY_PORT))
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Port ${AudioConfig.DISCOVERY_PORT} busy, binding ephemeral port: ${e.message}")
+                    DatagramSocket().apply {
+                        broadcast = true
+                        soTimeout = 2000
+                    }
                 }
                 activeSocket = socket
+                Log.i(TAG, "Transmitter discovery listening on port ${socket.localPort}")
 
                 // Send initial probe
                 sendProbe(socket)
@@ -87,7 +96,7 @@ object DiscoveryManager {
 
                                 val senderIp = packet.address.hostAddress
                                 if (senderIp != null) {
-                                    addDiscoveredDevice(DiscoveredDevice(deviceName, senderIp, packet.port))
+                                    addDiscoveredDevice(DiscoveredDevice(deviceName, senderIp, AudioConfig.DEFAULT_PORT))
                                 }
                             }
                         }
@@ -142,10 +151,10 @@ object DiscoveryManager {
                     reuseAddress = true
                     broadcast = true
                     soTimeout = 2000
-                    bind(InetSocketAddress(AudioConfig.DEFAULT_PORT))
+                    bind(InetSocketAddress(AudioConfig.DISCOVERY_PORT))
                 }
                 receiverResponderSocket = socket
-                Log.i(TAG, "Receiver standby responder listening on port ${AudioConfig.DEFAULT_PORT}")
+                Log.i(TAG, "Receiver responder listening on port ${AudioConfig.DISCOVERY_PORT}")
 
                 // Broadcast initial announcement across all active interfaces
                 sendAnnouncement(socket)
@@ -167,7 +176,7 @@ object DiscoveryManager {
                             if (magic == AudioConfig.MAGIC_HEADER.toInt() &&
                                 (flags.toInt() and AudioConfig.FLAG_DISCOVERY_PROBE.toInt()) != 0
                             ) {
-                                // Reply with announce directly to the probing transmitter
+                                // Reply with announce directly to probing transmitter
                                 val deviceName = getLocalDeviceName()
                                 val nameBytes = deviceName.toByteArray(Charsets.UTF_8).take(64).toByteArray()
                                 val replyBuf = ByteArray(AudioConfig.HEADER_SIZE + nameBytes.size)
@@ -179,16 +188,20 @@ object DiscoveryManager {
                                 replyBuf[7] = (nameBytes.size and 0xFF).toByte()
                                 System.arraycopy(nameBytes, 0, replyBuf, AudioConfig.HEADER_SIZE, nameBytes.size)
 
-                                val replyPacket = DatagramPacket(replyBuf, replyBuf.size, packet.address, packet.port)
-                                socket.send(replyPacket)
-                                Log.d(TAG, "Sent discovery announce reply to ${packet.address}:${packet.port}")
+                                val replyPacket1 = DatagramPacket(replyBuf, replyBuf.size, packet.address, AudioConfig.DISCOVERY_PORT)
+                                socket.send(replyPacket1)
+                                if (packet.port != AudioConfig.DISCOVERY_PORT) {
+                                    val replyPacket2 = DatagramPacket(replyBuf, replyBuf.size, packet.address, packet.port)
+                                    try { socket.send(replyPacket2) } catch (ignored: Exception) {}
+                                }
+                                Log.d(TAG, "Sent discovery announce reply to ${packet.address}")
                             }
                         }
                     } catch (ignored: Exception) {
                         // SocketTimeoutException expected
                     }
 
-                    // Periodically re-announce every 3 seconds while in standby
+                    // Periodically re-announce every 3 seconds
                     val now = SystemClock.elapsedRealtime()
                     if (now - lastAnnounceTime >= 3000) {
                         sendAnnouncement(socket)
@@ -224,10 +237,19 @@ object DiscoveryManager {
             announceBuf[7] = (nameBytes.size and 0xFF).toByte()
             System.arraycopy(nameBytes, 0, announceBuf, AudioConfig.HEADER_SIZE, nameBytes.size)
 
-            val targets = NetworkUtils.getAllBroadcastAddresses()
-            for (bcastIp in targets) {
+            val targets = mutableSetOf<String>()
+            targets.addAll(NetworkUtils.getAllBroadcastAddresses())
+            // Also send direct unicast to common gateway (.1) for every local IP (e.g. hotspot host 10.164.116.1)
+            for (localIp in NetworkUtils.getAllLocalIpAddresses()) {
+                val parts = localIp.split(".")
+                if (parts.size == 4 && parts[3] != "1") {
+                    targets.add("${parts[0]}.${parts[1]}.${parts[2]}.1")
+                }
+            }
+
+            for (targetIp in targets) {
                 try {
-                    val bcastPacket = DatagramPacket(announceBuf, announceBuf.size, InetAddress.getByName(bcastIp), AudioConfig.DEFAULT_PORT)
+                    val bcastPacket = DatagramPacket(announceBuf, announceBuf.size, InetAddress.getByName(targetIp), AudioConfig.DISCOVERY_PORT)
                     socket.send(bcastPacket)
                 } catch (ignored: Exception) {}
             }
@@ -252,13 +274,13 @@ object DiscoveryManager {
         buffer[6] = 0
         buffer[7] = 0
 
-        // 1. Send through default socket
+        // 1. Send through main discovery socket
         for (targetIp in targets) {
             try {
                 val address = InetAddress.getByName(targetIp)
-                val packet = DatagramPacket(buffer, buffer.size, address, AudioConfig.DEFAULT_PORT)
+                val packet = DatagramPacket(buffer, buffer.size, address, AudioConfig.DISCOVERY_PORT)
                 socket.send(packet)
-                Log.d(TAG, "Sent discovery probe to $targetIp:${AudioConfig.DEFAULT_PORT}")
+                Log.d(TAG, "Sent discovery probe to $targetIp:${AudioConfig.DISCOVERY_PORT}")
             } catch (e: Exception) {
                 Log.w(TAG, "Failed sending probe to $targetIp: ${e.message}")
             }
@@ -277,7 +299,7 @@ object DiscoveryManager {
                     for (targetIp in targets) {
                         try {
                             val address = InetAddress.getByName(targetIp)
-                            val packet = DatagramPacket(buffer, buffer.size, address, AudioConfig.DEFAULT_PORT)
+                            val packet = DatagramPacket(buffer, buffer.size, address, AudioConfig.DISCOVERY_PORT)
                             ifSocket.send(packet)
                         } catch (ignored: Exception) {}
                     }

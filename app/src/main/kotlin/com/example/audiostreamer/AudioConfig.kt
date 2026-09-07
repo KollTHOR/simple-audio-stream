@@ -39,6 +39,7 @@ object AudioConfig {
     const val SILENCE_AMPLITUDE_THRESHOLD_24BIT = 4096
 
     const val DEFAULT_PORT = 50005
+    const val DISCOVERY_PORT = 50006
 
     // Streaming Profiles
     const val PROFILE_MUSIC = "MUSIC"

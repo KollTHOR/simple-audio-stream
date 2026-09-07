@@ -313,11 +313,7 @@ class MainActivity : AppCompatActivity() {
             }
             Mode.RECEIVER -> {
                 DiscoveryManager.stopDiscovery()
-                if (!AudioSinkService.isRunning.get()) {
-                    DiscoveryManager.startReceiverResponder(lifecycleScope)
-                } else {
-                    DiscoveryManager.stopReceiverResponder()
-                }
+                DiscoveryManager.startReceiverResponder(lifecycleScope)
             }
         }
     }
@@ -327,16 +323,29 @@ class MainActivity : AppCompatActivity() {
         val currentTarget = etTargetIp.text?.toString()?.trim().orEmpty()
 
         for (dev in devices) {
+            val isSelected = (currentTarget == dev.ip)
             val chip = Chip(this).apply {
                 text = "${dev.name} (${dev.ip})"
                 isCheckable = true
-                isChecked = (currentTarget == dev.ip)
+                isChecked = isSelected
                 setOnClickListener {
                     etTargetIp.setText(dev.ip)
                     Toast.makeText(this@MainActivity, "Selected ${dev.name}", Toast.LENGTH_SHORT).show()
                 }
             }
             chipGroupReceivers.addView(chip)
+        }
+
+        // Auto-select discovered device if currently set to generic broadcast or empty
+        if (devices.isNotEmpty()) {
+            val firstDev = devices.first()
+            if (currentTarget.isEmpty() || currentTarget == "192.168.1.255" || currentTarget == "192.168.43.255" || currentTarget == "255.255.255.255") {
+                etTargetIp.setText(firstDev.ip)
+                for (i in 0 until chipGroupReceivers.childCount) {
+                    val child = chipGroupReceivers.getChildAt(i) as? Chip
+                    child?.isChecked = (child?.text?.contains(firstDev.ip) == true)
+                }
+            }
         }
     }
 
@@ -633,7 +642,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startReceiverService() {
-        DiscoveryManager.stopReceiverResponder()
         val port = etPort.text?.toString()?.toIntOrNull() ?: AudioConfig.DEFAULT_PORT
         val serviceIntent = Intent(this, AudioSinkService::class.java).apply {
             action = AudioSinkService.ACTION_START
