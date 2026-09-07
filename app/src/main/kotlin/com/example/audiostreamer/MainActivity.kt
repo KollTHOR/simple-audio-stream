@@ -8,23 +8,27 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.graphics.Color
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import android.view.View
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.button.MaterialButtonToggleGroup
+import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
 import kotlinx.coroutines.launch
@@ -47,6 +51,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tilPort: TextInputLayout
     private lateinit var etPort: TextInputEditText
     private lateinit var btnAction: MaterialButton
+    private lateinit var fabSettings: FloatingActionButton
 
     // Telemetry views
     private lateinit var tvBadgeStatus: TextView
@@ -111,8 +116,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+
+        // Apply system window insets so content is pushed below the status/notification bar
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.root_layout)) { v, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(systemBars.left, systemBars.top, systemBars.right, 0)
+            insets
+        }
 
         layoutIpPill = findViewById(R.id.layout_ip_pill)
         tvHeaderIp = findViewById(R.id.tv_header_ip)
@@ -125,6 +138,7 @@ class MainActivity : AppCompatActivity() {
         tilPort = findViewById(R.id.til_port)
         etPort = findViewById(R.id.et_port)
         btnAction = findViewById(R.id.btn_action)
+        fabSettings = findViewById(R.id.fab_settings)
 
         tvBadgeStatus = findViewById(R.id.tv_badge_status)
         tvEndpointInfo = findViewById(R.id.tv_endpoint_info)
@@ -144,7 +158,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        findViewById<ImageView>(R.id.btn_settings).setOnClickListener {
+        fabSettings.setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
 
@@ -380,8 +394,22 @@ class MainActivity : AppCompatActivity() {
         btnModeTransmitter.isEnabled = !isAnyActive
         btnModeReceiver.isEnabled = !isAnyActive
 
+        // Update Toggle buttons styling for dark mode clarity
+        val colorPrimary = ContextCompat.getColor(this, R.color.primary)
+        val colorGreen = ContextCompat.getColor(this, R.color.status_green)
+        val colorCard = ContextCompat.getColor(this, R.color.card_bg)
+        val colorTextSecondary = ContextCompat.getColor(this, R.color.text_secondary)
+
         when (currentMode) {
             Mode.TRANSMITTER -> {
+                btnModeTransmitter.backgroundTintList = ColorStateList.valueOf(colorPrimary)
+                btnModeTransmitter.setTextColor(Color.WHITE)
+                btnModeTransmitter.iconTint = ColorStateList.valueOf(Color.WHITE)
+
+                btnModeReceiver.backgroundTintList = ColorStateList.valueOf(colorCard)
+                btnModeReceiver.setTextColor(colorTextSecondary)
+                btnModeReceiver.iconTint = ColorStateList.valueOf(colorTextSecondary)
+
                 tvModeGuide.text = "Capture & stream system audio to a receiver device"
                 tilTargetIp.visibility = View.VISIBLE
                 etTargetIp.isEnabled = !isSenderActive
@@ -394,10 +422,18 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     btnAction.text = getString(R.string.start_stream)
                     btnAction.setIconResource(R.drawable.ic_play)
-                    btnAction.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
+                    btnAction.backgroundTintList = ColorStateList.valueOf(colorPrimary)
                 }
             }
             Mode.RECEIVER -> {
+                btnModeReceiver.backgroundTintList = ColorStateList.valueOf(colorGreen)
+                btnModeReceiver.setTextColor(Color.WHITE)
+                btnModeReceiver.iconTint = ColorStateList.valueOf(Color.WHITE)
+
+                btnModeTransmitter.backgroundTintList = ColorStateList.valueOf(colorCard)
+                btnModeTransmitter.setTextColor(colorTextSecondary)
+                btnModeTransmitter.iconTint = ColorStateList.valueOf(colorTextSecondary)
+
                 tvModeGuide.text = "Play raw audio stream received from transmitter"
                 tilTargetIp.visibility = View.GONE
                 etPort.isEnabled = !isSinkActive
@@ -409,7 +445,7 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     btnAction.text = getString(R.string.start_receiver)
                     btnAction.setIconResource(R.drawable.ic_play)
-                    btnAction.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_green))
+                    btnAction.backgroundTintList = ColorStateList.valueOf(colorGreen)
                 }
             }
         }
