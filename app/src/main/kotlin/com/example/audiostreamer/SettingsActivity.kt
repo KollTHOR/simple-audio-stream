@@ -56,6 +56,14 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var btnProfileLowLatency: MaterialButton
     private lateinit var tvProfileDescription: TextView
 
+    enum class UpdateState {
+        CHECK,
+        DOWNLOAD,
+        INSTALL
+    }
+
+    private var updateState = UpdateState.CHECK
+    private var latestReleaseTag: String? = null
     private var latestApkUrl: String? = null
     private var downloadedApkFile: File? = null
     private var isWaitingForInstallPermission = false
@@ -148,20 +156,29 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
 
-        val targetDir = externalCacheDir ?: cacheDir
-        val cachedApk = File(targetDir, "simple-audio-stream-update.apk")
-        if (cachedApk.exists() && cachedApk.length() > 500_000) {
-            downloadedApkFile = cachedApk
-        }
+        btnCheckUpdate.text = "Check for Updates"
+        updateState = UpdateState.CHECK
 
         btnCheckUpdate.setOnClickListener {
-            val cached = downloadedApkFile
-            if (cached != null && cached.exists() && cached.length() > 500_000) {
-                checkPermissionAndInstall(cached)
-            } else if (latestApkUrl != null) {
-                downloadAndPromptInstall(latestApkUrl!!)
-            } else {
-                checkForUpdates()
+            when (updateState) {
+                UpdateState.CHECK -> checkForUpdates()
+                UpdateState.DOWNLOAD -> {
+                    val url = latestApkUrl
+                    val tag = latestReleaseTag
+                    if (url != null && tag != null) {
+                        downloadAndPromptInstall(url, tag)
+                    } else {
+                        checkForUpdates()
+                    }
+                }
+                UpdateState.INSTALL -> {
+                    val file = downloadedApkFile
+                    if (file != null && file.exists() && file.length() > 500_000) {
+                        checkPermissionAndInstall(file)
+                    } else {
+                        checkForUpdates()
+                    }
+                }
             }
         }
     }
@@ -247,6 +264,7 @@ class SettingsActivity : AppCompatActivity() {
                     val responseText = conn.inputStream.bufferedReader().use { it.readText() }
                     val releaseJson = JSONObject(responseText)
                     val tagName = releaseJson.optString("tag_name", "v1.0.0")
+                    latestReleaseTag = tagName
                     val assets = releaseJson.optJSONArray("assets")
 
                     var apkDownloadUrl: String? = null
@@ -270,58 +288,81 @@ class SettingsActivity : AppCompatActivity() {
 
                         if (apkDownloadUrl != null) {
                             latestApkUrl = apkDownloadUrl
-                            val cached = downloadedApkFile
+                            val targetDir = externalCacheDir ?: cacheDir
+                            val versionedApk = File(targetDir, "simple-audio-stream-$tagName.apk")
+
                             if (latestVersionClean != currentVersionClean) {
-                                if (cached != null && cached.exists() && cached.length() > 500_000) {
+                                if (versionedApk.exists() && versionedApk.length() > 500_000) {
+                                    downloadedApkFile = versionedApk
+                                    updateState = UpdateState.INSTALL
                                     tvUpdateStatus.text = "Update downloaded ($tagName).\nTap below to install."
                                     btnCheckUpdate.text = "Install APK ($tagName)"
                                 } else {
+                                    downloadedApkFile = null
+                                    updateState = UpdateState.DOWNLOAD
                                     tvUpdateStatus.text = "New release found: $tagName\nTap below to download and install."
                                     btnCheckUpdate.text = "Download Update ($tagName)"
                                 }
                             } else {
-                                tvUpdateStatus.text = "You are on the latest release ($tagName).\nTap below to re-download APK if needed."
-                                btnCheckUpdate.text = "Download Latest APK"
+                                downloadedApkFile = null
+                                updateState = UpdateState.CHECK
+                                tvUpdateStatus.text = "You are on the latest version ($tagName)."
+                                btnCheckUpdate.text = "Check for Updates"
+
+                                // Clean up old cached update APKs to free storage
+                                try {
+                                    targetDir.listFiles { _, name ->
+                                        name.startsWith("simple-audio-stream") && name.endsWith(".apk")
+                                    }?.forEach { it.delete() }
+                                } catch (ignored: Exception) {}
                             }
                         } else {
+                            updateState = UpdateState.CHECK
                             tvUpdateStatus.text = "Latest release $tagName found, but no APK asset attached."
+                            btnCheckUpdate.text = "Check for Updates"
                         }
                     }
                 } else if (responseCode == 404) {
                     withContext(Dispatchers.Main) {
                         pbDownload.visibility = View.GONE
                         btnCheckUpdate.isEnabled = true
+                        updateState = UpdateState.CHECK
                         tvUpdateStatus.text = "No GitHub releases found yet."
+                        btnCheckUpdate.text = "Check for Updates"
                     }
                 } else {
                     withContext(Dispatchers.Main) {
                         pbDownload.visibility = View.GONE
                         btnCheckUpdate.isEnabled = true
+                        updateState = UpdateState.CHECK
                         tvUpdateStatus.text = "GitHub API returned status $responseCode."
+                        btnCheckUpdate.text = "Check for Updates"
                     }
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     pbDownload.visibility = View.GONE
                     btnCheckUpdate.isEnabled = true
+                    updateState = UpdateState.CHECK
                     tvUpdateStatus.text = "Failed checking updates: ${e.localizedMessage}"
+                    btnCheckUpdate.text = "Check for Updates"
                 }
             }
         }
     }
 
-    private fun downloadAndPromptInstall(apkUrl: String) {
+    private fun downloadAndPromptInstall(apkUrl: String, tagName: String) {
         btnCheckUpdate.isEnabled = false
         btnCheckUpdate.text = "Downloading..."
         pbDownload.visibility = View.VISIBLE
         pbDownload.isIndeterminate = false
         pbDownload.progress = 0
-        tvUpdateStatus.text = "Downloading APK from GitHub..."
+        tvUpdateStatus.text = "Downloading APK from GitHub ($tagName)..."
 
         lifecycleScope.launch(Dispatchers.IO) {
             try {
                 val targetDir = externalCacheDir ?: cacheDir
-                val apkFile = File(targetDir, "simple-audio-stream-update.apk")
+                val apkFile = File(targetDir, "simple-audio-stream-$tagName.apk")
                 if (apkFile.exists()) apkFile.delete()
 
                 var currentUrl = apkUrl
@@ -375,7 +416,8 @@ class SettingsActivity : AppCompatActivity() {
                 withContext(Dispatchers.Main) {
                     pbDownload.visibility = View.GONE
                     btnCheckUpdate.isEnabled = true
-                    btnCheckUpdate.text = "Install APK"
+                    btnCheckUpdate.text = "Install APK ($tagName)"
+                    updateState = UpdateState.INSTALL
                     tvUpdateStatus.text = "Download complete! Opening package installer..."
 
                     checkPermissionAndInstall(apkFile)
@@ -385,6 +427,7 @@ class SettingsActivity : AppCompatActivity() {
                     pbDownload.visibility = View.GONE
                     btnCheckUpdate.isEnabled = true
                     btnCheckUpdate.text = "Retry Download"
+                    updateState = UpdateState.DOWNLOAD
                     tvUpdateStatus.text = "Download failed: ${e.localizedMessage}"
                 }
             }
