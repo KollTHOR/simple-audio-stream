@@ -12,6 +12,7 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import android.view.View
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -141,6 +142,10 @@ class MainActivity : AppCompatActivity() {
                 clipboard.setPrimaryClip(ClipData.newPlainText("IP Address", ip))
                 Toast.makeText(this, "IP copied: $ip", Toast.LENGTH_SHORT).show()
             }
+        }
+
+        findViewById<ImageView>(R.id.btn_settings).setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
         }
 
         toggleModeGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
