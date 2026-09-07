@@ -403,9 +403,10 @@ class JitterBuffer(
                 // Rate-limited to prevent bass modulation comb filtering while holding tight sync
                 packetsSinceDriftAdjust++
                 val driftDelta = smoothBufferFill - targetWatermarkSlots
-                val isLowLat = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY)
-                val driftThreshold = if (isLowLat) 8f else 16f
-                val minInterval = if (isLowLat) 40 else 80 // At most once every 200ms (5 adjustments/sec max)
+                val isLowLat = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY || currentProfile == AudioConfig.PROFILE_VIDEO)
+                val isBalanced = (currentProfile == AudioConfig.PROFILE_BALANCED)
+                val driftThreshold = if (isLowLat) 4f else if (isBalanced) 10f else 16f
+                val minInterval = if (isLowLat) 20 else if (isBalanced) 40 else 80 // At most once every 200ms
                 if (packetsSinceDriftAdjust >= minInterval && len >= 12) {
                     if (driftDelta > driftThreshold) {
                         applyZeroCrossingFrameDrop(output, len)

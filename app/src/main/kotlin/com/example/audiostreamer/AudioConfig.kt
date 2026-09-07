@@ -76,7 +76,9 @@ object AudioConfig {
 
     // Streaming Profiles
     const val PROFILE_MUSIC = "MUSIC"
-    const val PROFILE_LOW_LATENCY = "LOW_LATENCY"
+    const val PROFILE_BALANCED = "BALANCED"
+    const val PROFILE_VIDEO = "VIDEO"
+    const val PROFILE_LOW_LATENCY = "LOW_LATENCY" // Alias for backward compatibility
     const val PREF_KEY_PROFILE = "streaming_profile"
 
     // Music Mode: Deep cushion for lossless, uninterrupted studio playback (24-bit 2,304 kbps)
@@ -86,14 +88,21 @@ object AudioConfig {
     const val MUSIC_WAIT_TIMEOUT_MS = 60L // 60ms wait absorbs Wi-Fi jitter completely
     const val MUSIC_TARGET_WATERMARK_SLOTS = 100 // 500ms target watermark for clock drift lock
 
-    // Low Latency Mode: Optimized for video/gaming sync without stutter (~40-60ms)
+    // Balanced Mode: Responsive lossless studio PCM (24-bit 2,304 kbps) with 150ms cushion
+    const val BALANCED_JITTER_BUFFER_SLOTS = 120 // ~600ms headroom
+    const val BALANCED_PRE_ROLL_PACKETS = 30 // 150ms pre-roll cushion
+    const val BALANCED_MAX_UNDERRUN_FRAMES = 30 // 150ms concealment before muting
+    const val BALANCED_WAIT_TIMEOUT_MS = 35L // 35ms wait
+    const val BALANCED_TARGET_WATERMARK_SLOTS = 30 // 150ms target watermark
+
+    // Video Mode: Optimized for video/gaming lip-sync via AAC (~40-60ms, 192 kbps)
     const val LOW_LATENCY_JITTER_BUFFER_SLOTS = 48 // ~240ms max headroom
     const val LOW_LATENCY_PRE_ROLL_PACKETS = 8 // 40ms pre-roll cushion
     const val LOW_LATENCY_MAX_UNDERRUN_FRAMES = 16 // ~80ms concealment before rebuffering
-    const val LOW_LATENCY_WAIT_TIMEOUT_MS = 25L // 25ms wait safely absorbs 20ms Wi-Fi aggregation bursts
+    const val LOW_LATENCY_WAIT_TIMEOUT_MS = 25L // 25ms wait
     const val LOW_LATENCY_TARGET_WATERMARK_SLOTS = 12 // 60ms target watermark
 
-    // Low Latency AAC Mode: 1024-sample frames (~21.3ms per packet)
+    // Video AAC Mode: 1024-sample frames (~21.3ms per packet)
     const val LOW_LATENCY_AAC_JITTER_BUFFER_SLOTS = 32 // ~680ms headroom
     const val LOW_LATENCY_AAC_PRE_ROLL_PACKETS = 2 // ~42ms cushion
     const val LOW_LATENCY_AAC_MAX_UNDERRUN_FRAMES = 8 // ~170ms concealment
@@ -106,20 +115,35 @@ object AudioConfig {
     const val MAX_UNDERRUN_CONCEAL_FRAMES = MUSIC_MAX_UNDERRUN_FRAMES
     const val RECEIVER_WAIT_TIMEOUT_MS = MUSIC_WAIT_TIMEOUT_MS
 
-    fun getJitterBufferSlots(profile: String): Int =
-        if (profile == PROFILE_LOW_LATENCY) LOW_LATENCY_JITTER_BUFFER_SLOTS else MUSIC_JITTER_BUFFER_SLOTS
+    fun getJitterBufferSlots(profile: String): Int = when (profile) {
+        PROFILE_VIDEO, PROFILE_LOW_LATENCY -> LOW_LATENCY_AAC_JITTER_BUFFER_SLOTS
+        PROFILE_BALANCED -> BALANCED_JITTER_BUFFER_SLOTS
+        else -> MUSIC_JITTER_BUFFER_SLOTS
+    }
 
-    fun getPreRollPackets(profile: String): Int =
-        if (profile == PROFILE_LOW_LATENCY) LOW_LATENCY_PRE_ROLL_PACKETS else MUSIC_PRE_ROLL_PACKETS
+    fun getPreRollPackets(profile: String): Int = when (profile) {
+        PROFILE_VIDEO, PROFILE_LOW_LATENCY -> LOW_LATENCY_AAC_PRE_ROLL_PACKETS
+        PROFILE_BALANCED -> BALANCED_PRE_ROLL_PACKETS
+        else -> MUSIC_PRE_ROLL_PACKETS
+    }
 
-    fun getMaxUnderrunFrames(profile: String): Int =
-        if (profile == PROFILE_LOW_LATENCY) LOW_LATENCY_MAX_UNDERRUN_FRAMES else MUSIC_MAX_UNDERRUN_FRAMES
+    fun getMaxUnderrunFrames(profile: String): Int = when (profile) {
+        PROFILE_VIDEO, PROFILE_LOW_LATENCY -> LOW_LATENCY_AAC_MAX_UNDERRUN_FRAMES
+        PROFILE_BALANCED -> BALANCED_MAX_UNDERRUN_FRAMES
+        else -> MUSIC_MAX_UNDERRUN_FRAMES
+    }
 
-    fun getReceiverWaitTimeoutMs(profile: String): Long =
-        if (profile == PROFILE_LOW_LATENCY) LOW_LATENCY_WAIT_TIMEOUT_MS else MUSIC_WAIT_TIMEOUT_MS
+    fun getReceiverWaitTimeoutMs(profile: String): Long = when (profile) {
+        PROFILE_VIDEO, PROFILE_LOW_LATENCY -> LOW_LATENCY_AAC_WAIT_TIMEOUT_MS
+        PROFILE_BALANCED -> BALANCED_WAIT_TIMEOUT_MS
+        else -> MUSIC_WAIT_TIMEOUT_MS
+    }
 
-    fun getTargetWatermarkSlots(profile: String): Int =
-        if (profile == PROFILE_LOW_LATENCY) LOW_LATENCY_TARGET_WATERMARK_SLOTS else MUSIC_TARGET_WATERMARK_SLOTS
+    fun getTargetWatermarkSlots(profile: String): Int = when (profile) {
+        PROFILE_VIDEO, PROFILE_LOW_LATENCY -> LOW_LATENCY_AAC_TARGET_WATERMARK_SLOTS
+        PROFILE_BALANCED -> BALANCED_TARGET_WATERMARK_SLOTS
+        else -> MUSIC_TARGET_WATERMARK_SLOTS
+    }
 
     // OS Socket Buffers
     const val SOCKET_SEND_BUFFER_BYTES = 524288 // 512 KB

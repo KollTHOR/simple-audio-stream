@@ -435,10 +435,14 @@ class MainActivity : AppCompatActivity() {
 
         val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
         val savedProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
-        val activeProfileName = if (isSinkRunning) {
+        val activeProfileName = if (isSinkRunning || isSenderRunning) {
             t.streamProfileName
         } else {
-            if (savedProfile == AudioConfig.PROFILE_LOW_LATENCY) "Low Latency (30ms)" else "Music Mode (500ms)"
+            when (savedProfile) {
+                AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> "Video (40ms AAC)"
+                AudioConfig.PROFILE_BALANCED -> "Balanced (150ms PCM)"
+                else -> "Music Mode (500ms PCM)"
+            }
         }
         tvPipelineProfile.text = activeProfileName
         tvPipelineFormat.text = "${t.sampleRate / 1000.0} kHz • ${t.bitDepth}-bit Stereo PCM • ${t.bitrateKbps} kbps"

@@ -55,18 +55,15 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var pbDownload: ProgressBar
     private lateinit var btnCheckUpdate: MaterialButton
     private lateinit var toggleProfileGroup: MaterialButtonToggleGroup
+    private lateinit var btnProfileVideo: MaterialButton
+    private lateinit var btnProfileBalanced: MaterialButton
     private lateinit var btnProfileMusic: MaterialButton
-    private lateinit var btnProfileLowLatency: MaterialButton
     private lateinit var tvProfileDescription: TextView
     private lateinit var toggleRateGroup: MaterialButtonToggleGroup
     private lateinit var btnRateAuto: MaterialButton
     private lateinit var btnRate44k: MaterialButton
     private lateinit var btnRate48k: MaterialButton
     private lateinit var tvRateDescription: TextView
-    private lateinit var toggleCodecGroup: MaterialButtonToggleGroup
-    private lateinit var btnCodecPcm: MaterialButton
-    private lateinit var btnCodecAac: MaterialButton
-    private lateinit var tvCodecDescription: TextView
 
     enum class UpdateState {
         CHECK,
@@ -115,13 +112,10 @@ class SettingsActivity : AppCompatActivity() {
         pbDownload = findViewById(R.id.pb_download)
         btnCheckUpdate = findViewById(R.id.btn_check_update)
         toggleProfileGroup = findViewById(R.id.toggle_profile_group)
+        btnProfileVideo = findViewById(R.id.btn_profile_video)
+        btnProfileBalanced = findViewById(R.id.btn_profile_balanced)
         btnProfileMusic = findViewById(R.id.btn_profile_music)
-        btnProfileLowLatency = findViewById(R.id.btn_profile_low_latency)
         tvProfileDescription = findViewById(R.id.tv_profile_description)
-        toggleCodecGroup = findViewById(R.id.toggle_codec_group)
-        btnCodecPcm = findViewById(R.id.btn_codec_pcm)
-        btnCodecAac = findViewById(R.id.btn_codec_aac)
-        tvCodecDescription = findViewById(R.id.tv_codec_description)
         toggleRateGroup = findViewById(R.id.toggle_rate_group)
         btnRateAuto = findViewById(R.id.btn_rate_auto)
         btnRate44k = findViewById(R.id.btn_rate_44k)
@@ -130,39 +124,22 @@ class SettingsActivity : AppCompatActivity() {
 
         val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
         val currentProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
-        if (currentProfile == AudioConfig.PROFILE_LOW_LATENCY) {
-            toggleProfileGroup.check(R.id.btn_profile_low_latency)
-        } else {
-            toggleProfileGroup.check(R.id.btn_profile_music)
+        when (currentProfile) {
+            AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> toggleProfileGroup.check(R.id.btn_profile_video)
+            AudioConfig.PROFILE_BALANCED -> toggleProfileGroup.check(R.id.btn_profile_balanced)
+            else -> toggleProfileGroup.check(R.id.btn_profile_music)
         }
         updateProfileUi(currentProfile)
 
         toggleProfileGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
             if (isChecked) {
-                val selected = if (checkedId == R.id.btn_profile_low_latency) {
-                    AudioConfig.PROFILE_LOW_LATENCY
-                } else {
-                    AudioConfig.PROFILE_MUSIC
+                val selected = when (checkedId) {
+                    R.id.btn_profile_video -> AudioConfig.PROFILE_VIDEO
+                    R.id.btn_profile_balanced -> AudioConfig.PROFILE_BALANCED
+                    else -> AudioConfig.PROFILE_MUSIC
                 }
                 prefs.edit().putString(AudioConfig.PREF_KEY_PROFILE, selected).apply()
                 updateProfileUi(selected)
-                notifySettingsChanged()
-            }
-        }
-
-        val currentCodec = prefs.getString(AudioConfig.PREF_KEY_LOW_LATENCY_CODEC, AudioConfig.CODEC_PCM) ?: AudioConfig.CODEC_PCM
-        if (currentCodec == AudioConfig.CODEC_AAC) {
-            toggleCodecGroup.check(R.id.btn_codec_aac)
-        } else {
-            toggleCodecGroup.check(R.id.btn_codec_pcm)
-        }
-        updateCodecUi(currentCodec)
-
-        toggleCodecGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
-            if (isChecked) {
-                val selected = if (checkedId == R.id.btn_codec_aac) AudioConfig.CODEC_AAC else AudioConfig.CODEC_PCM
-                prefs.edit().putString(AudioConfig.PREF_KEY_LOW_LATENCY_CODEC, selected).apply()
-                updateCodecUi(selected)
                 notifySettingsChanged()
             }
         }
@@ -266,18 +243,23 @@ class SettingsActivity : AppCompatActivity() {
         val colorCard = ContextCompat.getColor(this, R.color.card_bg)
         val colorTextSecondary = ContextCompat.getColor(this, R.color.text_secondary)
 
-        if (profile == AudioConfig.PROFILE_LOW_LATENCY) {
-            btnProfileLowLatency.backgroundTintList = ColorStateList.valueOf(colorPrimary)
-            btnProfileLowLatency.setTextColor(Color.WHITE)
-            btnProfileMusic.backgroundTintList = ColorStateList.valueOf(colorCard)
-            btnProfileMusic.setTextColor(colorTextSecondary)
-            tvProfileDescription.text = "Low Latency Mode: 40ms pre-roll cushion, 50ms target watermark, and Android Fast Track. Optimized for video lip-sync and instant reaction audio. Controlled by server."
-        } else {
-            btnProfileMusic.backgroundTintList = ColorStateList.valueOf(colorPrimary)
-            btnProfileMusic.setTextColor(Color.WHITE)
-            btnProfileLowLatency.backgroundTintList = ColorStateList.valueOf(colorCard)
-            btnProfileLowLatency.setTextColor(colorTextSecondary)
-            tvProfileDescription.text = "Music Mode: Up to Studio Master 24-bit / 48 kHz PCM (2.3 Mbps) with 500ms pre-roll cushion and a 2.56s jitter buffer. Crystal-clear, stutter-free playback. Controlled by server."
+        val isVideo = (profile == AudioConfig.PROFILE_VIDEO || profile == AudioConfig.PROFILE_LOW_LATENCY)
+        val isBalanced = (profile == AudioConfig.PROFILE_BALANCED)
+        val isMusic = (!isVideo && !isBalanced)
+
+        btnProfileVideo.backgroundTintList = ColorStateList.valueOf(if (isVideo) colorPrimary else colorCard)
+        btnProfileVideo.setTextColor(if (isVideo) Color.WHITE else colorTextSecondary)
+
+        btnProfileBalanced.backgroundTintList = ColorStateList.valueOf(if (isBalanced) colorPrimary else colorCard)
+        btnProfileBalanced.setTextColor(if (isBalanced) Color.WHITE else colorTextSecondary)
+
+        btnProfileMusic.backgroundTintList = ColorStateList.valueOf(if (isMusic) colorPrimary else colorCard)
+        btnProfileMusic.setTextColor(if (isMusic) Color.WHITE else colorTextSecondary)
+
+        tvProfileDescription.text = when {
+            isVideo -> "Video Mode (40ms): 192 kbps AAC compressed audio (~47 pkts/s) with ultra-low 40ms buffer. Eliminates Wi-Fi packet aggregation jitter and guarantees instant lip-sync for video, YouTube, and gaming."
+            isBalanced -> "Balanced Mode (150ms): Lossless 24-bit Studio PCM with responsive 150ms buffer. Excellent responsiveness with solid Wi-Fi jitter resilience."
+            else -> "Music Mode (500ms): Lossless 24-bit Studio Master PCM with deep 500ms buffer and 2.56s headroom. Maximum jitter protection for uninterrupted hi-fi listening."
         }
     }
 
@@ -299,26 +281,6 @@ class SettingsActivity : AppCompatActivity() {
             AudioConfig.SAMPLE_RATE_44K -> "44.1 kHz: Native CD-quality streaming (880 bytes / chunk). Receiver adapts automatically without resampling."
             AudioConfig.SAMPLE_RATE_48K -> "48.0 kHz: Native studio & video rate (960 bytes / chunk). Receiver adapts automatically without resampling."
             else -> "Auto: Automatically follows device hardware output sample rate. Client adapts without resampling."
-        }
-    }
-
-    private fun updateCodecUi(codec: String) {
-        val colorPrimary = ContextCompat.getColor(this, R.color.primary)
-        val colorCard = ContextCompat.getColor(this, R.color.card_bg)
-        val colorTextSecondary = ContextCompat.getColor(this, R.color.text_secondary)
-
-        if (codec == AudioConfig.CODEC_AAC) {
-            btnCodecAac.backgroundTintList = ColorStateList.valueOf(colorPrimary)
-            btnCodecAac.setTextColor(Color.WHITE)
-            btnCodecPcm.backgroundTintList = ColorStateList.valueOf(colorCard)
-            btnCodecPcm.setTextColor(colorTextSecondary)
-            tvCodecDescription.text = "AAC Mode: 192 kbps compressed audio (~47 pkts/s). Slashes bandwidth by 88%, immune to Wi-Fi packet aggregation jitter."
-        } else {
-            btnCodecPcm.backgroundTintList = ColorStateList.valueOf(colorPrimary)
-            btnCodecPcm.setTextColor(Color.WHITE)
-            btnCodecAac.backgroundTintList = ColorStateList.valueOf(colorCard)
-            btnCodecAac.setTextColor(colorTextSecondary)
-            tvCodecDescription.text = "PCM Mode: 16-bit uncompressed audio (1,536 kbps, 200 pkts/s). Lossless studio quality, best on strong Wi-Fi."
         }
     }
 
