@@ -1,0 +1,287 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true"
+    android:background="#F5F5F7">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp"
+        android:gravity="center_horizontal">
+
+        <TextView
+            android:id="@+id/tv_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textColor="#1A1A1A"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Device IP Info Card -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="1dp"
+            app:strokeColor="#E0E0E0"
+            app:strokeWidth="1dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:id="@+id/tv_my_ip_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="THIS DEVICE IP"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:textColor="#757575"
+                    android:letterSpacing="0.05" />
+
+                <TextView
+                    android:id="@+id/tv_my_ip"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Detecting..."
+                    android:textSize="18sp"
+                    android:textStyle="bold"
+                    android:textColor="#1976D2"
+                    android:layout_marginTop="2dp" />
+
+                <TextView
+                    android:id="@+id/tv_ip_hint"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Tip: Enter this IP on the Transmitter phone."
+                    android:textSize="12sp"
+                    android:textColor="#616161"
+                    android:layout_marginTop="4dp" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Mode Selector RadioGroup -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="1dp"
+            app:strokeColor="#E0E0E0"
+            app:strokeWidth="1dp">
+
+            <RadioGroup
+                android:id="@+id/rg_mode"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:padding="8dp">
+
+                <RadioButton
+                    android:id="@+id/rb_transmitter"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:checked="true"
+                    android:text="@string/mode_transmitter"
+                    android:textSize="14sp" />
+
+                <RadioButton
+                    android:id="@+id/rb_receiver"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/mode_receiver"
+                    android:textSize="14sp" />
+            </RadioGroup>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Inputs Card -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="1dp"
+            app:strokeColor="#E0E0E0"
+            app:strokeWidth="1dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <!-- Target IP (Transmitter only) -->
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/til_target_ip"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="12dp"
+                    android:hint="@string/target_ip_hint"
+                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/et_target_ip"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:inputType="textUri"
+                        android:text="192.168.1.255" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <!-- Port (Both modes) -->
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/til_port"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="@string/port_hint"
+                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/et_port"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:inputType="number"
+                        android:text="50005" />
+                </com.google.android.material.textfield.TextInputLayout>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Action Button -->
+        <Button
+            android:id="@+id/btn_action"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="@string/start_stream"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Live Telemetry / Diagnostics Card -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/card_telemetry"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="1dp"
+            app:strokeColor="#E0E0E0"
+            app:strokeWidth="1dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginBottom="8dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="CONNECTION &amp; AUDIO STATUS"
+                        android:textSize="11sp"
+                        android:textStyle="bold"
+                        android:textColor="#757575"
+                        android:letterSpacing="0.05" />
+
+                    <TextView
+                        android:id="@+id/tv_badge_status"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="IDLE"
+                        android:textSize="11sp"
+                        android:textStyle="bold"
+                        android:paddingStart="8dp"
+                        android:paddingEnd="8dp"
+                        android:paddingTop="2dp"
+                        android:paddingBottom="2dp"
+                        android:textColor="#FFFFFF"
+                        android:background="#9E9E9E" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/tv_endpoint_info"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Not connected"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    android:textColor="#212121"
+                    android:layout_marginBottom="4dp" />
+
+                <TextView
+                    android:id="@+id/tv_packets_stat"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Packets: 0 (0 pkts/s | 0 KB/s)"
+                    android:textSize="13sp"
+                    android:textColor="#424242"
+                    android:layout_marginBottom="12dp" />
+
+                <!-- Audio VU Meter -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Audio Signal Level"
+                    android:textSize="12sp"
+                    android:textColor="#616161"
+                    android:layout_marginBottom="4dp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <ProgressBar
+                        android:id="@+id/pb_audio_level"
+                        style="?android:attr/progressBarStyleHorizontal"
+                        android:layout_width="0dp"
+                        android:layout_height="12dp"
+                        android:layout_weight="1"
+                        android:max="100"
+                        android:progress="0"
+                        android:progressTint="#4CAF50" />
+
+                    <TextView
+                        android:id="@+id/tv_audio_level_val"
+                        android:layout_width="60dp"
+                        android:layout_height="wrap_content"
+                        android:text="0%"
+                        android:textSize="12sp"
+                        android:textStyle="bold"
+                        android:gravity="end"
+                        android:textColor="#424242" />
+                </LinearLayout>
+
+                <!-- Diagnostic Hint -->
+                <TextView
+                    android:id="@+id/tv_diagnostic_tip"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Select mode and click Start."
+                    android:textSize="12sp"
+                    android:textColor="#757575"
+                    android:layout_marginTop="10dp" />
+
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+    </LinearLayout>
+</ScrollView>

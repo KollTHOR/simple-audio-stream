@@ -1,0 +1,30 @@
+# Gradle
+.gradle/
+build/
+.kotlin/
+
+# Local configuration
+local.properties
+
+# Log files
+*.log
+
+# Android Studio / IntelliJ IDEA
+.idea/
+*.iml
+.navigation/
+captures/
+
+# Compiled binary & packages
+*.apk
+*.aab
+*.dex
+*.class
+
+# Keystore
+*.jks
+*.keystore
+
+# OS files
+.DS_Store
+Thumbs.db

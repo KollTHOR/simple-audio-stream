@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">Audio Streamer</string>
+    <string name="mode_transmitter">Transmitter (Send)</string>
+    <string name="mode_receiver">Receiver (Listen)</string>
+    <string name="target_ip_hint">Target IP Address</string>
+    <string name="port_hint">Port</string>
+    <string name="start_stream">Start Streaming</string>
+    <string name="stop_stream">Stop Streaming</string>
+    <string name="start_receiver">Start Listening</string>
+    <string name="stop_receiver">Stop Listening</string>
+    <string name="status_idle">Status: Idle</string>
+    <string name="status_streaming">Status: Streaming System Audio</string>
+    <string name="status_listening">Status: Listening for Audio</string>
+</resources>
