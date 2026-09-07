@@ -563,7 +563,9 @@ class AudioCaptureService : Service() {
                     flag.toByte()
                 }
 
-                val initialProfileDisplayName = if (initialInLowLatency) {
+                val initialProfileDisplayName = if (isAacActive) {
+                    "Low Latency AAC (Server)"
+                } else if (initialInLowLatency) {
                     "Low Latency (Server)"
                 } else if (is24BitActive) {
                     "Studio 24-bit Music (Server)"
@@ -606,8 +608,10 @@ class AudioCaptureService : Service() {
                 var smoothPps = 0f
                 var smoothBps = 0f
 
-                val initialBitDepth = if (is24BitActive && !initialInLowLatency) 24 else 16
-                val initialBitrate = if (captureSampleRate == AudioConfig.SAMPLE_RATE_44100) {
+                val initialBitDepth = if (isAacActive) 16 else if (is24BitActive && !initialInLowLatency) 24 else 16
+                val initialBitrate = if (isAacActive) {
+                    192
+                } else if (captureSampleRate == AudioConfig.SAMPLE_RATE_44100) {
                     if (initialBitDepth == 24) 2117 else 1411
                 } else {
                     if (initialBitDepth == 24) 2304 else 1536
@@ -639,15 +643,16 @@ class AudioCaptureService : Service() {
                     )
                 }
 
+                val pcmReadBuffer = ByteArray(4096)
+
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                     if (isAacActive && aacEnc != null) {
-                        val pcmBytesRead = record.read(sendBuffer, AudioConfig.HEADER_SIZE, 4096, AudioRecord.READ_BLOCKING)
+                        val pcmBytesRead = record.read(pcmReadBuffer, 0, pcmReadBuffer.size, AudioRecord.READ_BLOCKING)
                         if (pcmBytesRead > 0) {
                             var chunkPeak = 0
-                            var pi = AudioConfig.HEADER_SIZE
-                            val pend = AudioConfig.HEADER_SIZE + pcmBytesRead
-                            while (pi < pend - 1) {
-                                val sample = (sendBuffer[pi].toInt() and 0xFF) or (sendBuffer[pi + 1].toInt() shl 8)
+                            var pi = 0
+                            while (pi < pcmBytesRead - 1) {
+                                val sample = (pcmReadBuffer[pi].toInt() and 0xFF) or (pcmReadBuffer[pi + 1].toInt() shl 8)
                                 val abs = kotlin.math.abs(sample.toShort().toInt())
                                 if (abs > chunkPeak) chunkPeak = abs
                                 pi += 2
@@ -667,10 +672,12 @@ class AudioCaptureService : Service() {
                             val shouldSendHeartbeat = isSilenceSuppressed && (now - lastHeartbeatTime >= AudioConfig.SILENCE_HEARTBEAT_INTERVAL_MS)
 
                             if (!isSilenceSuppressed) {
-                                val aacFrames = aacEnc.encode(sendBuffer, AudioConfig.HEADER_SIZE, pcmBytesRead)
+                                val aacFrames = aacEnc.encode(pcmReadBuffer, 0, pcmBytesRead)
                                 for (frame in aacFrames) {
                                     val frameLen = frame.size
                                     if (frameLen > 0 && frameLen <= AudioConfig.MAX_PACKET_SIZE) {
+                                        sendBuffer[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
+                                        sendBuffer[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
                                         sendBuffer[2] = (sequence shr 8).toByte()
                                         sendBuffer[3] = (sequence and 0xFF).toByte()
                                         val currentSeq = sequence
@@ -695,6 +702,8 @@ class AudioCaptureService : Service() {
                                     }
                                 }
                             } else if (shouldSendHeartbeat) {
+                                sendBuffer[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
+                                sendBuffer[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
                                 sendBuffer[2] = (sequence shr 8).toByte()
                                 sendBuffer[3] = (sequence and 0xFF).toByte()
                                 sequence = (sequence + 1) and 0xFFFF
@@ -1170,7 +1179,7 @@ class AudioCaptureService : Service() {
             val results = mutableListOf<ByteArray>()
 
             try {
-                val inIndex = encoder.dequeueInputBuffer(5000L)
+                val inIndex = encoder.dequeueInputBuffer(2000L)
                 if (inIndex >= 0) {
                     val inBuf = encoder.getInputBuffer(inIndex)
                     inBuf?.clear()
@@ -1178,22 +1187,25 @@ class AudioCaptureService : Service() {
                     encoder.queueInputBuffer(inIndex, 0, length, 0L, 0)
                 }
 
-                while (true) {
-                    val outIndex = encoder.dequeueOutputBuffer(bufferInfo, 0L)
-                    if (outIndex < 0) break
-
-                    val outBuf = encoder.getOutputBuffer(outIndex)
-                    val outSize = bufferInfo.size
-                    val isConfig = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
-                    if (!isConfig && outBuf != null && outSize > 0) {
-                        val frameLen = 7 + outSize
-                        val frame = ByteArray(frameLen)
-                        addAdtsHeader(frame, frameLen, sampleRate, channelCount)
-                        outBuf.position(bufferInfo.offset)
-                        outBuf.get(frame, 7, outSize)
-                        results.add(frame)
+                var outIndex = encoder.dequeueOutputBuffer(bufferInfo, 1000L)
+                while (outIndex >= 0 || outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        Log.i(TAG, "AAC encoder output format changed: ${encoder.outputFormat}")
+                    } else {
+                        val outBuf = encoder.getOutputBuffer(outIndex)
+                        val outSize = bufferInfo.size
+                        val isConfig = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+                        if (!isConfig && outBuf != null && outSize > 0) {
+                            val frameLen = 7 + outSize
+                            val frame = ByteArray(frameLen)
+                            addAdtsHeader(frame, frameLen, sampleRate, channelCount)
+                            outBuf.position(bufferInfo.offset)
+                            outBuf.get(frame, 7, outSize)
+                            results.add(frame)
+                        }
+                        encoder.releaseOutputBuffer(outIndex, false)
                     }
-                    encoder.releaseOutputBuffer(outIndex, false)
+                    outIndex = encoder.dequeueOutputBuffer(bufferInfo, 0L)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "AAC encode error: ${e.message}")
@@ -1210,7 +1222,7 @@ class AudioCaptureService : Service() {
                 else -> 3
             }
             packet[0] = 0xFF.toByte()
-            packet[1] = 0xF9.toByte()
+            packet[1] = 0xF1.toByte() // MPEG-4, Layer 0, No CRC (0xF1)
             packet[2] = (((profile - 1) shl 6) + (freqIdx shl 2) + (channels shr 2)).toByte()
             packet[3] = (((channels and 3) shl 6) + (packetLen shr 11)).toByte()
             packet[4] = ((packetLen and 0x7FF) shr 3).toByte()

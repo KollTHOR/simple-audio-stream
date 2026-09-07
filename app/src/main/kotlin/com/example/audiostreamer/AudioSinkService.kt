@@ -63,6 +63,8 @@ class AudioSinkService : Service() {
     @Volatile private var currentIsAac: Boolean = false
     @Volatile private var aacDecoder: AacDecoder? = null
     @Volatile private var aacDecoderSampleRate: Int = AudioConfig.SAMPLE_RATE_48000
+    @Volatile private var lastConfiguredIsAac: Boolean? = null
+    @Volatile private var sinkAudioPeakSample = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -300,10 +302,11 @@ class AudioSinkService : Service() {
                                     val isServer24Bit = !isServerLowLatency && !isIncomingAac && ((flags.toInt() and AudioConfig.FLAG_24BIT.toInt()) != 0 ||
                                         payloadLen == AudioConfig.PACKET_SIZE_24BIT_48K || payloadLen == AudioConfig.PACKET_SIZE_24BIT_44K)
                                     val serverProfile = if (isServerLowLatency) AudioConfig.PROFILE_LOW_LATENCY else AudioConfig.PROFILE_MUSIC
-                                    if (serverProfile != currentProfile) {
+                                    if (serverProfile != currentProfile || isIncomingAac != lastConfiguredIsAac) {
                                         currentProfile = serverProfile
-                                        jitterBuffer.setProfile(serverProfile)
-                                        Log.i(TAG, "Adapted client buffer to server profile: $serverProfile")
+                                        lastConfiguredIsAac = isIncomingAac
+                                        jitterBuffer.setProfile(serverProfile, isIncomingAac)
+                                        Log.i(TAG, "Adapted client buffer to server profile: $serverProfile, AAC=$isIncomingAac")
                                     }
 
                                     val targetEncoding = if (isServer24Bit && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -373,11 +376,8 @@ class AudioSinkService : Service() {
 
                                     jitterBuffer.write(seq, writeData, writeOffset, effectivePayloadLen)
 
-                                    // Compute audio peak level
-                                    if (isAacPayload) {
-                                        val estSample = (volume * 32767) / 100
-                                        if (estSample > maxSampleInInterval) maxSampleInInterval = estSample
-                                    } else {
+                                    // Compute audio peak level (for PCM payloads)
+                                    if (!isAacPayload) {
                                         var i = writeOffset
                                         val end = writeOffset + effectivePayloadLen
                                         val isEffective24 = (effectivePayloadLen == AudioConfig.PACKET_SIZE_24BIT_48K || effectivePayloadLen == AudioConfig.PACKET_SIZE_24BIT_44K)
@@ -420,10 +420,12 @@ class AudioSinkService : Service() {
                             smoothBps = if (smoothBps == 0f) instantBps else (smoothBps * 0.7f + instantBps * 0.3f)
                             val pps = smoothPps.toInt()
                             val bps = smoothBps.toInt()
+                            val effectivePeakSample = maxOf(maxSampleInInterval, sinkAudioPeakSample)
+                            sinkAudioPeakSample = 0
                             val peakPercent = if (is24) {
-                                ((maxSampleInInterval * 100L) / 8388608L).toInt().coerceIn(0, 100)
+                                ((effectivePeakSample * 100L) / 8388608L).toInt().coerceIn(0, 100)
                             } else {
-                                ((maxSampleInInterval * 100) / 32768).coerceIn(0, 100)
+                                ((effectivePeakSample * 100) / 32768).coerceIn(0, 100)
                             }
                             val fill = jitterBuffer.getFillLevel()
                             val usedSlots = jitterBuffer.getAvailableCount()
@@ -511,9 +513,18 @@ class AudioSinkService : Service() {
                                 if (currentIsAac) {
                                     val isAdts = (bytesToPlay >= 7 && (chunk[0].toInt() and 0xFF) == 0xFF && (chunk[1].toInt() and 0xF0) == 0xF0)
                                     if (isAdts) {
-                                        val decoded = aacDecoder?.decode(chunk, 0, bytesToPlay)
-                                        if (decoded != null && decoded.isNotEmpty()) {
-                                            track.write(decoded, 0, decoded.size, AudioTrack.WRITE_BLOCKING)
+                                        val pcmList = aacDecoder?.decode(chunk, 0, bytesToPlay) ?: emptyList()
+                                        for (pcm in pcmList) {
+                                            if (pcm.isNotEmpty()) {
+                                                track.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
+                                                var p = 0
+                                                while (p < pcm.size - 1) {
+                                                    val sample = (pcm[p].toInt() and 0xFF) or (pcm[p + 1].toInt() shl 8)
+                                                    val abs = kotlin.math.abs(sample.toShort().toInt())
+                                                    if (abs > sinkAudioPeakSample) sinkAudioPeakSample = abs
+                                                    p += 2
+                                                }
+                                            }
                                         }
                                     } else {
                                         val silence = ByteArray(4096)
@@ -709,6 +720,8 @@ class AudioSinkService : Service() {
             aacDecoder?.release()
         } catch (ignored: Exception) {}
         aacDecoder = null
+        lastConfiguredIsAac = null
+        sinkAudioPeakSample = 0
 
         jitterBuffer.reset()
         releaseLocks()
@@ -742,14 +755,21 @@ class AudioSinkService : Service() {
     private class AacDecoder(private val sampleRate: Int, private val channelCount: Int = 2) {
         private var codec: MediaCodec? = null
         private val bufferInfo = MediaCodec.BufferInfo()
-        private var pcmOutputBuffer = ByteArray(8192)
 
         init {
             try {
                 val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channelCount).apply {
                     setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
                     setInteger(MediaFormat.KEY_BIT_RATE, AudioConfig.AAC_BIT_RATE)
+                    setInteger(MediaFormat.KEY_IS_ADTS, 1)
+                    setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
                 }
+                val csd = when (sampleRate) {
+                    44100 -> byteArrayOf(0x12.toByte(), 0x10.toByte())
+                    else -> byteArrayOf(0x11.toByte(), 0x90.toByte())
+                }
+                format.setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(csd))
+
                 val decoder = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
                 decoder.configure(format, null, null, 0)
                 decoder.start()
@@ -760,12 +780,13 @@ class AudioSinkService : Service() {
             }
         }
 
-        fun decode(adtsData: ByteArray, offset: Int, length: Int): ByteArray? {
-            val decoder = codec ?: return null
-            if (length <= 7) return null
+        fun decode(adtsData: ByteArray, offset: Int, length: Int): List<ByteArray> {
+            val decoder = codec ?: return emptyList()
+            if (length <= 7) return emptyList()
+            val results = mutableListOf<ByteArray>()
 
             try {
-                val inIndex = decoder.dequeueInputBuffer(5000L)
+                val inIndex = decoder.dequeueInputBuffer(2000L)
                 if (inIndex >= 0) {
                     val inBuf = decoder.getInputBuffer(inIndex)
                     inBuf?.clear()
@@ -773,25 +794,27 @@ class AudioSinkService : Service() {
                     decoder.queueInputBuffer(inIndex, 0, length, 0L, 0)
                 }
 
-                val outIndex = decoder.dequeueOutputBuffer(bufferInfo, 5000L)
-                if (outIndex >= 0) {
-                    val outBuf = decoder.getOutputBuffer(outIndex)
-                    val outSize = bufferInfo.size
-                    if (outBuf != null && outSize > 0) {
-                        if (pcmOutputBuffer.size < outSize) {
-                            pcmOutputBuffer = ByteArray(outSize)
+                var outIndex = decoder.dequeueOutputBuffer(bufferInfo, 2000L)
+                while (outIndex >= 0 || outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        Log.i(TAG, "AAC decoder output format changed: ${decoder.outputFormat}")
+                    } else {
+                        val outBuf = decoder.getOutputBuffer(outIndex)
+                        val outSize = bufferInfo.size
+                        if (outBuf != null && outSize > 0) {
+                            val pcm = ByteArray(outSize)
+                            outBuf.position(bufferInfo.offset)
+                            outBuf.get(pcm, 0, outSize)
+                            results.add(pcm)
                         }
-                        outBuf.position(bufferInfo.offset)
-                        outBuf.get(pcmOutputBuffer, 0, outSize)
                         decoder.releaseOutputBuffer(outIndex, false)
-                        return pcmOutputBuffer.copyOf(outSize)
                     }
-                    decoder.releaseOutputBuffer(outIndex, false)
+                    outIndex = decoder.dequeueOutputBuffer(bufferInfo, 0L)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "AAC decode error: ${e.message}")
             }
-            return null
+            return results
         }
 
         fun release() {

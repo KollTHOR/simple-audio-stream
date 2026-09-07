@@ -93,6 +93,13 @@ object AudioConfig {
     const val LOW_LATENCY_WAIT_TIMEOUT_MS = 25L // 25ms wait safely absorbs 20ms Wi-Fi aggregation bursts
     const val LOW_LATENCY_TARGET_WATERMARK_SLOTS = 12 // 60ms target watermark
 
+    // Low Latency AAC Mode: 1024-sample frames (~21.3ms per packet)
+    const val LOW_LATENCY_AAC_JITTER_BUFFER_SLOTS = 32 // ~680ms headroom
+    const val LOW_LATENCY_AAC_PRE_ROLL_PACKETS = 2 // ~42ms cushion
+    const val LOW_LATENCY_AAC_MAX_UNDERRUN_FRAMES = 8 // ~170ms concealment
+    const val LOW_LATENCY_AAC_WAIT_TIMEOUT_MS = 50L // 50ms wait safely absorbs Wi-Fi jitter
+    const val LOW_LATENCY_AAC_TARGET_WATERMARK_SLOTS = 3 // ~64ms watermark
+
     // Defaults (Music Mode)
     const val JITTER_BUFFER_SLOTS = MUSIC_JITTER_BUFFER_SLOTS
     const val PRE_ROLL_PACKETS = MUSIC_PRE_ROLL_PACKETS
