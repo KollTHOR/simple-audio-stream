@@ -1,6 +1,7 @@
 package com.example.audiostreamer
 
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -13,6 +14,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -38,6 +40,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var btnBack: ImageView
     private lateinit var tvAppVersion: TextView
     private lateinit var btnGithubRepo: MaterialButton
+    private lateinit var btnAccessibilitySettings: MaterialButton
     private lateinit var tvUpdateStatus: TextView
     private lateinit var pbDownload: ProgressBar
     private lateinit var btnCheckUpdate: MaterialButton
@@ -71,6 +74,7 @@ class SettingsActivity : AppCompatActivity() {
         btnBack = findViewById(R.id.btn_back)
         tvAppVersion = findViewById(R.id.tv_app_version)
         btnGithubRepo = findViewById(R.id.btn_github_repo)
+        btnAccessibilitySettings = findViewById(R.id.btn_accessibility_settings)
         tvUpdateStatus = findViewById(R.id.tv_update_status)
         pbDownload = findViewById(R.id.pb_download)
         btnCheckUpdate = findViewById(R.id.btn_check_update)
@@ -85,12 +89,41 @@ class SettingsActivity : AppCompatActivity() {
             startActivity(intent)
         }
 
+        btnAccessibilitySettings.setOnClickListener {
+            if (VolumeKeyInterceptorService.isRunning) {
+                Toast.makeText(this, "Background volume key interception is active", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "Enable Simple Audio Stream in Accessibility settings to allow volume keys in background", Toast.LENGTH_LONG).show()
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+        }
+
         btnCheckUpdate.setOnClickListener {
             if (latestApkUrl != null) {
                 downloadAndPromptInstall(latestApkUrl!!)
             } else {
                 checkForUpdates()
             }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        updateAccessibilityButton()
+    }
+
+    private fun updateAccessibilityButton() {
+        val isServiceActive = VolumeKeyInterceptorService.isRunning
+        if (isServiceActive) {
+            btnAccessibilitySettings.text = "Background Keys: Active"
+            val colorGreen = ContextCompat.getColor(this, R.color.status_green)
+            btnAccessibilitySettings.setTextColor(colorGreen)
+            btnAccessibilitySettings.strokeColor = ColorStateList.valueOf(colorGreen)
+        } else {
+            btnAccessibilitySettings.text = "Enable in Accessibility Settings"
+            val colorPrimary = ContextCompat.getColor(this, R.color.primary)
+            btnAccessibilitySettings.setTextColor(colorPrimary)
+            btnAccessibilitySettings.strokeColor = ColorStateList.valueOf(colorPrimary)
         }
     }
 

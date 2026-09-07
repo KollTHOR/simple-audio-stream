@@ -13,8 +13,11 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
+import android.media.VolumeProvider
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import android.os.Build
 import android.os.IBinder
 import android.os.Process
@@ -54,6 +57,8 @@ class AudioCaptureService : Service() {
     private var audioRecord: AudioRecord? = null
     private var udpSocket: DatagramSocket? = null
     private var streamThread: Thread? = null
+    private var mediaSession: MediaSession? = null
+    private var volumeProvider: VolumeProvider? = null
     private var currentTargetIp = "192.168.43.255"
     private var currentTargetPort = AudioConfig.DEFAULT_PORT
 
@@ -121,6 +126,7 @@ class AudioCaptureService : Service() {
     private fun updateRemoteVolume(newVolume: Int) {
         val clamped = newVolume.coerceIn(0, 100)
         remoteVolumePercent.set(clamped)
+        volumeProvider?.currentVolume = clamped
         Log.d(TAG, "Remote volume updated: $clamped%")
 
         // Dispatch immediate control packet
@@ -296,6 +302,35 @@ class AudioCaptureService : Service() {
         }
         this.audioRecord = record
 
+        try {
+            val session = MediaSession(this, "AudioStreamTransmitter")
+            val vol = remoteVolumePercent.get()
+            val provider = object : VolumeProvider(VOLUME_CONTROL_RELATIVE, 100, vol) {
+                override fun onAdjustVolume(direction: Int) {
+                    val delta = when {
+                        direction > 0 -> 5
+                        direction < 0 -> -5
+                        else -> 0
+                    }
+                    if (delta != 0) {
+                        val newVol = (remoteVolumePercent.get() + delta).coerceIn(0, 100)
+                        updateRemoteVolume(newVol)
+                    }
+                }
+            }
+            volumeProvider = provider
+            session.setPlaybackToRemote(provider)
+            val state = PlaybackState.Builder()
+                .setActions(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_STOP)
+                .setState(PlaybackState.STATE_PLAYING, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1.0f)
+                .build()
+            session.setPlaybackState(state)
+            session.isActive = true
+            this.mediaSession = session
+        } catch (e: Exception) {
+            Log.e(TAG, "Error initializing MediaSession", e)
+        }
+
         streamThread = Thread({
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
 
@@ -448,6 +483,15 @@ class AudioCaptureService : Service() {
             Log.e(TAG, "Error stopping MediaProjection", e)
         }
         mediaProjection = null
+
+        try {
+            mediaSession?.isActive = false
+            mediaSession?.release()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing MediaSession", e)
+        }
+        mediaSession = null
+        volumeProvider = null
 
         StreamState.update {
             it.copy(

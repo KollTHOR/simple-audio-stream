@@ -64,6 +64,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnVolMute: MaterialButton
     private lateinit var btnVolUp: MaterialButton
     private lateinit var btnSilencePhone: MaterialButton
+    private lateinit var btnEnableAccessibility: MaterialButton
 
     // Telemetry views
     private lateinit var tvBadgeStatus: TextView
@@ -199,6 +200,16 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        btnEnableAccessibility = findViewById(R.id.btn_enable_accessibility)
+        btnEnableAccessibility.setOnClickListener {
+            if (VolumeKeyInterceptorService.isRunning) {
+                Toast.makeText(this, "Background volume key interception is active", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "Enable Simple Audio Stream in Accessibility settings to allow volume keys in background", Toast.LENGTH_LONG).show()
+                startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+        }
+
         tvBadgeStatus = findViewById(R.id.tv_badge_status)
         tvEndpointInfo = findViewById(R.id.tv_endpoint_info)
         tvPacketsStat = findViewById(R.id.tv_packets_stat)
@@ -253,11 +264,13 @@ class MainActivity : AppCompatActivity() {
 
         observeTelemetry()
         updateModeAndButtonUi()
+        updateAccessibilityButtonState()
     }
 
     override fun onResume() {
         super.onResume()
         refreshLocalIp()
+        updateAccessibilityButtonState()
 
         val currentRemoteVol = AudioCaptureService.remoteVolumePercent.get()
         sliderRemoteVol.value = currentRemoteVol.toFloat()
@@ -564,5 +577,20 @@ class MainActivity : AppCompatActivity() {
             }
         }
         return super.onKeyUp(keyCode, event)
+    }
+
+    private fun updateAccessibilityButtonState() {
+        val isServiceActive = VolumeKeyInterceptorService.isRunning
+        if (isServiceActive) {
+            btnEnableAccessibility.text = "Background Vol Keys: Active"
+            val colorGreen = ContextCompat.getColor(this, R.color.status_green)
+            btnEnableAccessibility.setTextColor(colorGreen)
+            btnEnableAccessibility.strokeColor = ColorStateList.valueOf(colorGreen)
+        } else {
+            btnEnableAccessibility.text = "Background Vol Keys: Tap to Enable"
+            val colorOrange = ContextCompat.getColor(this, R.color.status_orange)
+            btnEnableAccessibility.setTextColor(colorOrange)
+            btnEnableAccessibility.strokeColor = ColorStateList.valueOf(colorOrange)
+        }
     }
 }
