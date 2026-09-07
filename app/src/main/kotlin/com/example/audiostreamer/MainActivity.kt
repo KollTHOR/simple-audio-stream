@@ -318,9 +318,9 @@ class MainActivity : AppCompatActivity() {
             tvAudioLevelVal.text = "0%"
 
             tvDiagnosticTip.text = if (currentMode == Mode.RECEIVER) {
-                "💡 On receiver: Tap 'Start Listening'. Then enter ${detectedLocalIp ?: "this IP"} on your transmitter phone."
+                "On receiver: Tap 'Start Listening'. Then enter ${detectedLocalIp ?: "this IP"} on your transmitter phone."
             } else {
-                "💡 On transmitter: Enter the receiver's IP (displayed on receiver screen) and tap 'Start Streaming'."
+                "On transmitter: Enter the receiver's IP (displayed on receiver screen) and tap 'Start Streaming'."
             }
             return
         }
@@ -335,9 +335,9 @@ class MainActivity : AppCompatActivity() {
             tvAudioLevelVal.text = "${t.audioPeakPercent}%"
 
             tvDiagnosticTip.text = if (t.audioPeakPercent > 1) {
-                "🟢 Audio signal detected! Sending live system audio to target."
+                "Audio signal detected. Sending live system audio to target."
             } else {
-                "ℹ️ Capturing system audio, but signal is currently silent. Start playing music or media on this device."
+                "Capturing system audio, but signal is currently silent. Start playing media on this device."
             }
         } else if (isSinkRunning) {
             val hasReceivedPackets = t.packetsTotal > 0
@@ -351,9 +351,9 @@ class MainActivity : AppCompatActivity() {
                 tvAudioLevelVal.text = "${t.audioPeakPercent}%"
 
                 tvDiagnosticTip.text = if (t.audioPeakPercent > 1) {
-                    "🟢 Audio playing through AudioTrack. Adjust device volume if needed."
+                    "Audio playing through AudioTrack. Adjust device volume if needed."
                 } else {
-                    "ℹ️ Packets arriving, but audio data is silent. Ensure transmitter phone is playing media."
+                    "Packets arriving, but audio data is silent. Ensure transmitter phone is playing media."
                 }
             } else {
                 tvBadgeStatus.text = "WAITING"
@@ -363,7 +363,7 @@ class MainActivity : AppCompatActivity() {
                 pbAudioLevel.progress = 0
                 tvAudioLevelVal.text = "0%"
 
-                tvDiagnosticTip.text = "⚠️ Waiting for audio packets!\n" +
+                tvDiagnosticTip.text = "Waiting for audio packets...\n" +
                         "1. Ensure both devices are on the same Wi-Fi.\n" +
                         "2. On your phone, set Target IP to: ${detectedLocalIp ?: "this device IP"}\n" +
                         "3. Port: ${etPort.text}"
