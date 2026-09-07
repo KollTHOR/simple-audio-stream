@@ -44,6 +44,7 @@ class JitterBuffer(
     private var expectedReadSeq = -1
     private var syntheticSeq = 0
     private var packetsSinceCatchUp = 0
+    private var packetsSinceDriftAdjust = 0
 
     private fun seqDiff(s1: Int, s2: Int): Int {
         val diff = (s1 - s2) and 0xFFFF
@@ -399,16 +400,22 @@ class JitterBuffer(
 
                 // Audio Clock Drift Management:
                 // Smooth zero-crossing micro-resampling (1 frame = 20-22 microseconds)
-                // Prevents long-term buffer accumulation or drainage without clicks or pitch wobble
+                // Rate-limited to prevent bass modulation comb filtering while holding tight sync
+                packetsSinceDriftAdjust++
                 val driftDelta = smoothBufferFill - targetWatermarkSlots
                 val isLowLat = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY)
-                val driftThreshold = if (isLowLat) 6f else 16f
-                if (driftDelta > driftThreshold && len >= 12) {
-                    applyZeroCrossingFrameDrop(output, len)
-                    smoothBufferFill -= 0.5f
-                } else if (driftDelta < -driftThreshold && len >= 12) {
-                    applyZeroCrossingFrameDuplicate(output, len)
-                    smoothBufferFill += 0.5f
+                val driftThreshold = if (isLowLat) 8f else 16f
+                val minInterval = if (isLowLat) 40 else 80 // At most once every 200ms (5 adjustments/sec max)
+                if (packetsSinceDriftAdjust >= minInterval && len >= 12) {
+                    if (driftDelta > driftThreshold) {
+                        applyZeroCrossingFrameDrop(output, len)
+                        packetsSinceDriftAdjust = 0
+                        smoothBufferFill -= 0.5f
+                    } else if (driftDelta < -driftThreshold) {
+                        applyZeroCrossingFrameDuplicate(output, len)
+                        packetsSinceDriftAdjust = 0
+                        smoothBufferFill += 0.5f
+                    }
                 }
 
                 // Cache last samples for smooth concealment if needed
@@ -502,6 +509,7 @@ class JitterBuffer(
             lastSampleLeft24 = 0
             lastSampleRight24 = 0
             packetsSinceCatchUp = 0
+            packetsSinceDriftAdjust = 0
             lastWasAac = false
             notEmptyCondition.signalAll()
         }
@@ -539,7 +547,15 @@ class JitterBuffer(
             } else {
                 ((output[idx].toInt() and 0xFF) or (output[idx + 1].toInt() shl 8)).toShort().toInt()
             }
-            val absVal = kotlin.math.abs(sampleL)
+            val sampleR = if (is24) {
+                val raw = (output[idx + 3].toInt() and 0xFF) or
+                    ((output[idx + 4].toInt() and 0xFF) shl 8) or
+                    ((output[idx + 5].toInt() and 0xFF) shl 16)
+                if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw
+            } else {
+                ((output[idx + 2].toInt() and 0xFF) or (output[idx + 3].toInt() shl 8)).toShort().toInt()
+            }
+            val absVal = kotlin.math.abs(sampleL) + kotlin.math.abs(sampleR)
             if (absVal < minAbs) {
                 minAbs = absVal
                 bestFrame = f
@@ -575,7 +591,15 @@ class JitterBuffer(
             } else {
                 ((output[idx].toInt() and 0xFF) or (output[idx + 1].toInt() shl 8)).toShort().toInt()
             }
-            val absVal = kotlin.math.abs(sampleL)
+            val sampleR = if (is24) {
+                val raw = (output[idx + 3].toInt() and 0xFF) or
+                    ((output[idx + 4].toInt() and 0xFF) shl 8) or
+                    ((output[idx + 5].toInt() and 0xFF) shl 16)
+                if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw
+            } else {
+                ((output[idx + 2].toInt() and 0xFF) or (output[idx + 3].toInt() shl 8)).toShort().toInt()
+            }
+            val absVal = kotlin.math.abs(sampleL) + kotlin.math.abs(sampleR)
             if (absVal < minAbs) {
                 minAbs = absVal
                 bestFrame = f

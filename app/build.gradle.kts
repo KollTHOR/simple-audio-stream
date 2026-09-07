@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.audiostreamer"
         minSdk = 29
         targetSdk = 35
-        versionCode = 30
-        versionName = "1.5.4"
+        versionCode = 31
+        versionName = "1.5.5"
     }
 
     buildTypes {

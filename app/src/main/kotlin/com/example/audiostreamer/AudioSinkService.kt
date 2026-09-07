@@ -59,7 +59,7 @@ class AudioSinkService : Service() {
     private var currentProfile: String = AudioConfig.PROFILE_MUSIC
     @Volatile private var currentSampleRate: Int = AudioConfig.SAMPLE_RATE_48000
     @Volatile private var currentEncoding: Int = AudioConfig.ENCODING
-    @Volatile private var currentPerformanceMode: Int = AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
+    @Volatile private var currentPerformanceMode: Int = AudioTrack.PERFORMANCE_MODE_NONE
     @Volatile private var currentIsAac: Boolean = false
     @Volatile private var aacDecoder: AacDecoder? = null
     @Volatile private var aacDecoderSampleRate: Int = AudioConfig.SAMPLE_RATE_48000
@@ -314,7 +314,7 @@ class AudioSinkService : Service() {
                                     } else {
                                         AudioConfig.ENCODING
                                     }
-                                    val targetPerfMode = if (isServerLowLatency) AudioTrack.PERFORMANCE_MODE_LOW_LATENCY else AudioTrack.PERFORMANCE_MODE_NONE
+                                    val targetPerfMode = AudioTrack.PERFORMANCE_MODE_NONE
                                     // Fast-path: skip @Synchronized call if nothing has changed
                                     if (targetSampleRate != currentSampleRate || targetEncoding != currentEncoding || targetPerfMode != currentPerformanceMode) {
                                         configureAudioTrack(targetSampleRate, targetEncoding, isServerLowLatency, currentRemoteVolume)
