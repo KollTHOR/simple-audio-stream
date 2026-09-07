@@ -148,7 +148,7 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         btnAccessibilitySettings.setOnClickListener {
-            if (VolumeKeyInterceptorService.isRunning) {
+            if (VolumeKeyInterceptorService.isRunning.get()) {
                 Toast.makeText(this, "Background volume key interception is active", Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(this, "Turn on Audio Streamer in Accessibility settings", Toast.LENGTH_LONG).show()
@@ -222,7 +222,7 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun updateAccessibilityButton() {
-        val isServiceActive = VolumeKeyInterceptorService.isRunning
+        val isServiceActive = VolumeKeyInterceptorService.isRunning.get()
         if (isServiceActive) {
             btnAccessibilitySettings.text = "Step 2: Accessibility (Active)"
             val colorGreen = ContextCompat.getColor(this, R.color.status_green)

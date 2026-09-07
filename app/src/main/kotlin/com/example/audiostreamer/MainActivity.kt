@@ -429,7 +429,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkAccessibilityAndProceed() {
-        if (VolumeKeyInterceptorService.isRunning) {
+        if (VolumeKeyInterceptorService.isRunning.get()) {
             launchMediaProjectionConsent()
             return
         }

@@ -50,9 +50,10 @@ class AudioSinkService : Service() {
     private var currentRemoteVolume = 100
     private var lastSenderAddress: java.net.InetAddress? = null
     private var lastSenderPort: Int? = null
+    private var lastSenderHost: String = "Transmitter"
     private var currentProfile: String = AudioConfig.PROFILE_MUSIC
-    private var currentEncoding: Int = AudioConfig.ENCODING
-    private var currentPerformanceMode: Int = AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
+    @Volatile private var currentEncoding: Int = AudioConfig.ENCODING
+    @Volatile private var currentPerformanceMode: Int = AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -214,7 +215,6 @@ class AudioSinkService : Service() {
                                 val flags = data[offset + 5]
                                 val payloadLen = ((data[offset + 6].toInt() and 0xFF) shl 8) or (data[offset + 7].toInt() and 0xFF)
 
-                                // Apply remote volume control if changed
                                 // Extract server streaming profile from flags (client strictly follows server)
                                 val isServerLowLatency = (flags.toInt() and AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt()) != 0
                                 val isServer24Bit = (flags.toInt() and AudioConfig.FLAG_24BIT.toInt()) != 0 || payloadLen == AudioConfig.PACKET_SIZE_24BIT
@@ -230,7 +230,13 @@ class AudioSinkService : Service() {
                                 } else {
                                     AudioConfig.ENCODING
                                 }
-                                val activeTrack = configureAudioTrack(targetEncoding, isServerLowLatency, currentRemoteVolume)
+                                val targetPerfMode = if (isServerLowLatency) AudioTrack.PERFORMANCE_MODE_LOW_LATENCY else AudioTrack.PERFORMANCE_MODE_NONE
+                                // Fast-path: skip @Synchronized call if nothing has changed
+                                val activeTrack = if (targetEncoding != currentEncoding || targetPerfMode != currentPerformanceMode) {
+                                    configureAudioTrack(targetEncoding, isServerLowLatency, currentRemoteVolume)
+                                } else {
+                                    audioTrack ?: configureAudioTrack(targetEncoding, isServerLowLatency, currentRemoteVolume)
+                                }
 
                                 // Apply remote volume control if changed
                                 if (volume != currentRemoteVolume) {
@@ -246,6 +252,13 @@ class AudioSinkService : Service() {
                                     Log.d(TAG, "Applied remote volume: $volume%")
                                 }
 
+                                // Cache sender host string — avoid repeated DNS reverse-lookups
+                                val senderAddr = packet.address
+                                if (senderAddr != null && senderAddr !== lastSenderAddress) {
+                                    lastSenderAddress = senderAddr
+                                    lastSenderHost = senderAddr.hostAddress ?: "Transmitter"
+                                }
+
                                 // Route PCM audio to JitterBuffer
                                 val isDisconnect = (flags.toInt() and AudioConfig.FLAG_DISCONNECT.toInt()) != 0
                                 val isControlOnly = (flags.toInt() and AudioConfig.FLAG_CONTROL_ONLY.toInt()) != 0
@@ -258,15 +271,19 @@ class AudioSinkService : Service() {
                                     val end = pcmOffset + payloadLen
                                     if (payloadLen == AudioConfig.PACKET_SIZE_24BIT) {
                                         while (i < end - 2) {
-                                            val sample = (data[i].toInt() and 0xFF) or ((data[i + 1].toInt() and 0xFF) shl 8) or (data[i + 2].toInt() shl 16)
-                                            val abs = Math.abs(sample)
+                                            // Correct little-endian 24-bit sign extension
+                                            val raw = (data[i].toInt() and 0xFF) or
+                                                ((data[i + 1].toInt() and 0xFF) shl 8) or
+                                                ((data[i + 2].toInt() and 0xFF) shl 16)
+                                            val sample = if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw
+                                            val abs = kotlin.math.abs(sample)
                                             if (abs > maxSampleInInterval) maxSampleInInterval = abs
                                             i += 3
                                         }
                                     } else {
                                         while (i < end - 1) {
                                             val sample = (data[i].toInt() and 0xFF) or (data[i + 1].toInt() shl 8)
-                                            val abs = Math.abs(sample.toShort().toInt())
+                                            val abs = kotlin.math.abs(sample.toShort().toInt())
                                             if (abs > maxSampleInInterval) maxSampleInInterval = abs
                                             i += 2
                                         }
@@ -291,7 +308,6 @@ class AudioSinkService : Service() {
                             } else {
                                 ((maxSampleInInterval * 100) / 32768).coerceIn(0, 100)
                             }
-                            val senderHost = packet.address?.hostAddress ?: "Transmitter"
                             val fill = jitterBuffer.getFillLevel()
                             val usedSlots = jitterBuffer.getAvailableCount()
                             val totalSlots = jitterBuffer.getSlotCount()
@@ -313,7 +329,7 @@ class AudioSinkService : Service() {
                                     packetsPerSec = pps,
                                     bytesPerSec = bps,
                                     audioPeakPercent = peakPercent,
-                                    remoteEndpoint = "$senderHost:${packet.port} (Vol: $currentRemoteVolume%)",
+                                    remoteEndpoint = "$lastSenderHost:${packet.port} (Vol: $currentRemoteVolume%)",
                                     statusDetail = if (peakPercent > 1) "Playing Audio (Vol: $currentRemoteVolume%)" else "Receiving (Silent)",
                                     bufferFillPercent = fill,
                                     bufferSlotsUsed = usedSlots,
@@ -388,11 +404,13 @@ class AudioSinkService : Service() {
             }
 
             val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            @Suppress("DEPRECATION")
-            wifiLock = wifiManager.createWifiLock(
-                WifiManager.WIFI_MODE_FULL_HIGH_PERF,
-                "AudioStreamer:SinkWifiLock"
-            ).apply {
+            val wifiLockMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            } else {
+                @Suppress("DEPRECATION")
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            }
+            wifiLock = wifiManager.createWifiLock(wifiLockMode, "AudioStreamer:SinkWifiLock").apply {
                 setReferenceCounted(false)
                 acquire()
             }

@@ -19,8 +19,10 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
@@ -66,6 +68,8 @@ class AudioCaptureService : Service() {
     private var previousPhoneVolume: Int? = null
     private var currentTargetIp = "192.168.43.255"
     private var currentTargetPort = AudioConfig.DEFAULT_PORT
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -262,11 +266,14 @@ class AudioCaptureService : Service() {
             return
         }
 
+        acquireLocks()
+
         val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val projection = projectionManager.getMediaProjection(resultCode, resultData)
         if (projection == null) {
             Log.e(TAG, "Unable to obtain MediaProjection")
             isRunning.set(false)
+            releaseLocks()
             stopSelf()
             return
         }
@@ -510,8 +517,12 @@ class AudioCaptureService : Service() {
                             var i = AudioConfig.HEADER_SIZE
                             val end = AudioConfig.HEADER_SIZE + bytesRead
                             while (i < end - 2) {
-                                val sample = (sendBuffer[i].toInt() and 0xFF) or ((sendBuffer[i + 1].toInt() and 0xFF) shl 8) or (sendBuffer[i + 2].toInt() shl 16)
-                                val abs = Math.abs(sample)
+                                // Correct little-endian 24-bit sign extension
+                                val raw = (sendBuffer[i].toInt() and 0xFF) or
+                                    ((sendBuffer[i + 1].toInt() and 0xFF) shl 8) or
+                                    ((sendBuffer[i + 2].toInt() and 0xFF) shl 16)
+                                val sample = if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw
+                                val abs = kotlin.math.abs(sample)
                                 if (abs > maxSampleInInterval) maxSampleInInterval = abs
                                 i += 3
                             }
@@ -520,7 +531,7 @@ class AudioCaptureService : Service() {
                             val end = AudioConfig.HEADER_SIZE + bytesRead
                             while (i < end - 1) {
                                 val sample = (sendBuffer[i].toInt() and 0xFF) or (sendBuffer[i + 1].toInt() shl 8)
-                                val abs = Math.abs(sample.toShort().toInt())
+                                val abs = kotlin.math.abs(sample.toShort().toInt())
                                 if (abs > maxSampleInInterval) maxSampleInInterval = abs
                                 i += 2
                             }
@@ -672,6 +683,55 @@ class AudioCaptureService : Service() {
             @Suppress("DEPRECATION")
             stopForeground(true)
         }
+
+        releaseLocks()
+    }
+
+    private fun acquireLocks() {
+        try {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "AudioStreamer:CaptureWakeLock"
+            ).apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error acquiring WakeLock", e)
+        }
+
+        try {
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val wifiLockMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            } else {
+                @Suppress("DEPRECATION")
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            }
+            wifiLock = wifiManager.createWifiLock(wifiLockMode, "AudioStreamer:CaptureWifiLock").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error acquiring WifiLock", e)
+        }
+    }
+
+    private fun releaseLocks() {
+        try {
+            wakeLock?.let { if (it.isHeld) it.release() }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing WakeLock", e)
+        }
+        wakeLock = null
+
+        try {
+            wifiLock?.let { if (it.isHeld) it.release() }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing WifiLock", e)
+        }
+        wifiLock = null
     }
 
     private fun pauseSystemMediaPlayback() {

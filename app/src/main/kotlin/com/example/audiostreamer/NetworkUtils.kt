@@ -1,9 +1,12 @@
 package com.example.audiostreamer
 
+import android.util.Log
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
 object NetworkUtils {
+
+    private const val TAG = "NetworkUtils"
 
     /**
      * Finds the primary non-loopback IPv4 address of the device (typically Wi-Fi or Hotspot).
@@ -25,7 +28,7 @@ object NetworkUtils {
                 }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.w(TAG, "Failed to get local IP address", e)
         }
         return null
     }

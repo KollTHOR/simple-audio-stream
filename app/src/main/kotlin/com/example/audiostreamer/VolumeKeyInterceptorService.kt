@@ -6,18 +6,18 @@ import android.content.Intent
 import android.util.Log
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
+import java.util.concurrent.atomic.AtomicBoolean
 
 class VolumeKeyInterceptorService : AccessibilityService() {
 
     companion object {
         private const val TAG = "VolKeyInterceptor"
-        var isRunning = false
-            private set
+        val isRunning = AtomicBoolean(false)
     }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        isRunning = true
+        isRunning.set(true)
         Log.i(TAG, "VolumeKeyInterceptorService connected")
         val info = serviceInfo ?: AccessibilityServiceInfo()
         info.flags = info.flags or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
@@ -26,14 +26,14 @@ class VolumeKeyInterceptorService : AccessibilityService() {
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
-        isRunning = false
+        isRunning.set(false)
         Log.i(TAG, "VolumeKeyInterceptorService unbound")
         return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        isRunning = false
+        isRunning.set(false)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
