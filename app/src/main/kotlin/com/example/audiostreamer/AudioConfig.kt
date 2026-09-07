@@ -58,12 +58,12 @@ object AudioConfig {
     const val MUSIC_WAIT_TIMEOUT_MS = 60L // 60ms wait absorbs Wi-Fi jitter completely
     const val MUSIC_TARGET_WATERMARK_SLOTS = 100 // 500ms target watermark for clock drift lock
 
-    // Low Latency Mode: Optimized for video/TikTok sync without stutter (~40-50ms)
-    const val LOW_LATENCY_JITTER_BUFFER_SLOTS = 24 // ~120ms max headroom
-    const val LOW_LATENCY_PRE_ROLL_PACKETS = 6 // 30ms pre-roll cushion (under 1 video frame)
-    const val LOW_LATENCY_MAX_UNDERRUN_FRAMES = 6 // ~30ms
-    const val LOW_LATENCY_WAIT_TIMEOUT_MS = 8L // 8ms wait absorbs Wi-Fi jitter
-    const val LOW_LATENCY_TARGET_WATERMARK_SLOTS = 10 // 50ms target clamp for lip-sync
+    // Low Latency Mode: Optimized for video/gaming sync without stutter (~40-50ms)
+    const val LOW_LATENCY_JITTER_BUFFER_SLOTS = 32 // ~160ms max headroom
+    const val LOW_LATENCY_PRE_ROLL_PACKETS = 8 // 40ms pre-roll cushion (under 1 video frame)
+    const val LOW_LATENCY_MAX_UNDERRUN_FRAMES = 12 // ~60ms concealment before rebuffering
+    const val LOW_LATENCY_WAIT_TIMEOUT_MS = 25L // 25ms wait absorbs Wi-Fi jitter & allows FEC recovery
+    const val LOW_LATENCY_TARGET_WATERMARK_SLOTS = 10 // 50ms target watermark
 
     // Defaults (Music Mode)
     const val JITTER_BUFFER_SLOTS = MUSIC_JITTER_BUFFER_SLOTS

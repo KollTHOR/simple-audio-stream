@@ -204,6 +204,8 @@ class AudioSinkService : Service() {
                 var maxSampleInInterval = 0
                 var lastSilencePacketTime = 0L
                 var fecRecoveredTotal = 0L
+                var smoothPps = 0f
+                var smoothBps = 0f
 
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                     try {
@@ -241,6 +243,10 @@ class AudioSinkService : Service() {
                                             fecRecoveredTotal++
                                         }
                                     }
+                                    totalPackets++
+                                    totalBytes += length
+                                    intervalPackets++
+                                    intervalBytes += length
                                     continue
                                 }
 
@@ -366,8 +372,12 @@ class AudioSinkService : Service() {
                         val dt = now - lastStatsTime
                         if (dt >= 250) {
                             val is24 = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && currentEncoding == AudioFormat.ENCODING_PCM_24BIT_PACKED && currentProfile != AudioConfig.PROFILE_LOW_LATENCY)
-                            val pps = ((intervalPackets * 1000L) / dt).toInt()
-                            val bps = ((intervalBytes * 1000L) / dt).toInt()
+                            val instantPps = ((intervalPackets * 1000L) / dt).toFloat()
+                            val instantBps = ((intervalBytes * 1000L) / dt).toFloat()
+                            smoothPps = if (smoothPps == 0f) instantPps else (smoothPps * 0.7f + instantPps * 0.3f)
+                            smoothBps = if (smoothBps == 0f) instantBps else (smoothBps * 0.7f + instantBps * 0.3f)
+                            val pps = smoothPps.toInt()
+                            val bps = smoothBps.toInt()
                             val peakPercent = if (is24) {
                                 ((maxSampleInInterval * 100L) / 8388608L).toInt().coerceIn(0, 100)
                             } else {

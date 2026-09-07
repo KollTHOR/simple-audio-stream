@@ -35,6 +35,7 @@ class JitterBuffer(
     private val slotSeq = IntArray(maxSlots) { -1 }
     private var expectedReadSeq = -1
     private var syntheticSeq = 0
+    private var packetsSinceCatchUp = 0
 
     private fun seqDiff(s1: Int, s2: Int): Int {
         val diff = (s1 - s2) and 0xFFFF
@@ -142,9 +143,18 @@ class JitterBuffer(
 
             smoothBufferFill = smoothBufferFill * 0.998f + availableCount * 0.002f
 
-            // Gentle latency catch-up ONLY for low latency mode:
-            if (targetWatermarkSlots < slotCount && availableCount > targetWatermarkSlots + 4) {
-                dropOldestSlot()
+            // Smooth latency catch-up for Low Latency mode:
+            // Absorb momentary Wi-Fi aggregation bursts without dropping audio.
+            // Only drop if buffer has sustained backlog beyond target watermark, and at most 1 packet per 100 packets (~500ms).
+            if (currentProfile == AudioConfig.PROFILE_LOW_LATENCY && smoothBufferFill > targetWatermarkSlots + 6) {
+                packetsSinceCatchUp++
+                if (packetsSinceCatchUp >= 100) {
+                    dropOldestSlot()
+                    packetsSinceCatchUp = 0
+                    smoothBufferFill -= 1.0f
+                }
+            } else {
+                packetsSinceCatchUp = 0
             }
 
             if (isBuffering && availableCount >= preRollThreshold) {
@@ -388,6 +398,7 @@ class JitterBuffer(
             lastSampleRight16 = 0
             lastSampleLeft24 = 0
             lastSampleRight24 = 0
+            packetsSinceCatchUp = 0
             notEmptyCondition.signalAll()
         }
     }

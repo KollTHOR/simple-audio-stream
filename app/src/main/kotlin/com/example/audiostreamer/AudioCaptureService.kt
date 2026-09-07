@@ -551,6 +551,8 @@ class AudioCaptureService : Service() {
                 var silentPacketsCount = 0
                 var isSilenceSuppressed = false
                 var lastHeartbeatTime = 0L
+                var smoothPps = 0f
+                var smoothBps = 0f
 
                 val initialBitDepth = if (is24BitActive && !initialInLowLatency) 24 else 16
                 val initialBitrate = if (initialBitDepth == 24) 2304 else 1536
@@ -752,8 +754,12 @@ class AudioCaptureService : Service() {
                             val inLowLatencyNow = (activeProfile == AudioConfig.PROFILE_LOW_LATENCY)
                             val is24Now = is24BitActive && !inLowLatencyNow
 
-                            val pps = ((intervalPackets * 1000L) / dt).toInt()
-                            val bps = ((intervalBytes * 1000L) / dt).toInt()
+                            val instantPps = ((intervalPackets * 1000L) / dt).toFloat()
+                            val instantBps = ((intervalBytes * 1000L) / dt).toFloat()
+                            smoothPps = if (smoothPps == 0f) instantPps else (smoothPps * 0.7f + instantPps * 0.3f)
+                            smoothBps = if (smoothBps == 0f) instantBps else (smoothBps * 0.7f + instantBps * 0.3f)
+                            val pps = smoothPps.toInt()
+                            val bps = smoothBps.toInt()
                             val peakPercent = if (is24Now) {
                                 ((maxSampleInInterval * 100L) / 8388608L).toInt().coerceIn(0, 100)
                             } else {

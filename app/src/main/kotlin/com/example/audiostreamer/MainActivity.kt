@@ -491,8 +491,7 @@ class MainActivity : AppCompatActivity() {
             } else {
                 "Target: ${t.remoteEndpoint ?: "Configuring..."}"
             }
-            val kbps = (t.bytesPerSec * 8) / 1000
-            tvPacketsStat.text = "Sent: ${t.packetsTotal} pkts (${t.packetsPerSec} pkts/s • ${kbps} kbps)"
+            tvPacketsStat.text = "Sent: ${t.packetsTotal} pkts (${t.packetsPerSec} pkts/s • ${t.bitrateKbps} kbps)"
             pbAudioLevel.progress = t.audioPeakPercent
             tvAudioLevelVal.text = "${t.audioPeakPercent}%"
         } else if (isSinkRunning) {
@@ -512,9 +511,8 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 tvEndpointInfo.text = "From: ${t.remoteEndpoint ?: "Unknown"}"
-                val kbps = (t.bytesPerSec * 8) / 1000
                 val fecText = if (t.fecRecoveredTotal > 0) " • FEC: ${t.fecRecoveredTotal} recovered" else ""
-                tvPacketsStat.text = "Received: ${t.packetsTotal} pkts (${t.packetsPerSec} pkts/s • ${kbps} kbps)$fecText"
+                tvPacketsStat.text = "Received: ${t.packetsTotal} pkts (${t.packetsPerSec} pkts/s • ${t.bitrateKbps} kbps)$fecText"
                 pbAudioLevel.progress = t.audioPeakPercent
                 tvAudioLevelVal.text = "${t.audioPeakPercent}%"
             } else {
