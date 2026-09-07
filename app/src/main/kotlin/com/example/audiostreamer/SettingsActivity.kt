@@ -58,6 +58,11 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var btnProfileMusic: MaterialButton
     private lateinit var btnProfileLowLatency: MaterialButton
     private lateinit var tvProfileDescription: TextView
+    private lateinit var toggleRateGroup: MaterialButtonToggleGroup
+    private lateinit var btnRateAuto: MaterialButton
+    private lateinit var btnRate44k: MaterialButton
+    private lateinit var btnRate48k: MaterialButton
+    private lateinit var tvRateDescription: TextView
 
     enum class UpdateState {
         CHECK,
@@ -109,6 +114,11 @@ class SettingsActivity : AppCompatActivity() {
         btnProfileMusic = findViewById(R.id.btn_profile_music)
         btnProfileLowLatency = findViewById(R.id.btn_profile_low_latency)
         tvProfileDescription = findViewById(R.id.tv_profile_description)
+        toggleRateGroup = findViewById(R.id.toggle_rate_group)
+        btnRateAuto = findViewById(R.id.btn_rate_auto)
+        btnRate44k = findViewById(R.id.btn_rate_44k)
+        btnRate48k = findViewById(R.id.btn_rate_48k)
+        tvRateDescription = findViewById(R.id.tv_rate_description)
 
         val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
         val currentProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
@@ -128,6 +138,26 @@ class SettingsActivity : AppCompatActivity() {
                 }
                 prefs.edit().putString(AudioConfig.PREF_KEY_PROFILE, selected).apply()
                 updateProfileUi(selected)
+            }
+        }
+
+        val currentRate = prefs.getString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_AUTO) ?: AudioConfig.SAMPLE_RATE_AUTO
+        when (currentRate) {
+            AudioConfig.SAMPLE_RATE_44K -> toggleRateGroup.check(R.id.btn_rate_44k)
+            AudioConfig.SAMPLE_RATE_48K -> toggleRateGroup.check(R.id.btn_rate_48k)
+            else -> toggleRateGroup.check(R.id.btn_rate_auto)
+        }
+        updateRateUi(currentRate)
+
+        toggleRateGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (isChecked) {
+                val selected = when (checkedId) {
+                    R.id.btn_rate_44k -> AudioConfig.SAMPLE_RATE_44K
+                    R.id.btn_rate_48k -> AudioConfig.SAMPLE_RATE_48K
+                    else -> AudioConfig.SAMPLE_RATE_AUTO
+                }
+                prefs.edit().putString(AudioConfig.PREF_KEY_SAMPLE_RATE, selected).apply()
+                updateRateUi(selected)
             }
         }
 
@@ -214,13 +244,34 @@ class SettingsActivity : AppCompatActivity() {
             btnProfileLowLatency.setTextColor(Color.WHITE)
             btnProfileMusic.backgroundTintList = ColorStateList.valueOf(colorCard)
             btnProfileMusic.setTextColor(colorTextSecondary)
-            tvProfileDescription.text = "Low Latency Mode: 30ms pre-roll, 50ms target clamp, and Android Fast Track. Optimized for TikTok, video lip-sync, and instant reaction audio. Controlled by server."
+            tvProfileDescription.text = "Low Latency Mode: 40ms pre-roll cushion, 50ms target watermark, and Android Fast Track. Optimized for video lip-sync and instant reaction audio. Controlled by server."
         } else {
             btnProfileMusic.backgroundTintList = ColorStateList.valueOf(colorPrimary)
             btnProfileMusic.setTextColor(Color.WHITE)
             btnProfileLowLatency.backgroundTintList = ColorStateList.valueOf(colorCard)
             btnProfileLowLatency.setTextColor(colorTextSecondary)
-            tvProfileDescription.text = "Music Mode: Studio Master 24-bit / 48 kHz PCM (2.3 Mbps) with 500ms pre-roll cushion and a 2.56s jitter buffer. Crystal-clear, stutter-free playback. Controlled by server."
+            tvProfileDescription.text = "Music Mode: Up to Studio Master 24-bit / 48 kHz PCM (2.3 Mbps) with 500ms pre-roll cushion and a 2.56s jitter buffer. Crystal-clear, stutter-free playback. Controlled by server."
+        }
+    }
+
+    private fun updateRateUi(rate: String) {
+        val colorPrimary = ContextCompat.getColor(this, R.color.primary)
+        val colorCard = ContextCompat.getColor(this, R.color.card_bg)
+        val colorTextSecondary = ContextCompat.getColor(this, R.color.text_secondary)
+
+        btnRateAuto.backgroundTintList = ColorStateList.valueOf(if (rate == AudioConfig.SAMPLE_RATE_AUTO) colorPrimary else colorCard)
+        btnRateAuto.setTextColor(if (rate == AudioConfig.SAMPLE_RATE_AUTO) Color.WHITE else colorTextSecondary)
+
+        btnRate44k.backgroundTintList = ColorStateList.valueOf(if (rate == AudioConfig.SAMPLE_RATE_44K) colorPrimary else colorCard)
+        btnRate44k.setTextColor(if (rate == AudioConfig.SAMPLE_RATE_44K) Color.WHITE else colorTextSecondary)
+
+        btnRate48k.backgroundTintList = ColorStateList.valueOf(if (rate == AudioConfig.SAMPLE_RATE_48K) colorPrimary else colorCard)
+        btnRate48k.setTextColor(if (rate == AudioConfig.SAMPLE_RATE_48K) Color.WHITE else colorTextSecondary)
+
+        tvRateDescription.text = when (rate) {
+            AudioConfig.SAMPLE_RATE_44K -> "44.1 kHz: Native CD-quality streaming (880 bytes / chunk). Receiver adapts automatically without resampling."
+            AudioConfig.SAMPLE_RATE_48K -> "48.0 kHz: Native studio & video rate (960 bytes / chunk). Receiver adapts automatically without resampling."
+            else -> "Auto: Automatically follows device hardware output sample rate. Client adapts without resampling."
         }
     }
 

@@ -3,18 +3,35 @@ package com.example.audiostreamer
 import android.media.AudioFormat
 
 object AudioConfig {
-    const val SAMPLE_RATE = 48000
+    const val SAMPLE_RATE_44100 = 44100
+    const val SAMPLE_RATE_48000 = 48000
+    const val DEFAULT_SAMPLE_RATE = SAMPLE_RATE_48000
+    const val SAMPLE_RATE = SAMPLE_RATE_48000
+    const val PREF_KEY_SAMPLE_RATE = "pref_sample_rate"
+    const val SAMPLE_RATE_AUTO = "AUTO"
+    const val SAMPLE_RATE_44K = "44100"
+    const val SAMPLE_RATE_48K = "48000"
+
     const val CHANNELS = 2 // Stereo
     const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
     
     // 5ms chunk:
-    // 16-bit: 240 frames * 2 channels * 2 bytes = 960 bytes
-    // 24-bit: 240 frames * 2 channels * 3 bytes = 1,440 bytes
-    // 1,440 bytes payload + 8 bytes header = 1,448 bytes (< 1,500 Wi-Fi MTU, zero IP fragmentation)
+    // 44.1 kHz: 220 frames (~4.99ms)
+    //   16-bit: 220 frames * 2 channels * 2 bytes = 880 bytes
+    //   24-bit: 220 frames * 2 channels * 3 bytes = 1,320 bytes
+    // 48.0 kHz: 240 frames (5.00ms)
+    //   16-bit: 240 frames * 2 channels * 2 bytes = 960 bytes
+    //   24-bit: 240 frames * 2 channels * 3 bytes = 1,440 bytes
     const val FRAME_SIZE_MS = 5
-    const val PACKET_SIZE_16BIT = 960
-    const val PACKET_SIZE_24BIT = 1440
-    const val MAX_PACKET_SIZE = PACKET_SIZE_24BIT
+    const val FRAMES_PER_PACKET_44K = 220
+    const val PACKET_SIZE_16BIT_44K = FRAMES_PER_PACKET_44K * CHANNELS * 2 // 880
+    const val PACKET_SIZE_24BIT_44K = FRAMES_PER_PACKET_44K * CHANNELS * 3 // 1320
+    const val FRAMES_PER_PACKET_48K = 240
+    const val PACKET_SIZE_16BIT_48K = FRAMES_PER_PACKET_48K * CHANNELS * 2 // 960
+    const val PACKET_SIZE_24BIT_48K = FRAMES_PER_PACKET_48K * CHANNELS * 3 // 1440
+    const val PACKET_SIZE_16BIT = PACKET_SIZE_16BIT_48K
+    const val PACKET_SIZE_24BIT = PACKET_SIZE_24BIT_48K
+    const val MAX_PACKET_SIZE = PACKET_SIZE_24BIT_48K
     const val PACKET_SIZE = PACKET_SIZE_16BIT
 
     // Packet Header
@@ -30,6 +47,7 @@ object AudioConfig {
     const val FLAG_24BIT: Byte = 0x10
     const val FLAG_SILENCE: Byte = 0x20
     const val FLAG_FEC_PARITY: Byte = 0x40
+    const val FLAG_SAMPLE_RATE_44100: Byte = 0x80.toByte()
     const val FLAG_DISCOVERY_PROBE: Byte = 0x40
     const val FLAG_DISCOVERY_ANNOUNCE: Byte = 0x80.toByte()
 
@@ -62,7 +80,7 @@ object AudioConfig {
     const val LOW_LATENCY_JITTER_BUFFER_SLOTS = 32 // ~160ms max headroom
     const val LOW_LATENCY_PRE_ROLL_PACKETS = 8 // 40ms pre-roll cushion (under 1 video frame)
     const val LOW_LATENCY_MAX_UNDERRUN_FRAMES = 12 // ~60ms concealment before rebuffering
-    const val LOW_LATENCY_WAIT_TIMEOUT_MS = 25L // 25ms wait absorbs Wi-Fi jitter & allows FEC recovery
+    const val LOW_LATENCY_WAIT_TIMEOUT_MS = 15L // 15ms wait absorbs Wi-Fi jitter without starving AudioTrack
     const val LOW_LATENCY_TARGET_WATERMARK_SLOTS = 10 // 50ms target watermark
 
     // Defaults (Music Mode)

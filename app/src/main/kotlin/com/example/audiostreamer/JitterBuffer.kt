@@ -30,6 +30,13 @@ class JitterBuffer(
     private var lastPacketSize: Int = AudioConfig.PACKET_SIZE_16BIT
     private var smoothBufferFill: Float = preRollThreshold.toFloat()
     private var isTransmitterSilent = false
+    private var wasConcealed = false
+
+    // History buffer for robust FEC recovery even if preceding packets were already read
+    private val historySize = 32
+    private val historyBuffer = Array(historySize) { ByteArray(AudioConfig.MAX_PACKET_SIZE) }
+    private val historyLengths = IntArray(historySize)
+    private val historySeq = IntArray(historySize) { -1 }
 
     private val isSlotFilled = BooleanArray(maxSlots)
     private val slotSeq = IntArray(maxSlots) { -1 }
@@ -141,6 +148,12 @@ class JitterBuffer(
                 availableCount++
             }
 
+            // Keep packet in circular history for robust FEC recovery
+            val hSlot = sequence and (historySize - 1)
+            System.arraycopy(data, offset, historyBuffer[hSlot], 0, length)
+            historyLengths[hSlot] = length
+            historySeq[hSlot] = sequence
+
             smoothBufferFill = smoothBufferFill * 0.998f + availableCount * 0.002f
 
             // Smooth latency catch-up for Low Latency mode:
@@ -192,13 +205,17 @@ class JitterBuffer(
 
             for (i in 0 until blockSize) {
                 val seq = (baseSeq + i) and 0xFFFF
-                if (seqDiff(seq, expectedReadSeq) < 0) {
-                    // Already played, cannot reconstruct for future playback
-                    return false
-                }
                 val slot = seq and (maxSlots - 1)
-                if (isSlotFilled[slot] && slotSeq[slot] == seq) {
+                val hSlot = seq and (historySize - 1)
+
+                val inBuffer = isSlotFilled[slot] && slotSeq[slot] == seq
+                val inHistory = historySeq[hSlot] == seq
+
+                if (inBuffer) {
                     val len = packetLengths[slot]
+                    if (len > maxLen) maxLen = len
+                } else if (inHistory) {
+                    val len = historyLengths[hSlot]
                     if (len > maxLen) maxLen = len
                 } else {
                     missingSeq = seq
@@ -208,6 +225,11 @@ class JitterBuffer(
 
             // Exactly 1 dropped packet can be reconstructed losslessly
             if (missingCount == 1 && missingSeq != -1) {
+                // If missing packet has already passed playback point, no need to reconstruct
+                if (seqDiff(missingSeq, expectedReadSeq) < 0) {
+                    return false
+                }
+
                 val slot = missingSeq and (maxSlots - 1)
                 val recovered = buffer[slot]
                 System.arraycopy(parityPayload, parityOffset, recovered, 0, parityLen)
@@ -218,14 +240,25 @@ class JitterBuffer(
                 for (i in 0 until blockSize) {
                     val seq = (baseSeq + i) and 0xFFFF
                     if (seq == missingSeq) continue
-                    val sSlot = seq and (maxSlots - 1)
-                    if (isSlotFilled[sSlot] && slotSeq[sSlot] == seq) {
-                        val pData = buffer[sSlot]
-                        val pLen = packetLengths[sSlot]
-                        val xorLen = minOf(pLen, maxLen)
-                        for (b in 0 until xorLen) {
-                            recovered[b] = (recovered[b].toInt() xor pData[b].toInt()).toByte()
-                        }
+                    val slotIdx = seq and (maxSlots - 1)
+                    val hIdx = seq and (historySize - 1)
+
+                    val pData: ByteArray
+                    val pLen: Int
+                    if (isSlotFilled[slotIdx] && slotSeq[slotIdx] == seq) {
+                        pData = buffer[slotIdx]
+                        pLen = packetLengths[slotIdx]
+                    } else if (historySeq[hIdx] == seq) {
+                        pData = historyBuffer[hIdx]
+                        pLen = historyLengths[hIdx]
+                    } else {
+                        // Data missing from both buffer and history: cannot recover safely
+                        return false
+                    }
+
+                    val xorLen = minOf(pLen, maxLen)
+                    for (b in 0 until xorLen) {
+                        recovered[b] = (recovered[b].toInt() xor pData[b].toInt()).toByte()
                     }
                 }
 
@@ -235,6 +268,13 @@ class JitterBuffer(
                     isSlotFilled[slot] = true
                     availableCount++
                 }
+
+                // Also save recovered packet into history
+                val hSlot = missingSeq and (historySize - 1)
+                System.arraycopy(recovered, 0, historyBuffer[hSlot], 0, maxLen)
+                historyLengths[hSlot] = maxLen
+                historySeq[hSlot] = missingSeq
+
                 notEmptyCondition.signal()
                 return true
             }
@@ -301,6 +341,43 @@ class JitterBuffer(
                 consecutiveUnderruns = 0
                 lastPacketSize = len
 
+                if (wasConcealed) {
+                    wasConcealed = false
+                    val is24 = (len == AudioConfig.PACKET_SIZE_24BIT_44K || len == AudioConfig.PACKET_SIZE_24BIT_48K)
+                    val frameBytes = if (is24) 6 else 4
+                    val totalFrames = len / frameBytes
+                    val fadeFrames = minOf(20, totalFrames)
+                    if (is24) {
+                        for (f in 0 until fadeFrames) {
+                            val factor = (f + 1).toFloat() / fadeFrames
+                            val i = f * 6
+                            var sL = (output[i].toInt() and 0xFF) or ((output[i + 1].toInt() and 0xFF) shl 8) or (output[i + 2].toInt() shl 16)
+                            var sR = (output[i + 3].toInt() and 0xFF) or ((output[i + 4].toInt() and 0xFF) shl 8) or (output[i + 5].toInt() shl 16)
+                            sL = (sL * factor).toInt()
+                            sR = (sR * factor).toInt()
+                            output[i] = (sL and 0xFF).toByte()
+                            output[i + 1] = ((sL shr 8) and 0xFF).toByte()
+                            output[i + 2] = ((sL shr 16) and 0xFF).toByte()
+                            output[i + 3] = (sR and 0xFF).toByte()
+                            output[i + 4] = ((sR shr 8) and 0xFF).toByte()
+                            output[i + 5] = ((sR shr 16) and 0xFF).toByte()
+                        }
+                    } else {
+                        for (f in 0 until fadeFrames) {
+                            val factor = (f + 1).toFloat() / fadeFrames
+                            val i = f * 4
+                            var sL = ((output[i].toInt() and 0xFF) or (output[i + 1].toInt() shl 8)).toShort().toInt()
+                            var sR = ((output[i + 2].toInt() and 0xFF) or (output[i + 3].toInt() shl 8)).toShort().toInt()
+                            sL = (sL * factor).toInt()
+                            sR = (sR * factor).toInt()
+                            output[i] = (sL and 0xFF).toByte()
+                            output[i + 1] = ((sL shr 8) and 0xFF).toByte()
+                            output[i + 2] = (sR and 0xFF).toByte()
+                            output[i + 3] = ((sR shr 8) and 0xFF).toByte()
+                        }
+                    }
+                }
+
                 // Audio Clock Drift Management:
                 // Smooth zero-crossing micro-resampling (1 frame = 20.8 microseconds)
                 // Prevents long-term buffer accumulation or drainage without clicks or pitch wobble
@@ -315,8 +392,9 @@ class JitterBuffer(
                     }
                 }
 
-                // Cache last samples for concealment if needed
-                if (len == AudioConfig.PACKET_SIZE_24BIT && len >= 6) {
+                // Cache last samples for smooth concealment if needed
+                val is24Sample = (len == AudioConfig.PACKET_SIZE_24BIT_44K || len == AudioConfig.PACKET_SIZE_24BIT_48K)
+                if (is24Sample && len >= 6) {
                     val idxL = len - 6
                     val idxR = len - 3
                     lastSampleLeft24 = (output[idxL].toInt() and 0xFF) or ((output[idxL + 1].toInt() and 0xFF) shl 8) or (output[idxL + 2].toInt() shl 16)
@@ -336,6 +414,7 @@ class JitterBuffer(
                 if (consecutiveUnderruns >= maxUnderrunFrames) {
                     // Sustained drop: enter buffering
                     isBuffering = true
+                    wasConcealed = true
                     lastSampleLeft16 = 0
                     lastSampleRight16 = 0
                     lastSampleLeft24 = 0
@@ -344,39 +423,42 @@ class JitterBuffer(
                     return len
                 }
 
-                // Graceful decay concealment for brief network dropout
-                if (len == AudioConfig.PACKET_SIZE_24BIT) {
-                    var curL = lastSampleLeft24
-                    var curR = lastSampleRight24
-                    var i = 0
-                    while (i <= len - 6) {
-                        curL = (curL * 85) / 100
-                        curR = (curR * 85) / 100
-                        output[i] = (curL and 0xFF).toByte()
-                        output[i + 1] = ((curL shr 8) and 0xFF).toByte()
-                        output[i + 2] = ((curL shr 16) and 0xFF).toByte()
-                        output[i + 3] = (curR and 0xFF).toByte()
-                        output[i + 4] = ((curR shr 8) and 0xFF).toByte()
-                        output[i + 5] = ((curR shr 16) and 0xFF).toByte()
-                        i += 6
+                wasConcealed = true
+                val is24Conceal = (len == AudioConfig.PACKET_SIZE_24BIT_44K || len == AudioConfig.PACKET_SIZE_24BIT_48K)
+                if (is24Conceal) {
+                    val numFrames = len / 6
+                    val initL = lastSampleLeft24
+                    val initR = lastSampleRight24
+                    for (f in 0 until numFrames) {
+                        val factor = (numFrames - f).toFloat() / numFrames
+                        val sL = (initL * factor).toInt()
+                        val sR = (initR * factor).toInt()
+                        val i = f * 6
+                        output[i] = (sL and 0xFF).toByte()
+                        output[i + 1] = ((sL shr 8) and 0xFF).toByte()
+                        output[i + 2] = ((sL shr 16) and 0xFF).toByte()
+                        output[i + 3] = (sR and 0xFF).toByte()
+                        output[i + 4] = ((sR shr 8) and 0xFF).toByte()
+                        output[i + 5] = ((sR shr 16) and 0xFF).toByte()
                     }
-                    lastSampleLeft24 = curL
-                    lastSampleRight24 = curR
+                    lastSampleLeft24 = 0
+                    lastSampleRight24 = 0
                 } else {
-                    var curL = lastSampleLeft16.toInt()
-                    var curR = lastSampleRight16.toInt()
-                    var i = 0
-                    while (i <= len - 4) {
-                        curL = (curL * 85) / 100
-                        curR = (curR * 85) / 100
-                        output[i] = (curL and 0xFF).toByte()
-                        output[i + 1] = ((curL shr 8) and 0xFF).toByte()
-                        output[i + 2] = (curR and 0xFF).toByte()
-                        output[i + 3] = ((curR shr 8) and 0xFF).toByte()
-                        i += 4
+                    val numFrames = len / 4
+                    val initL = lastSampleLeft16.toInt()
+                    val initR = lastSampleRight16.toInt()
+                    for (f in 0 until numFrames) {
+                        val factor = (numFrames - f).toFloat() / numFrames
+                        val sL = (initL * factor).toInt()
+                        val sR = (initR * factor).toInt()
+                        val i = f * 4
+                        output[i] = (sL and 0xFF).toByte()
+                        output[i + 1] = ((sL shr 8) and 0xFF).toByte()
+                        output[i + 2] = (sR and 0xFF).toByte()
+                        output[i + 3] = ((sR shr 8) and 0xFF).toByte()
                     }
-                    lastSampleLeft16 = curL.toShort()
-                    lastSampleRight16 = curR.toShort()
+                    lastSampleLeft16 = 0
+                    lastSampleRight16 = 0
                 }
                 return len
             }
