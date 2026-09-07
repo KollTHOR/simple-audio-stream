@@ -321,9 +321,25 @@ class MainActivity : AppCompatActivity() {
     private fun updateDiscoveredChips(devices: List<DiscoveredDevice>) {
         chipGroupReceivers.removeAllViews()
         val currentTarget = etTargetIp.text?.toString()?.trim().orEmpty()
+        val bcast = NetworkUtils.getSuggestedBroadcastIp()
 
+        // 1. Broadcast chip (guarantees universal delivery across AP isolation / multi-receiver)
+        val isBroadcastSelected = (currentTarget.isEmpty() || currentTarget == bcast || currentTarget == "255.255.255.255" || currentTarget == "192.168.1.255" || currentTarget == "192.168.43.255")
+        val bcastChip = Chip(this).apply {
+            text = "Broadcast (All: $bcast)"
+            isCheckable = true
+            isChecked = isBroadcastSelected
+            setOnClickListener {
+                etTargetIp.setText(bcast)
+                Toast.makeText(this@MainActivity, "Streaming to Subnet Broadcast", Toast.LENGTH_SHORT).show()
+                updateDiscoveredChips(DiscoveryManager.discoveredDevices.value)
+            }
+        }
+        chipGroupReceivers.addView(bcastChip)
+
+        // 2. Discovered receiver chips
         for (dev in devices) {
-            val isSelected = (currentTarget == dev.ip)
+            val isSelected = (!isBroadcastSelected && currentTarget == dev.ip)
             val chip = Chip(this).apply {
                 text = "${dev.name} (${dev.ip})"
                 isCheckable = true
@@ -331,21 +347,10 @@ class MainActivity : AppCompatActivity() {
                 setOnClickListener {
                     etTargetIp.setText(dev.ip)
                     Toast.makeText(this@MainActivity, "Selected ${dev.name}", Toast.LENGTH_SHORT).show()
+                    updateDiscoveredChips(DiscoveryManager.discoveredDevices.value)
                 }
             }
             chipGroupReceivers.addView(chip)
-        }
-
-        // Auto-select discovered device if currently set to generic broadcast or empty
-        if (devices.isNotEmpty()) {
-            val firstDev = devices.first()
-            if (currentTarget.isEmpty() || currentTarget == "192.168.1.255" || currentTarget == "192.168.43.255" || currentTarget == "255.255.255.255") {
-                etTargetIp.setText(firstDev.ip)
-                for (i in 0 until chipGroupReceivers.childCount) {
-                    val child = chipGroupReceivers.getChildAt(i) as? Chip
-                    child?.isChecked = (child?.text?.contains(firstDev.ip) == true)
-                }
-            }
         }
     }
 

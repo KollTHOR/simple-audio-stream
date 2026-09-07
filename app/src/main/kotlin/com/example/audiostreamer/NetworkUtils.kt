@@ -53,6 +53,40 @@ object NetworkUtils {
     }
 
     /**
+     * Finds a local IP address on the same subnet as targetIp (e.g. matching /24 prefix).
+     * If targetIp is a subnet broadcast or unicast IP, finds the corresponding local interface IP.
+     */
+    fun findMatchingLocalIp(targetIp: String): String? {
+        val targetParts = targetIp.split(".")
+        if (targetParts.size != 4) return null
+        val allIps = getAllLocalIpAddresses()
+        if (allIps.isEmpty()) return null
+
+        // 1. Exact /24 prefix match (first 3 octets)
+        val subnetMatch = allIps.firstOrNull { local ->
+            val localParts = local.split(".")
+            localParts.size == 4 &&
+                    localParts[0] == targetParts[0] &&
+                    localParts[1] == targetParts[1] &&
+                    localParts[2] == targetParts[2]
+        }
+        if (subnetMatch != null) return subnetMatch
+
+        // 2. /16 prefix match (first 2 octets)
+        val prefix16Match = allIps.firstOrNull { local ->
+            val localParts = local.split(".")
+            localParts.size == 4 &&
+                    localParts[0] == targetParts[0] &&
+                    localParts[1] == targetParts[1]
+        }
+        if (prefix16Match != null) return prefix16Match
+
+        // 3. Fallback to first available local IP
+        return allIps.firstOrNull()
+    }
+
+
+    /**
      * Finds all broadcast addresses across all active interfaces (e.g. Wi-Fi, Hotspot, etc.)
      * including directed subnet broadcasts and the global broadcast 255.255.255.255.
      */

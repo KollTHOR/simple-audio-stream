@@ -31,6 +31,7 @@ import androidx.core.app.NotificationCompat
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.SocketException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -411,13 +412,30 @@ class AudioCaptureService : Service() {
         streamThread = Thread({
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
 
-            var socket: DatagramSocket? = null
+            var socketToClose: DatagramSocket? = null
             try {
                 val address = InetAddress.getByName(targetIp)
-                socket = DatagramSocket().apply {
-                    sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
-                    broadcast = true
+                val matchingLocalIp = NetworkUtils.findMatchingLocalIp(targetIp)
+                val socket: DatagramSocket = try {
+                    if (matchingLocalIp != null) {
+                        DatagramSocket(InetSocketAddress(InetAddress.getByName(matchingLocalIp), 0)).apply {
+                            sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
+                            broadcast = true
+                        }
+                    } else {
+                        DatagramSocket().apply {
+                            sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
+                            broadcast = true
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed binding socket to interface IP $matchingLocalIp, falling back to unbound socket: ${e.message}")
+                    DatagramSocket().apply {
+                        sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
+                        broadcast = true
+                    }
                 }
+                socketToClose = socket
                 udpSocket = socket
 
                 val listenerSocket = socket
@@ -689,7 +707,7 @@ class AudioCaptureService : Service() {
                 StreamState.update { it.copy(statusDetail = "Error: ${e.message}") }
             } finally {
                 try {
-                    socket?.close()
+                    socketToClose?.close()
                 } catch (ignored: Exception) {}
                 udpSocket = null
                 Log.i(TAG, "Audio streaming thread stopped")

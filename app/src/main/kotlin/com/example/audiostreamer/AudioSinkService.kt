@@ -212,9 +212,9 @@ class AudioSinkService : Service() {
                             if (magic == AudioConfig.MAGIC_HEADER.toInt()) {
                                 val flags = data[offset + 5]
 
-                                // Drop any discovery probes or announcements (handled on dedicated port 50006)
-                                val isDiscovery = (flags.toInt() and (AudioConfig.FLAG_DISCOVERY_PROBE.toInt() or AudioConfig.FLAG_DISCOVERY_ANNOUNCE.toInt())) != 0
-                                if (isDiscovery) {
+                                // Discovery probe from transmitter: ignore on audio port (discovery is on port 50006)
+                                val isDiscoveryProbe = (flags.toInt() and AudioConfig.FLAG_DISCOVERY_PROBE.toInt()) != 0
+                                if (isDiscoveryProbe) {
                                     continue
                                 }
 
@@ -235,10 +235,9 @@ class AudioSinkService : Service() {
                                 val isDisconnect = (flags.toInt() and AudioConfig.FLAG_DISCONNECT.toInt()) != 0
                                 val isControlOnly = (flags.toInt() and AudioConfig.FLAG_CONTROL_ONLY.toInt()) != 0
                                 val isServerLowLatency = (flags.toInt() and AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt()) != 0
-                                val isAudioPayload = (payloadLen == AudioConfig.PACKET_SIZE_16BIT || payloadLen == AudioConfig.PACKET_SIZE_24BIT)
 
-                                // Only adapt profile and reconfigure AudioTrack on genuine audio packets (never on control/silence packets)
-                                if (!isControlOnly && !isDisconnect && !isSilence && isAudioPayload) {
+                                // Only adapt profile and reconfigure AudioTrack on audio packets (never on control-only packets)
+                                if (!isControlOnly && !isDisconnect && !isSilence) {
                                     val isServer24Bit = !isServerLowLatency && ((flags.toInt() and AudioConfig.FLAG_24BIT.toInt()) != 0 || payloadLen == AudioConfig.PACKET_SIZE_24BIT)
                                     val serverProfile = if (isServerLowLatency) AudioConfig.PROFILE_LOW_LATENCY else AudioConfig.PROFILE_MUSIC
                                     if (serverProfile != currentProfile) {
