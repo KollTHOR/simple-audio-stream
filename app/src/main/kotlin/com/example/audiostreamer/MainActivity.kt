@@ -60,11 +60,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var layoutVolumeControl: LinearLayout
     private lateinit var tvRemoteVolLabel: TextView
     private lateinit var sliderRemoteVol: Slider
-    private lateinit var btnVolDown: MaterialButton
-    private lateinit var btnVolMute: MaterialButton
-    private lateinit var btnVolUp: MaterialButton
-    private lateinit var btnSilencePhone: MaterialButton
-    private lateinit var btnEnableAccessibility: MaterialButton
 
     // Telemetry views
     private lateinit var tvBadgeStatus: TextView
@@ -112,7 +107,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (recordAudioGranted && notificationGranted) {
-            launchMediaProjectionConsent()
+            checkAccessibilityAndProceed()
         } else {
             Toast.makeText(this, "Permissions required for audio transmission", Toast.LENGTH_SHORT).show()
         }
@@ -156,10 +151,6 @@ class MainActivity : AppCompatActivity() {
         layoutVolumeControl = findViewById(R.id.layout_volume_control)
         tvRemoteVolLabel = findViewById(R.id.tv_remote_vol_label)
         sliderRemoteVol = findViewById(R.id.slider_remote_vol)
-        btnVolDown = findViewById(R.id.btn_vol_down)
-        btnVolMute = findViewById(R.id.btn_vol_mute)
-        btnVolUp = findViewById(R.id.btn_vol_up)
-        btnSilencePhone = findViewById(R.id.btn_silence_phone)
 
         val initialVol = AudioCaptureService.remoteVolumePercent.get()
         sliderRemoteVol.value = initialVol.toFloat()
@@ -170,43 +161,6 @@ class MainActivity : AppCompatActivity() {
                 val vol = value.toInt()
                 tvRemoteVolLabel.text = "$vol%"
                 sendVolumeIntent(vol)
-            }
-        }
-
-        btnVolDown.setOnClickListener {
-            sendVolumeDeltaIntent(-5)
-        }
-
-        btnVolUp.setOnClickListener {
-            sendVolumeDeltaIntent(5)
-        }
-
-        btnVolMute.setOnClickListener {
-            val cur = AudioCaptureService.remoteVolumePercent.get()
-            if (cur > 0) {
-                sendVolumeIntent(0)
-            } else {
-                sendVolumeIntent(100)
-            }
-        }
-
-        btnSilencePhone.setOnClickListener {
-            try {
-                val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                am.setStreamVolume(AudioManager.STREAM_MUSIC, 0, AudioManager.FLAG_SHOW_UI)
-                Toast.makeText(this, "Phone media volume set to 0", Toast.LENGTH_SHORT).show()
-            } catch (e: Exception) {
-                Toast.makeText(this, "Could not adjust phone volume: ${e.message}", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-        btnEnableAccessibility = findViewById(R.id.btn_enable_accessibility)
-        btnEnableAccessibility.setOnClickListener {
-            if (VolumeKeyInterceptorService.isRunning) {
-                Toast.makeText(this, "Background volume key interception is active", Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(this, "Enable Simple Audio Stream in Accessibility settings to allow volume keys in background", Toast.LENGTH_LONG).show()
-                startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
             }
         }
 
@@ -264,13 +218,11 @@ class MainActivity : AppCompatActivity() {
 
         observeTelemetry()
         updateModeAndButtonUi()
-        updateAccessibilityButtonState()
     }
 
     override fun onResume() {
         super.onResume()
         refreshLocalIp()
-        updateAccessibilityButtonState()
 
         val currentRemoteVol = AudioCaptureService.remoteVolumePercent.get()
         sliderRemoteVol.value = currentRemoteVol.toFloat()
@@ -414,6 +366,29 @@ class MainActivity : AppCompatActivity() {
 
         if (neededPermissions.isNotEmpty()) {
             transmitterPermissionLauncher.launch(neededPermissions.toTypedArray())
+        } else {
+            checkAccessibilityAndProceed()
+        }
+    }
+
+    private fun checkAccessibilityAndProceed() {
+        val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+        val hasPrompted = prefs.getBoolean("has_prompted_accessibility", false)
+
+        if (!VolumeKeyInterceptorService.isRunning && !hasPrompted) {
+            prefs.edit().putBoolean("has_prompted_accessibility", true).apply()
+            com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                .setTitle("Background Volume Control")
+                .setMessage("To adjust DAP volume using your phone's hardware volume buttons when the screen is locked or in other apps, enable Audio Streamer in Accessibility settings.")
+                .setPositiveButton("Enable") { _, _ ->
+                    startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    launchMediaProjectionConsent()
+                }
+                .setNegativeButton("Not Now") { _, _ ->
+                    launchMediaProjectionConsent()
+                }
+                .setCancelable(false)
+                .show()
         } else {
             launchMediaProjectionConsent()
         }
@@ -577,20 +552,5 @@ class MainActivity : AppCompatActivity() {
             }
         }
         return super.onKeyUp(keyCode, event)
-    }
-
-    private fun updateAccessibilityButtonState() {
-        val isServiceActive = VolumeKeyInterceptorService.isRunning
-        if (isServiceActive) {
-            btnEnableAccessibility.text = "Background Vol Keys: Active"
-            val colorGreen = ContextCompat.getColor(this, R.color.status_green)
-            btnEnableAccessibility.setTextColor(colorGreen)
-            btnEnableAccessibility.strokeColor = ColorStateList.valueOf(colorGreen)
-        } else {
-            btnEnableAccessibility.text = "Background Vol Keys: Tap to Enable"
-            val colorOrange = ContextCompat.getColor(this, R.color.status_orange)
-            btnEnableAccessibility.setTextColor(colorOrange)
-            btnEnableAccessibility.strokeColor = ColorStateList.valueOf(colorOrange)
-        }
     }
 }

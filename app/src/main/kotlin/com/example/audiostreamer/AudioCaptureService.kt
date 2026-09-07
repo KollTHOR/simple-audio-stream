@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.VolumeProvider
@@ -59,6 +60,7 @@ class AudioCaptureService : Service() {
     private var streamThread: Thread? = null
     private var mediaSession: MediaSession? = null
     private var volumeProvider: VolumeProvider? = null
+    private var previousPhoneVolume: Int? = null
     private var currentTargetIp = "192.168.43.255"
     private var currentTargetPort = AudioConfig.DEFAULT_PORT
 
@@ -331,6 +333,19 @@ class AudioCaptureService : Service() {
             Log.e(TAG, "Error initializing MediaSession", e)
         }
 
+        // Automatically silence phone speakers while preserving previous volume
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val currentVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            if (currentVol > 0) {
+                previousPhoneVolume = currentVol
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
+                Log.i(TAG, "Automatically silenced phone media volume (saved previous: $currentVol)")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not automatically silence phone volume: ${e.message}")
+        }
+
         streamThread = Thread({
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
 
@@ -492,6 +507,18 @@ class AudioCaptureService : Service() {
         }
         mediaSession = null
         volumeProvider = null
+
+        // Automatically restore phone media volume
+        try {
+            previousPhoneVolume?.let { savedVol ->
+                val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, savedVol, 0)
+                Log.i(TAG, "Restored phone media volume to $savedVol")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not restore phone volume: ${e.message}")
+        }
+        previousPhoneVolume = null
 
         StreamState.update {
             it.copy(
