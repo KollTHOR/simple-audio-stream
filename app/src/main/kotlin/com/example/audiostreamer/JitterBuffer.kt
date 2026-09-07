@@ -156,12 +156,12 @@ class JitterBuffer(
 
             smoothBufferFill = smoothBufferFill * 0.998f + availableCount * 0.002f
 
-            // Smooth latency catch-up for Low Latency mode:
-            // Absorb momentary Wi-Fi aggregation bursts without dropping audio.
-            // Only drop if buffer has sustained backlog beyond target watermark, and at most 1 packet per 100 packets (~500ms).
-            if (currentProfile == AudioConfig.PROFILE_LOW_LATENCY && smoothBufferFill > targetWatermarkSlots + 6) {
+            // Smooth latency catch-up for extreme network stalls:
+            // Zero-crossing micro-resampling in read() handles normal drift and bursts smoothly.
+            // Only drop an oldest slot if buffer has sustained severe backlog beyond target watermark + 16 (~140ms extra).
+            if (currentProfile == AudioConfig.PROFILE_LOW_LATENCY && smoothBufferFill > targetWatermarkSlots + 16) {
                 packetsSinceCatchUp++
-                if (packetsSinceCatchUp >= 100) {
+                if (packetsSinceCatchUp >= 150) {
                     dropOldestSlot()
                     packetsSinceCatchUp = 0
                     smoothBufferFill -= 1.0f
@@ -379,17 +379,17 @@ class JitterBuffer(
                 }
 
                 // Audio Clock Drift Management:
-                // Smooth zero-crossing micro-resampling (1 frame = 20.8 microseconds)
+                // Smooth zero-crossing micro-resampling (1 frame = 20-22 microseconds)
                 // Prevents long-term buffer accumulation or drainage without clicks or pitch wobble
-                if (currentProfile == AudioConfig.PROFILE_MUSIC) {
-                    val driftDelta = smoothBufferFill - targetWatermarkSlots
-                    if (driftDelta > 16f && len >= 12) {
-                        applyZeroCrossingFrameDrop(output, len)
-                        smoothBufferFill -= 0.5f
-                    } else if (driftDelta < -16f && len >= 12) {
-                        applyZeroCrossingFrameDuplicate(output, len)
-                        smoothBufferFill += 0.5f
-                    }
+                val driftDelta = smoothBufferFill - targetWatermarkSlots
+                val isLowLat = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY)
+                val driftThreshold = if (isLowLat) 6f else 16f
+                if (driftDelta > driftThreshold && len >= 12) {
+                    applyZeroCrossingFrameDrop(output, len)
+                    smoothBufferFill -= 0.5f
+                } else if (driftDelta < -driftThreshold && len >= 12) {
+                    applyZeroCrossingFrameDuplicate(output, len)
+                    smoothBufferFill += 0.5f
                 }
 
                 // Cache last samples for smooth concealment if needed
@@ -498,7 +498,7 @@ class JitterBuffer(
     }
 
     private fun applyZeroCrossingFrameDrop(output: ByteArray, len: Int) {
-        val is24 = (len == AudioConfig.PACKET_SIZE_24BIT)
+        val is24 = (len == AudioConfig.PACKET_SIZE_24BIT_48K || len == AudioConfig.PACKET_SIZE_24BIT_44K)
         val frameBytes = if (is24) 6 else 4
         val totalFrames = len / frameBytes
         val searchStart = totalFrames / 4
@@ -534,7 +534,7 @@ class JitterBuffer(
     }
 
     private fun applyZeroCrossingFrameDuplicate(output: ByteArray, len: Int) {
-        val is24 = (len == AudioConfig.PACKET_SIZE_24BIT)
+        val is24 = (len == AudioConfig.PACKET_SIZE_24BIT_48K || len == AudioConfig.PACKET_SIZE_24BIT_44K)
         val frameBytes = if (is24) 6 else 4
         val totalFrames = len / frameBytes
         val searchStart = totalFrames / 4

@@ -63,6 +63,10 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var btnRate44k: MaterialButton
     private lateinit var btnRate48k: MaterialButton
     private lateinit var tvRateDescription: TextView
+    private lateinit var toggleCodecGroup: MaterialButtonToggleGroup
+    private lateinit var btnCodecPcm: MaterialButton
+    private lateinit var btnCodecAac: MaterialButton
+    private lateinit var tvCodecDescription: TextView
 
     enum class UpdateState {
         CHECK,
@@ -114,6 +118,10 @@ class SettingsActivity : AppCompatActivity() {
         btnProfileMusic = findViewById(R.id.btn_profile_music)
         btnProfileLowLatency = findViewById(R.id.btn_profile_low_latency)
         tvProfileDescription = findViewById(R.id.tv_profile_description)
+        toggleCodecGroup = findViewById(R.id.toggle_codec_group)
+        btnCodecPcm = findViewById(R.id.btn_codec_pcm)
+        btnCodecAac = findViewById(R.id.btn_codec_aac)
+        tvCodecDescription = findViewById(R.id.tv_codec_description)
         toggleRateGroup = findViewById(R.id.toggle_rate_group)
         btnRateAuto = findViewById(R.id.btn_rate_auto)
         btnRate44k = findViewById(R.id.btn_rate_44k)
@@ -138,6 +146,24 @@ class SettingsActivity : AppCompatActivity() {
                 }
                 prefs.edit().putString(AudioConfig.PREF_KEY_PROFILE, selected).apply()
                 updateProfileUi(selected)
+                notifySettingsChanged()
+            }
+        }
+
+        val currentCodec = prefs.getString(AudioConfig.PREF_KEY_LOW_LATENCY_CODEC, AudioConfig.CODEC_PCM) ?: AudioConfig.CODEC_PCM
+        if (currentCodec == AudioConfig.CODEC_AAC) {
+            toggleCodecGroup.check(R.id.btn_codec_aac)
+        } else {
+            toggleCodecGroup.check(R.id.btn_codec_pcm)
+        }
+        updateCodecUi(currentCodec)
+
+        toggleCodecGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (isChecked) {
+                val selected = if (checkedId == R.id.btn_codec_aac) AudioConfig.CODEC_AAC else AudioConfig.CODEC_PCM
+                prefs.edit().putString(AudioConfig.PREF_KEY_LOW_LATENCY_CODEC, selected).apply()
+                updateCodecUi(selected)
+                notifySettingsChanged()
             }
         }
 
@@ -153,11 +179,12 @@ class SettingsActivity : AppCompatActivity() {
             if (isChecked) {
                 val selected = when (checkedId) {
                     R.id.btn_rate_44k -> AudioConfig.SAMPLE_RATE_44K
-                    R.id.btn_rate_48k -> AudioConfig.SAMPLE_RATE_48K
+                    R.id.btn_rate_48k -> AudioConfig.SAMPLE_RATE_48000.toString()
                     else -> AudioConfig.SAMPLE_RATE_AUTO
                 }
                 prefs.edit().putString(AudioConfig.PREF_KEY_SAMPLE_RATE, selected).apply()
                 updateRateUi(selected)
+                notifySettingsChanged()
             }
         }
 
@@ -272,6 +299,36 @@ class SettingsActivity : AppCompatActivity() {
             AudioConfig.SAMPLE_RATE_44K -> "44.1 kHz: Native CD-quality streaming (880 bytes / chunk). Receiver adapts automatically without resampling."
             AudioConfig.SAMPLE_RATE_48K -> "48.0 kHz: Native studio & video rate (960 bytes / chunk). Receiver adapts automatically without resampling."
             else -> "Auto: Automatically follows device hardware output sample rate. Client adapts without resampling."
+        }
+    }
+
+    private fun updateCodecUi(codec: String) {
+        val colorPrimary = ContextCompat.getColor(this, R.color.primary)
+        val colorCard = ContextCompat.getColor(this, R.color.card_bg)
+        val colorTextSecondary = ContextCompat.getColor(this, R.color.text_secondary)
+
+        if (codec == AudioConfig.CODEC_AAC) {
+            btnCodecAac.backgroundTintList = ColorStateList.valueOf(colorPrimary)
+            btnCodecAac.setTextColor(Color.WHITE)
+            btnCodecPcm.backgroundTintList = ColorStateList.valueOf(colorCard)
+            btnCodecPcm.setTextColor(colorTextSecondary)
+            tvCodecDescription.text = "AAC Mode: 192 kbps compressed audio (~47 pkts/s). Slashes bandwidth by 88%, immune to Wi-Fi packet aggregation jitter."
+        } else {
+            btnCodecPcm.backgroundTintList = ColorStateList.valueOf(colorPrimary)
+            btnCodecPcm.setTextColor(Color.WHITE)
+            btnCodecAac.backgroundTintList = ColorStateList.valueOf(colorCard)
+            btnCodecAac.setTextColor(colorTextSecondary)
+            tvCodecDescription.text = "PCM Mode: 16-bit uncompressed audio (1,536 kbps, 200 pkts/s). Lossless studio quality, best on strong Wi-Fi."
+        }
+    }
+
+    private fun notifySettingsChanged() {
+        if (AudioCaptureService.isRunning.get()) {
+            val restartIntent = Intent(this, AudioCaptureService::class.java).apply {
+                action = AudioConfig.ACTION_RESTART_CAPTURE
+            }
+            startService(restartIntent)
+            Log.i(TAG, "Sent ACTION_RESTART_CAPTURE to apply setting change live")
         }
     }
 

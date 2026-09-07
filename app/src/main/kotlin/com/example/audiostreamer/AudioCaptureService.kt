@@ -14,6 +14,9 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
 import android.media.VolumeProvider
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -71,6 +74,7 @@ class AudioCaptureService : Service() {
     private var currentTargetPort = AudioConfig.DEFAULT_PORT
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var aacEncoder: AacEncoder? = null
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -128,6 +132,10 @@ class AudioCaptureService : Service() {
 
                 startServiceForeground()
                 startStreaming(resultCode, resultData, targetIp, targetPort)
+            }
+            AudioConfig.ACTION_RESTART_CAPTURE -> {
+                Log.i(TAG, "Received ACTION_RESTART_CAPTURE. Live reinitializing capture pipeline.")
+                restartStreaming()
             }
         }
         return START_NOT_STICKY
@@ -317,6 +325,28 @@ class AudioCaptureService : Service() {
         this.mediaProjection = projection
         projection.registerCallback(projectionCallback, null)
 
+        startCapturePipeline(projection, targetIp, targetPort)
+    }
+
+    private fun restartStreaming() {
+        val proj = mediaProjection
+        if (proj == null) {
+            Log.w(TAG, "Cannot restart streaming: mediaProjection is null")
+            return
+        }
+        Log.i(TAG, "Live restarting capture pipeline with existing MediaProjection...")
+        stopStreamingInternal(keepProjection = true)
+        try { Thread.sleep(50) } catch (ignored: Exception) {}
+        isRunning.set(true)
+        startCapturePipeline(proj, currentTargetIp, currentTargetPort)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startCapturePipeline(
+        projection: MediaProjection,
+        targetIp: String,
+        targetPort: Int
+    ) {
         val captureConfig = AudioPlaybackCaptureConfiguration.Builder(projection)
             .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
             .addMatchingUsage(AudioAttributes.USAGE_GAME)
@@ -326,6 +356,8 @@ class AudioCaptureService : Service() {
         val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
         val profile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
         val isLowLatency = profile == AudioConfig.PROFILE_LOW_LATENCY
+        val codecPref = prefs.getString(AudioConfig.PREF_KEY_LOW_LATENCY_CODEC, AudioConfig.CODEC_PCM) ?: AudioConfig.CODEC_PCM
+        val isAacActive = isLowLatency && (codecPref == AudioConfig.CODEC_AAC)
 
         val sampleRatePref = prefs.getString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_AUTO) ?: AudioConfig.SAMPLE_RATE_AUTO
         val captureSampleRate: Int = when (sampleRatePref) {
@@ -546,6 +578,9 @@ class AudioCaptureService : Service() {
                 sendBuffer[6] = (initialPayload shr 8).toByte()
                 sendBuffer[7] = (initialPayload and 0xFF).toByte()
 
+                val aacEnc = if (isAacActive) AacEncoder(captureSampleRate) else null
+                this.aacEncoder = aacEnc
+
                 // XOR Forward Error Correction (FEC) setup
                 val isFecEnabled = prefs.getBoolean(AudioConfig.PREF_KEY_FEC_ENABLED, true)
                 val fecParityBuffer = ByteArray(AudioConfig.MAX_PACKET_SIZE)
@@ -605,6 +640,85 @@ class AudioCaptureService : Service() {
                 }
 
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
+                    if (isAacActive && aacEnc != null) {
+                        val pcmBytesRead = record.read(sendBuffer, AudioConfig.HEADER_SIZE, 4096, AudioRecord.READ_BLOCKING)
+                        if (pcmBytesRead > 0) {
+                            var chunkPeak = 0
+                            var pi = AudioConfig.HEADER_SIZE
+                            val pend = AudioConfig.HEADER_SIZE + pcmBytesRead
+                            while (pi < pend - 1) {
+                                val sample = (sendBuffer[pi].toInt() and 0xFF) or (sendBuffer[pi + 1].toInt() shl 8)
+                                val abs = kotlin.math.abs(sample.toShort().toInt())
+                                if (abs > chunkPeak) chunkPeak = abs
+                                pi += 2
+                            }
+                            if (chunkPeak > maxSampleInInterval) maxSampleInInterval = chunkPeak
+
+                            val isChunkSilent = (chunkPeak <= AudioConfig.SILENCE_AMPLITUDE_THRESHOLD_16BIT)
+                            if (isChunkSilent) {
+                                silentPacketsCount++
+                                if (silentPacketsCount >= 25) isSilenceSuppressed = true
+                            } else {
+                                silentPacketsCount = 0
+                                isSilenceSuppressed = false
+                            }
+
+                            val now = SystemClock.elapsedRealtime()
+                            val shouldSendHeartbeat = isSilenceSuppressed && (now - lastHeartbeatTime >= AudioConfig.SILENCE_HEARTBEAT_INTERVAL_MS)
+
+                            if (!isSilenceSuppressed) {
+                                val aacFrames = aacEnc.encode(sendBuffer, AudioConfig.HEADER_SIZE, pcmBytesRead)
+                                for (frame in aacFrames) {
+                                    val frameLen = frame.size
+                                    if (frameLen > 0 && frameLen <= AudioConfig.MAX_PACKET_SIZE) {
+                                        sendBuffer[2] = (sequence shr 8).toByte()
+                                        sendBuffer[3] = (sequence and 0xFF).toByte()
+                                        val currentSeq = sequence
+                                        sequence = (sequence + 1) and 0xFFFF
+                                        sendBuffer[4] = remoteVolumePercent.get().toByte()
+                                        sendBuffer[5] = (profileFlag.toInt() or AudioConfig.FLAG_CODEC_AAC.toInt()).toByte()
+                                        sendBuffer[6] = (frameLen shr 8).toByte()
+                                        sendBuffer[7] = (frameLen and 0xFF).toByte()
+                                        System.arraycopy(frame, 0, sendBuffer, AudioConfig.HEADER_SIZE, frameLen)
+                                        packet.length = AudioConfig.HEADER_SIZE + frameLen
+
+                                        for (targetAddr in targetAddresses) {
+                                            packet.address = targetAddr
+                                            packet.port = targetPort
+                                            socket.send(packet)
+                                        }
+
+                                        totalPackets++
+                                        totalBytes += packet.length
+                                        intervalPackets++
+                                        intervalBytes += packet.length
+                                    }
+                                }
+                            } else if (shouldSendHeartbeat) {
+                                sendBuffer[2] = (sequence shr 8).toByte()
+                                sendBuffer[3] = (sequence and 0xFF).toByte()
+                                sequence = (sequence + 1) and 0xFFFF
+                                sendBuffer[4] = remoteVolumePercent.get().toByte()
+                                sendBuffer[5] = (profileFlag.toInt() or AudioConfig.FLAG_CODEC_AAC.toInt() or AudioConfig.FLAG_SILENCE.toInt()).toByte()
+                                sendBuffer[6] = 0
+                                sendBuffer[7] = 0
+                                packet.length = AudioConfig.HEADER_SIZE
+                                lastHeartbeatTime = now
+                                for (targetAddr in targetAddresses) {
+                                    packet.address = targetAddr
+                                    packet.port = targetPort
+                                    socket.send(packet)
+                                }
+                                totalPackets++
+                                totalBytes += packet.length
+                                intervalPackets++
+                                intervalBytes += packet.length
+                            }
+                        } else if (pcmBytesRead < 0) {
+                            Log.e(TAG, "AudioRecord read error (AAC): $pcmBytesRead")
+                            break
+                        }
+                    } else {
                     val bytesRead = record.read(sendBuffer, AudioConfig.HEADER_SIZE, activePayloadSize, AudioRecord.READ_BLOCKING)
                     if (bytesRead > 0) {
                         val currentInLowLatency = (activeProfile == AudioConfig.PROFILE_LOW_LATENCY)
@@ -787,14 +901,18 @@ class AudioCaptureService : Service() {
                             } else {
                                 ((maxSampleInInterval * 100) / 32768).coerceIn(0, 100)
                             }
-                            val bitDepth = if (is24Now) 24 else 16
-                            val bitrate = if (captureSampleRate == AudioConfig.SAMPLE_RATE_44100) {
+                            val bitDepth = if (isAacActive) 16 else if (is24Now) 24 else 16
+                            val bitrate = if (isAacActive) {
+                                192
+                            } else if (captureSampleRate == AudioConfig.SAMPLE_RATE_44100) {
                                 if (is24Now) 2117 else 1411
                             } else {
                                 if (is24Now) 2304 else 1536
                             }
-                            val profileDisplayName = if (inLowLatencyNow) {
-                                "Low Latency (Server)"
+                            val profileDisplayName = if (isAacActive) {
+                                "Low Latency AAC (Server)"
+                            } else if (inLowLatencyNow) {
+                                "Low Latency PCM (Server)"
                             } else if (is24BitActive) {
                                 "Studio 24-bit Music (Server)"
                             } else {
@@ -845,6 +963,7 @@ class AudioCaptureService : Service() {
                         Log.e(TAG, "AudioRecord read error: $bytesRead")
                         break
                     }
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Audio streaming exception", e)
@@ -863,10 +982,14 @@ class AudioCaptureService : Service() {
     }
 
     private fun stopStreaming() {
+        stopStreamingInternal(keepProjection = false)
+    }
+
+    private fun stopStreamingInternal(keepProjection: Boolean) {
         if (!isRunning.getAndSet(false)) {
             return
         }
-        Log.i(TAG, "Stopping audio capture service")
+        Log.i(TAG, "Stopping audio capture service (keepProjection=$keepProjection)")
 
         controlListenerThread?.interrupt()
         controlListenerThread = null
@@ -894,54 +1017,61 @@ class AudioCaptureService : Service() {
         audioRecord = null
 
         try {
-            mediaProjection?.unregisterCallback(projectionCallback)
-            mediaProjection?.stop()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping MediaProjection", e)
-        }
-        mediaProjection = null
+            aacEncoder?.release()
+        } catch (ignored: Exception) {}
+        aacEncoder = null
 
-        try {
-            mediaSession?.isActive = false
-            mediaSession?.release()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error releasing MediaSession", e)
-        }
-        mediaSession = null
-        volumeProvider = null
-
-        // Automatically restore phone media volume
-        try {
-            previousPhoneVolume?.let { savedVol ->
-                val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, savedVol, 0)
-                Log.i(TAG, "Restored phone media volume to $savedVol")
+        if (!keepProjection) {
+            try {
+                mediaProjection?.unregisterCallback(projectionCallback)
+                mediaProjection?.stop()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error stopping MediaProjection", e)
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not restore phone volume: ${e.message}")
-        }
-        previousPhoneVolume = null
+            mediaProjection = null
 
-        StreamState.update {
-            it.copy(
-                isActive = false,
-                isTransmitter = false,
-                audioPeakPercent = 0,
-                packetsPerSec = 0,
-                bytesPerSec = 0,
-                statusDetail = "Stopped",
-                activeReceiversCount = 1
-            )
-        }
+            try {
+                mediaSession?.isActive = false
+                mediaSession?.release()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error releasing MediaSession", e)
+            }
+            mediaSession = null
+            volumeProvider = null
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } else {
-            @Suppress("DEPRECATION")
-            stopForeground(true)
-        }
+            // Automatically restore phone media volume
+            try {
+                previousPhoneVolume?.let { savedVol ->
+                    val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, savedVol, 0)
+                    Log.i(TAG, "Restored phone media volume to $savedVol")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not restore phone volume: ${e.message}")
+            }
+            previousPhoneVolume = null
 
-        releaseLocks()
+            StreamState.update {
+                it.copy(
+                    isActive = false,
+                    isTransmitter = false,
+                    audioPeakPercent = 0,
+                    packetsPerSec = 0,
+                    bytesPerSec = 0,
+                    statusDetail = "Stopped",
+                    activeReceiversCount = 1
+                )
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+
+            releaseLocks()
+        }
     }
 
     private fun acquireLocks() {
@@ -1012,5 +1142,88 @@ class AudioCaptureService : Service() {
         stopStreaming()
         super.onDestroy()
         Log.d(TAG, "AudioCaptureService destroyed")
+    }
+
+    private class AacEncoder(val sampleRate: Int, val channelCount: Int = 2, val bitRate: Int = AudioConfig.AAC_BIT_RATE) {
+        private var codec: MediaCodec? = null
+        private val bufferInfo = MediaCodec.BufferInfo()
+
+        init {
+            try {
+                val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channelCount).apply {
+                    setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+                    setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
+                    setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
+                }
+                val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+                encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                encoder.start()
+                codec = encoder
+                Log.i(TAG, "Initialized AAC MediaCodec encoder: rate=$sampleRate, channels=$channelCount, bitRate=$bitRate")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed initializing AAC encoder", e)
+            }
+        }
+
+        fun encode(pcmData: ByteArray, offset: Int, length: Int): List<ByteArray> {
+            val encoder = codec ?: return emptyList()
+            val results = mutableListOf<ByteArray>()
+
+            try {
+                val inIndex = encoder.dequeueInputBuffer(5000L)
+                if (inIndex >= 0) {
+                    val inBuf = encoder.getInputBuffer(inIndex)
+                    inBuf?.clear()
+                    inBuf?.put(pcmData, offset, length)
+                    encoder.queueInputBuffer(inIndex, 0, length, 0L, 0)
+                }
+
+                while (true) {
+                    val outIndex = encoder.dequeueOutputBuffer(bufferInfo, 0L)
+                    if (outIndex < 0) break
+
+                    val outBuf = encoder.getOutputBuffer(outIndex)
+                    val outSize = bufferInfo.size
+                    val isConfig = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+                    if (!isConfig && outBuf != null && outSize > 0) {
+                        val frameLen = 7 + outSize
+                        val frame = ByteArray(frameLen)
+                        addAdtsHeader(frame, frameLen, sampleRate, channelCount)
+                        outBuf.position(bufferInfo.offset)
+                        outBuf.get(frame, 7, outSize)
+                        results.add(frame)
+                    }
+                    encoder.releaseOutputBuffer(outIndex, false)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "AAC encode error: ${e.message}")
+            }
+            return results
+        }
+
+        private fun addAdtsHeader(packet: ByteArray, packetLen: Int, sampleRate: Int, channels: Int) {
+            val profile = 2 // AAC LC
+            val freqIdx = when (sampleRate) {
+                96000 -> 0; 88200 -> 1; 64000 -> 2; 48000 -> 3
+                44100 -> 4; 32000 -> 5; 24000 -> 6; 22050 -> 7
+                16000 -> 8; 12000 -> 9; 11025 -> 10; 8000 -> 11
+                else -> 3
+            }
+            packet[0] = 0xFF.toByte()
+            packet[1] = 0xF9.toByte()
+            packet[2] = (((profile - 1) shl 6) + (freqIdx shl 2) + (channels shr 2)).toByte()
+            packet[3] = (((channels and 3) shl 6) + (packetLen shr 11)).toByte()
+            packet[4] = ((packetLen and 0x7FF) shr 3).toByte()
+            packet[5] = (((packetLen and 7) shl 5) + 0x1F).toByte()
+            packet[6] = 0xFC.toByte()
+        }
+
+        fun release() {
+            try {
+                codec?.stop()
+                codec?.release()
+            } catch (ignored: Exception) {}
+            codec = null
+        }
     }
 }
