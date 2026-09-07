@@ -200,7 +200,7 @@ class SettingsActivity : AppCompatActivity() {
             btnProfileMusic.setTextColor(Color.WHITE)
             btnProfileLowLatency.backgroundTintList = ColorStateList.valueOf(colorCard)
             btnProfileLowLatency.setTextColor(colorTextSecondary)
-            tvProfileDescription.text = "Music Mode: 200ms pre-roll cushion with a 1.28s jitter buffer. Ideal for uninterrupted lossless audio listening. Controlled by server."
+            tvProfileDescription.text = "Music Mode: Studio Master 24-bit / 48 kHz PCM (2.3 Mbps) with 500ms pre-roll cushion and a 2.56s jitter buffer. Crystal-clear, stutter-free playback. Controlled by server."
         }
     }
 

@@ -51,6 +51,8 @@ class AudioSinkService : Service() {
     private var lastSenderAddress: java.net.InetAddress? = null
     private var lastSenderPort: Int? = null
     private var currentProfile: String = AudioConfig.PROFILE_MUSIC
+    private var currentEncoding: Int = AudioConfig.ENCODING
+    private var currentPerformanceMode: Int = AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -75,6 +77,70 @@ class AudioSinkService : Service() {
         return START_NOT_STICKY
     }
 
+    @Synchronized
+    private fun configureAudioTrack(encoding: Int, isLowLatency: Boolean, currentVolume: Int): AudioTrack {
+        val perfMode = if (isLowLatency) AudioTrack.PERFORMANCE_MODE_LOW_LATENCY else AudioTrack.PERFORMANCE_MODE_NONE
+        val existing = audioTrack
+        if (existing != null && currentEncoding == encoding && currentPerformanceMode == perfMode && existing.state == AudioTrack.STATE_INITIALIZED) {
+            return existing
+        }
+
+        try {
+            existing?.let {
+                if (it.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                    it.stop()
+                }
+                it.release()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error releasing previous AudioTrack: ${e.message}")
+        }
+
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+            .build()
+
+        val audioFormat = AudioFormat.Builder()
+            .setEncoding(encoding)
+            .setSampleRate(AudioConfig.SAMPLE_RATE)
+            .setChannelMask(AudioConfig.CHANNEL_OUT_MASK)
+            .build()
+
+        val minBufferSize = AudioTrack.getMinBufferSize(
+            AudioConfig.SAMPLE_RATE,
+            AudioConfig.CHANNEL_OUT_MASK,
+            encoding
+        )
+
+        val is24 = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && encoding == AudioFormat.ENCODING_PCM_24BIT_PACKED)
+        val packetSize = if (is24) AudioConfig.PACKET_SIZE_24BIT else AudioConfig.PACKET_SIZE_16BIT
+        val bufferSize = if (isLowLatency) {
+            maxOf(minBufferSize, packetSize * 16)
+        } else {
+            maxOf(minBufferSize * 4, packetSize * 100) // Deep buffer ~500ms
+        }
+
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(audioAttributes)
+            .setAudioFormat(audioFormat)
+            .setBufferSizeInBytes(bufferSize)
+            .setPerformanceMode(perfMode)
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+
+        val floatVol = (currentVolume / 100.0f).coerceIn(0.0f, 1.0f)
+        track.setVolume(floatVol)
+        track.play()
+
+        audioTrack = track
+        currentEncoding = encoding
+        currentPerformanceMode = perfMode
+
+        Log.i(TAG, "Configured AudioTrack: encoding=$encoding, perfMode=$perfMode, bufferSize=$bufferSize")
+        return track
+    }
+
     private fun startSink(port: Int) {
         if (isRunning.getAndSet(true)) {
             Log.w(TAG, "AudioSinkService is already active")
@@ -89,38 +155,10 @@ class AudioSinkService : Service() {
 
             val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
             currentProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
-            jitterBuffer = JitterBuffer(currentProfile, AudioConfig.PACKET_SIZE)
+            jitterBuffer = JitterBuffer(currentProfile)
 
-            val audioAttributes = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                .build()
-
-            val audioFormat = AudioFormat.Builder()
-                .setEncoding(AudioConfig.ENCODING)
-                .setSampleRate(AudioConfig.SAMPLE_RATE)
-                .setChannelMask(AudioConfig.CHANNEL_OUT_MASK)
-                .build()
-
-            val minBufferSize = AudioTrack.getMinBufferSize(
-                AudioConfig.SAMPLE_RATE,
-                AudioConfig.CHANNEL_OUT_MASK,
-                AudioConfig.ENCODING
-            )
-            val bufferSize = maxOf(minBufferSize, AudioConfig.PACKET_SIZE * 16)
-
-            val track = AudioTrack.Builder()
-                .setAudioAttributes(audioAttributes)
-                .setAudioFormat(audioFormat)
-                .setBufferSizeInBytes(bufferSize)
-                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
-
-            track.setVolume(1.0f)
-            track.play()
-            audioTrack = track
-
+            val isInitialLowLatency = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY)
+            configureAudioTrack(AudioConfig.ENCODING, isInitialLowLatency, currentRemoteVolume)
             jitterBuffer.reset()
 
             // Bind UDP socket
@@ -177,10 +215,28 @@ class AudioSinkService : Service() {
                                 val payloadLen = ((data[offset + 6].toInt() and 0xFF) shl 8) or (data[offset + 7].toInt() and 0xFF)
 
                                 // Apply remote volume control if changed
+                                // Extract server streaming profile from flags (client strictly follows server)
+                                val isServerLowLatency = (flags.toInt() and AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt()) != 0
+                                val isServer24Bit = (flags.toInt() and AudioConfig.FLAG_24BIT.toInt()) != 0 || payloadLen == AudioConfig.PACKET_SIZE_24BIT
+                                val serverProfile = if (isServerLowLatency) AudioConfig.PROFILE_LOW_LATENCY else AudioConfig.PROFILE_MUSIC
+                                if (serverProfile != currentProfile) {
+                                    currentProfile = serverProfile
+                                    jitterBuffer.setProfile(serverProfile)
+                                    Log.i(TAG, "Adapted client buffer to server profile: $serverProfile")
+                                }
+
+                                val targetEncoding = if (isServer24Bit && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                    AudioFormat.ENCODING_PCM_24BIT_PACKED
+                                } else {
+                                    AudioConfig.ENCODING
+                                }
+                                val activeTrack = configureAudioTrack(targetEncoding, isServerLowLatency, currentRemoteVolume)
+
+                                // Apply remote volume control if changed
                                 if (volume != currentRemoteVolume) {
                                     currentRemoteVolume = volume
                                     val floatVol = (volume / 100.0f).coerceIn(0.0f, 1.0f)
-                                    track.setVolume(floatVol)
+                                    activeTrack.setVolume(floatVol)
 
                                     try {
                                         val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
@@ -190,30 +246,30 @@ class AudioSinkService : Service() {
                                     Log.d(TAG, "Applied remote volume: $volume%")
                                 }
 
-                                // Extract server streaming profile from flags (client strictly follows server)
-                                val isServerLowLatency = (flags.toInt() and AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt()) != 0
-                                val serverProfile = if (isServerLowLatency) AudioConfig.PROFILE_LOW_LATENCY else AudioConfig.PROFILE_MUSIC
-                                if (serverProfile != currentProfile) {
-                                    currentProfile = serverProfile
-                                    jitterBuffer.setProfile(serverProfile)
-                                    Log.i(TAG, "Adapted client buffer to server profile: $serverProfile")
-                                }
-
                                 // Route PCM audio to JitterBuffer
                                 val isDisconnect = (flags.toInt() and AudioConfig.FLAG_DISCONNECT.toInt()) != 0
                                 val isControlOnly = (flags.toInt() and AudioConfig.FLAG_CONTROL_ONLY.toInt()) != 0
-                                if (payloadLen == AudioConfig.PACKET_SIZE && !isDisconnect && !isControlOnly) {
+                                if ((payloadLen == AudioConfig.PACKET_SIZE_16BIT || payloadLen == AudioConfig.PACKET_SIZE_24BIT) && !isDisconnect && !isControlOnly) {
                                     val pcmOffset = offset + AudioConfig.HEADER_SIZE
                                     jitterBuffer.write(data, pcmOffset, payloadLen)
 
                                     // Compute audio peak level
                                     var i = pcmOffset
                                     val end = pcmOffset + payloadLen
-                                    while (i < end - 1) {
-                                        val sample = (data[i].toInt() and 0xFF) or (data[i + 1].toInt() shl 8)
-                                        val abs = Math.abs(sample.toShort().toInt())
-                                        if (abs > maxSampleInInterval) maxSampleInInterval = abs
-                                        i += 2
+                                    if (payloadLen == AudioConfig.PACKET_SIZE_24BIT) {
+                                        while (i < end - 2) {
+                                            val sample = (data[i].toInt() and 0xFF) or ((data[i + 1].toInt() and 0xFF) shl 8) or (data[i + 2].toInt() shl 16)
+                                            val abs = Math.abs(sample)
+                                            if (abs > maxSampleInInterval) maxSampleInInterval = abs
+                                            i += 3
+                                        }
+                                    } else {
+                                        while (i < end - 1) {
+                                            val sample = (data[i].toInt() and 0xFF) or (data[i + 1].toInt() shl 8)
+                                            val abs = Math.abs(sample.toShort().toInt())
+                                            if (abs > maxSampleInInterval) maxSampleInInterval = abs
+                                            i += 2
+                                        }
                                     }
                                 }
 
@@ -227,14 +283,27 @@ class AudioSinkService : Service() {
                         val now = SystemClock.elapsedRealtime()
                         val dt = now - lastStatsTime
                         if (dt >= 250) {
+                            val is24 = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && currentEncoding == AudioFormat.ENCODING_PCM_24BIT_PACKED)
                             val pps = ((intervalPackets * 1000L) / dt).toInt()
                             val bps = ((intervalBytes * 1000L) / dt).toInt()
-                            val peakPercent = ((maxSampleInInterval * 100) / 32768).coerceIn(0, 100)
+                            val peakPercent = if (is24) {
+                                ((maxSampleInInterval * 100L) / 8388608L).toInt().coerceIn(0, 100)
+                            } else {
+                                ((maxSampleInInterval * 100) / 32768).coerceIn(0, 100)
+                            }
                             val senderHost = packet.address?.hostAddress ?: "Transmitter"
                             val fill = jitterBuffer.getFillLevel()
                             val usedSlots = jitterBuffer.getAvailableCount()
                             val totalSlots = jitterBuffer.getSlotCount()
-                            val profileName = if (currentProfile == AudioConfig.PROFILE_LOW_LATENCY) "Low Latency (Server)" else "Music (Server)"
+                            val bitDepth = if (is24) 24 else 16
+                            val bitrate = if (is24) 2304 else 1536
+                            val profileName = if (currentProfile == AudioConfig.PROFILE_LOW_LATENCY) {
+                                "Low Latency (Server)"
+                            } else if (is24) {
+                                "Studio 24-bit Music (Server)"
+                            } else {
+                                "Music (Server)"
+                            }
 
                             StreamState.update {
                                 it.copy(
@@ -249,7 +318,9 @@ class AudioSinkService : Service() {
                                     bufferFillPercent = fill,
                                     bufferSlotsUsed = usedSlots,
                                     bufferSlotsTotal = totalSlots,
-                                    streamProfileName = profileName
+                                    streamProfileName = profileName,
+                                    bitDepth = bitDepth,
+                                    bitrateKbps = bitrate
                                 )
                             }
 
@@ -276,13 +347,16 @@ class AudioSinkService : Service() {
             playbackThread = Thread({
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
 
-                val chunk = ByteArray(AudioConfig.PACKET_SIZE)
+                val chunk = ByteArray(AudioConfig.MAX_PACKET_SIZE)
 
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                     try {
                         val bytesToPlay = jitterBuffer.read(chunk)
                         if (bytesToPlay > 0) {
-                            track.write(chunk, 0, bytesToPlay, AudioTrack.WRITE_BLOCKING)
+                            val track = audioTrack
+                            if (track != null && track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                                track.write(chunk, 0, bytesToPlay, AudioTrack.WRITE_BLOCKING)
+                            }
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Error in playback loop", e)

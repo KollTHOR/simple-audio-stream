@@ -5,11 +5,11 @@ import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
 class JitterBuffer(
-    initialProfile: String = AudioConfig.PROFILE_MUSIC,
-    private val packetSize: Int = AudioConfig.PACKET_SIZE
+    initialProfile: String = AudioConfig.PROFILE_MUSIC
 ) {
     private val maxSlots = AudioConfig.MUSIC_JITTER_BUFFER_SLOTS
-    private val buffer = Array(maxSlots) { ByteArray(packetSize) }
+    private val buffer = Array(maxSlots) { ByteArray(AudioConfig.MAX_PACKET_SIZE) }
+    private val packetLengths = IntArray(maxSlots) { AudioConfig.PACKET_SIZE_16BIT }
     private val lock = ReentrantLock()
     private val notEmptyCondition = lock.newCondition()
 
@@ -25,8 +25,11 @@ class JitterBuffer(
     private var availableCount = 0
     private var isBuffering = true
     private var consecutiveUnderruns = 0
-    private var lastSampleLeft: Short = 0
-    private var lastSampleRight: Short = 0
+    private var lastSampleLeft16: Short = 0
+    private var lastSampleRight16: Short = 0
+    private var lastSampleLeft24: Int = 0
+    private var lastSampleRight24: Int = 0
+    private var lastPacketSize: Int = AudioConfig.PACKET_SIZE_16BIT
 
     fun setProfile(profile: String) {
         lock.withLock {
@@ -46,13 +49,13 @@ class JitterBuffer(
     }
 
     fun write(data: ByteArray, offset: Int, length: Int) {
-        if (length != packetSize) return
+        if (length <= 0 || length > AudioConfig.MAX_PACKET_SIZE) return
 
         lock.withLock {
-            // Gentle latency catch-up for low latency mode:
+            // Gentle latency catch-up ONLY for low latency mode (when targetWatermarkSlots < slotCount):
             // If buffer accumulated noticeable backlog (> targetWatermarkSlots + 4),
             // drop at most 1 oldest packet per write to smoothly converge without stutter.
-            if (availableCount > targetWatermarkSlots + 4) {
+            if (targetWatermarkSlots < slotCount && availableCount > targetWatermarkSlots + 4) {
                 readIndex = (readIndex + 1) % maxSlots
                 availableCount--
             }
@@ -63,7 +66,8 @@ class JitterBuffer(
                 availableCount--
             }
 
-            System.arraycopy(data, offset, buffer[writeIndex], 0, packetSize)
+            System.arraycopy(data, offset, buffer[writeIndex], 0, length)
+            packetLengths[writeIndex] = length
             writeIndex = (writeIndex + 1) % maxSlots
             availableCount++
 
@@ -89,8 +93,9 @@ class JitterBuffer(
                     isBuffering = false
                     consecutiveUnderruns = 0
                 } else {
-                    output.fill(0)
-                    return packetSize
+                    val fillLen = minOf(output.size, lastPacketSize)
+                    output.fill(0, 0, fillLen)
+                    return fillLen
                 }
             }
 
@@ -99,51 +104,83 @@ class JitterBuffer(
                 try {
                     notEmptyCondition.await(waitTimeoutMs, TimeUnit.MILLISECONDS)
                 } catch (ignored: InterruptedException) {
-                    output.fill(0)
-                    return packetSize
+                    val fillLen = minOf(output.size, lastPacketSize)
+                    output.fill(0, 0, fillLen)
+                    return fillLen
                 }
             }
 
             if (availableCount > 0) {
-                System.arraycopy(buffer[readIndex], 0, output, 0, packetSize)
+                val len = packetLengths[readIndex]
+                System.arraycopy(buffer[readIndex], 0, output, 0, len)
                 readIndex = (readIndex + 1) % maxSlots
                 availableCount--
                 consecutiveUnderruns = 0
+                lastPacketSize = len
 
                 // Cache last samples for concealment if needed
-                val lastIdx = packetSize - 4
-                lastSampleLeft = ((output[lastIdx].toInt() and 0xFF) or (output[lastIdx + 1].toInt() shl 8)).toShort()
-                lastSampleRight = ((output[lastIdx + 2].toInt() and 0xFF) or (output[lastIdx + 3].toInt() shl 8)).toShort()
+                if (len == AudioConfig.PACKET_SIZE_24BIT && len >= 6) {
+                    val idxL = len - 6
+                    val idxR = len - 3
+                    lastSampleLeft24 = (output[idxL].toInt() and 0xFF) or ((output[idxL + 1].toInt() and 0xFF) shl 8) or (output[idxL + 2].toInt() shl 16)
+                    lastSampleRight24 = (output[idxR].toInt() and 0xFF) or ((output[idxR + 1].toInt() and 0xFF) shl 8) or (output[idxR + 2].toInt() shl 16)
+                } else if (len >= 4) {
+                    val lastIdx = len - 4
+                    lastSampleLeft16 = ((output[lastIdx].toInt() and 0xFF) or (output[lastIdx + 1].toInt() shl 8)).toShort()
+                    lastSampleRight16 = ((output[lastIdx + 2].toInt() and 0xFF) or (output[lastIdx + 3].toInt() shl 8)).toShort()
+                }
 
-                return packetSize
+                return len
             } else {
                 // Still empty after waiting: increment underrun count
                 consecutiveUnderruns++
+                val len = minOf(output.size, lastPacketSize)
                 if (consecutiveUnderruns >= maxUnderrunFrames) {
                     // Sustained drop: enter buffering
                     isBuffering = true
-                    lastSampleLeft = 0
-                    lastSampleRight = 0
-                    output.fill(0)
-                    return packetSize
+                    lastSampleLeft16 = 0
+                    lastSampleRight16 = 0
+                    lastSampleLeft24 = 0
+                    lastSampleRight24 = 0
+                    output.fill(0, 0, len)
+                    return len
                 }
 
                 // Graceful decay concealment for brief network dropout
-                var curL = lastSampleLeft.toInt()
-                var curR = lastSampleRight.toInt()
-                var i = 0
-                while (i < packetSize) {
-                    curL = (curL * 85) / 100
-                    curR = (curR * 85) / 100
-                    output[i] = (curL and 0xFF).toByte()
-                    output[i + 1] = ((curL shr 8) and 0xFF).toByte()
-                    output[i + 2] = (curR and 0xFF).toByte()
-                    output[i + 3] = ((curR shr 8) and 0xFF).toByte()
-                    i += 4
+                if (len == AudioConfig.PACKET_SIZE_24BIT) {
+                    var curL = lastSampleLeft24
+                    var curR = lastSampleRight24
+                    var i = 0
+                    while (i <= len - 6) {
+                        curL = (curL * 85) / 100
+                        curR = (curR * 85) / 100
+                        output[i] = (curL and 0xFF).toByte()
+                        output[i + 1] = ((curL shr 8) and 0xFF).toByte()
+                        output[i + 2] = ((curL shr 16) and 0xFF).toByte()
+                        output[i + 3] = (curR and 0xFF).toByte()
+                        output[i + 4] = ((curR shr 8) and 0xFF).toByte()
+                        output[i + 5] = ((curR shr 16) and 0xFF).toByte()
+                        i += 6
+                    }
+                    lastSampleLeft24 = curL
+                    lastSampleRight24 = curR
+                } else {
+                    var curL = lastSampleLeft16.toInt()
+                    var curR = lastSampleRight16.toInt()
+                    var i = 0
+                    while (i <= len - 4) {
+                        curL = (curL * 85) / 100
+                        curR = (curR * 85) / 100
+                        output[i] = (curL and 0xFF).toByte()
+                        output[i + 1] = ((curL shr 8) and 0xFF).toByte()
+                        output[i + 2] = (curR and 0xFF).toByte()
+                        output[i + 3] = ((curR shr 8) and 0xFF).toByte()
+                        i += 4
+                    }
+                    lastSampleLeft16 = curL.toShort()
+                    lastSampleRight16 = curR.toShort()
                 }
-                lastSampleLeft = curL.toShort()
-                lastSampleRight = curR.toShort()
-                return packetSize
+                return len
             }
         }
     }
@@ -155,8 +192,10 @@ class JitterBuffer(
             availableCount = 0
             isBuffering = true
             consecutiveUnderruns = 0
-            lastSampleLeft = 0
-            lastSampleRight = 0
+            lastSampleLeft16 = 0
+            lastSampleRight16 = 0
+            lastSampleLeft24 = 0
+            lastSampleRight24 = 0
             notEmptyCondition.signalAll()
         }
     }

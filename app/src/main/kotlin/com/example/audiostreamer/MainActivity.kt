@@ -315,7 +315,7 @@ class MainActivity : AppCompatActivity() {
         val activeProfileName = if (isSinkRunning) {
             t.streamProfileName
         } else {
-            if (savedProfile == AudioConfig.PROFILE_LOW_LATENCY) "Low Latency (30ms)" else "Music Mode (200ms)"
+            if (savedProfile == AudioConfig.PROFILE_LOW_LATENCY) "Low Latency (30ms)" else "Music Mode (500ms)"
         }
         tvPipelineProfile.text = activeProfileName
         tvPipelineFormat.text = "${t.sampleRate / 1000.0} kHz • ${t.bitDepth}-bit Stereo PCM • ${t.bitrateKbps} kbps"
