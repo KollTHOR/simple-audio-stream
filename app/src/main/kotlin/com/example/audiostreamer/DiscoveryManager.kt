@@ -1,5 +1,7 @@
 package com.example.audiostreamer
 
+import android.content.Context
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.SystemClock
 import android.util.Log
@@ -35,6 +37,7 @@ object DiscoveryManager {
     private var receiverResponderJob: Job? = null
     @Volatile
     private var receiverResponderSocket: DatagramSocket? = null
+    private var receiverMulticastLock: WifiManager.MulticastLock? = null
 
     fun getLocalDeviceName(): String {
         val manufacturer = Build.MANUFACTURER.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
@@ -141,8 +144,16 @@ object DiscoveryManager {
         }
     }
 
-    fun startReceiverResponder(scope: CoroutineScope) {
+    fun startReceiverResponder(context: Context, scope: CoroutineScope) {
         if (receiverResponderJob?.isActive == true) return
+
+        try {
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            receiverMulticastLock = wifiManager?.createMulticastLock("DiscoveryManager:ReceiverMulticastLock")?.apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (ignored: Exception) {}
 
         receiverResponderJob = scope.launch(Dispatchers.IO) {
             var socket: DatagramSocket? = null
@@ -222,6 +233,10 @@ object DiscoveryManager {
         receiverResponderJob = null
         receiverResponderSocket?.close()
         receiverResponderSocket = null
+        try {
+            receiverMulticastLock?.let { if (it.isHeld) it.release() }
+        } catch (ignored: Exception) {}
+        receiverMulticastLock = null
     }
 
     fun sendAnnouncement(socket: DatagramSocket) {

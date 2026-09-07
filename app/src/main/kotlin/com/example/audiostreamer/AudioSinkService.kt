@@ -43,6 +43,7 @@ class AudioSinkService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
     private var audioTrack: AudioTrack? = null
     private var datagramSocket: DatagramSocket? = null
     private var receiverThread: Thread? = null
@@ -130,6 +131,12 @@ class AudioSinkService : Service() {
             .setPerformanceMode(perfMode)
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
+
+        if (track.state != AudioTrack.STATE_INITIALIZED && encoding != AudioConfig.ENCODING) {
+            Log.w(TAG, "AudioTrack failed to initialize with encoding $encoding, falling back to 16-bit PCM")
+            try { track.release() } catch (ignored: Exception) {}
+            return configureAudioTrack(AudioConfig.ENCODING, isLowLatency, currentVolume)
+        }
 
         val floatVol = (currentVolume / 100.0f).coerceIn(0.0f, 1.0f)
         track.setVolume(floatVol)
@@ -466,6 +473,11 @@ class AudioSinkService : Service() {
                 setReferenceCounted(false)
                 acquire()
             }
+
+            multicastLock = wifiManager.createMulticastLock("AudioStreamer:SinkMulticastLock").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error acquiring system locks", e)
         }
@@ -489,6 +501,15 @@ class AudioSinkService : Service() {
             Log.e(TAG, "Error releasing WifiLock", e)
         }
         wifiLock = null
+
+        try {
+            multicastLock?.let {
+                if (it.isHeld) it.release()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing MulticastLock", e)
+        }
+        multicastLock = null
     }
 
     private fun startServiceForeground(port: Int) {
