@@ -2,12 +2,14 @@ package com.example.audiostreamer
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import android.view.View
 import android.widget.ImageView
 import android.widget.ProgressBar
@@ -35,6 +37,7 @@ import java.net.URL
 class SettingsActivity : AppCompatActivity() {
 
     companion object {
+        private const val TAG = "SettingsActivity"
         private const val GITHUB_REPO_URL = "https://github.com/KollTHOR/simple-audio-stream"
         private const val GITHUB_API_LATEST_RELEASE =
             "https://api.github.com/repos/KollTHOR/simple-audio-stream/releases/latest"
@@ -55,13 +58,18 @@ class SettingsActivity : AppCompatActivity() {
 
     private var latestApkUrl: String? = null
     private var downloadedApkFile: File? = null
+    private var isWaitingForInstallPermission = false
 
     private val installPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (packageManager.canRequestPackageInstalls()) {
-                downloadedApkFile?.let { installApk(it) }
+                isWaitingForInstallPermission = false
+                val file = downloadedApkFile
+                if (file != null && file.exists() && file.length() > 500_000) {
+                    installApk(file)
+                }
             } else {
                 Toast.makeText(this, "Install permission is required to update", Toast.LENGTH_SHORT).show()
             }
@@ -140,8 +148,17 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
 
+        val targetDir = externalCacheDir ?: cacheDir
+        val cachedApk = File(targetDir, "simple-audio-stream-update.apk")
+        if (cachedApk.exists() && cachedApk.length() > 500_000) {
+            downloadedApkFile = cachedApk
+        }
+
         btnCheckUpdate.setOnClickListener {
-            if (latestApkUrl != null) {
+            val cached = downloadedApkFile
+            if (cached != null && cached.exists() && cached.length() > 500_000) {
+                checkPermissionAndInstall(cached)
+            } else if (latestApkUrl != null) {
                 downloadAndPromptInstall(latestApkUrl!!)
             } else {
                 checkForUpdates()
@@ -152,6 +169,19 @@ class SettingsActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         updateAccessibilityButton()
+        checkInstallPermissionOnResume()
+    }
+
+    private fun checkInstallPermissionOnResume() {
+        if (isWaitingForInstallPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (packageManager.canRequestPackageInstalls()) {
+                isWaitingForInstallPermission = false
+                val file = downloadedApkFile
+                if (file != null && file.exists() && file.length() > 500_000) {
+                    installApk(file)
+                }
+            }
+        }
     }
 
     private fun updateProfileUi(profile: String) {
@@ -240,9 +270,15 @@ class SettingsActivity : AppCompatActivity() {
 
                         if (apkDownloadUrl != null) {
                             latestApkUrl = apkDownloadUrl
+                            val cached = downloadedApkFile
                             if (latestVersionClean != currentVersionClean) {
-                                tvUpdateStatus.text = "New release found: $tagName\nTap below to download and install."
-                                btnCheckUpdate.text = "Download Update ($tagName)"
+                                if (cached != null && cached.exists() && cached.length() > 500_000) {
+                                    tvUpdateStatus.text = "Update downloaded ($tagName).\nTap below to install."
+                                    btnCheckUpdate.text = "Install APK ($tagName)"
+                                } else {
+                                    tvUpdateStatus.text = "New release found: $tagName\nTap below to download and install."
+                                    btnCheckUpdate.text = "Download Update ($tagName)"
+                                }
                             } else {
                                 tvUpdateStatus.text = "You are on the latest release ($tagName).\nTap below to re-download APK if needed."
                                 btnCheckUpdate.text = "Download Latest APK"
@@ -358,6 +394,8 @@ class SettingsActivity : AppCompatActivity() {
     private fun checkPermissionAndInstall(apkFile: File) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (!packageManager.canRequestPackageInstalls()) {
+                isWaitingForInstallPermission = true
+                Toast.makeText(this, "Allow 'Install unknown apps' permission to update", Toast.LENGTH_LONG).show()
                 val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
                     data = Uri.parse("package:$packageName")
                 }
@@ -365,11 +403,13 @@ class SettingsActivity : AppCompatActivity() {
                 return
             }
         }
+        isWaitingForInstallPermission = false
         installApk(apkFile)
     }
 
     private fun installApk(apkFile: File) {
         try {
+            apkFile.setReadable(true, false)
             val contentUri = FileProvider.getUriForFile(
                 this,
                 "$packageName.fileprovider",
@@ -380,9 +420,22 @@ class SettingsActivity : AppCompatActivity() {
                 setDataAndType(contentUri, "application/vnd.android.package-archive")
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
             }
+
+            val resolveList = packageManager.queryIntentActivities(installIntent, PackageManager.MATCH_DEFAULT_ONLY)
+            for (resolveInfo in resolveList) {
+                grantUriPermission(
+                    resolveInfo.activityInfo.packageName,
+                    contentUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+
             startActivity(installIntent)
         } catch (e: Exception) {
+            Log.e(TAG, "Failed to launch installer", e)
             Toast.makeText(this, "Failed to launch installer: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
