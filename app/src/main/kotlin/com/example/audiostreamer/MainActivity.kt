@@ -439,9 +439,9 @@ class MainActivity : AppCompatActivity() {
             t.streamProfileName
         } else {
             when (savedProfile) {
-                AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> "Video (40ms AAC)"
-                AudioConfig.PROFILE_BALANCED -> "Balanced (150ms PCM)"
-                else -> "Music Mode (500ms PCM)"
+                AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> "Low Latency (20ms Studio)"
+                AudioConfig.PROFILE_BALANCED -> "Balanced (100ms Studio)"
+                else -> "Music Mode (500ms Studio)"
             }
         }
         tvPipelineProfile.text = activeProfileName

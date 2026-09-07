@@ -371,8 +371,10 @@ class JitterBuffer(
                         for (f in 0 until fadeFrames) {
                             val factor = (f + 1).toFloat() / fadeFrames
                             val i = f * 6
-                            var sL = (output[i].toInt() and 0xFF) or ((output[i + 1].toInt() and 0xFF) shl 8) or (output[i + 2].toInt() shl 16)
-                            var sR = (output[i + 3].toInt() and 0xFF) or ((output[i + 4].toInt() and 0xFF) shl 8) or (output[i + 5].toInt() shl 16)
+                            val rawL = (output[i].toInt() and 0xFF) or ((output[i + 1].toInt() and 0xFF) shl 8) or ((output[i + 2].toInt() and 0xFF) shl 16)
+                            var sL = if (rawL and 0x800000 != 0) rawL or 0xFF000000.toInt() else rawL
+                            val rawR = (output[i + 3].toInt() and 0xFF) or ((output[i + 4].toInt() and 0xFF) shl 8) or ((output[i + 5].toInt() and 0xFF) shl 16)
+                            var sR = if (rawR and 0x800000 != 0) rawR or 0xFF000000.toInt() else rawR
                             sL = (sL * factor).toInt()
                             sR = (sR * factor).toInt()
                             output[i] = (sL and 0xFF).toByte()
@@ -405,8 +407,8 @@ class JitterBuffer(
                 val driftDelta = smoothBufferFill - targetWatermarkSlots
                 val isLowLat = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY || currentProfile == AudioConfig.PROFILE_VIDEO)
                 val isBalanced = (currentProfile == AudioConfig.PROFILE_BALANCED)
-                val driftThreshold = if (isLowLat) 4f else if (isBalanced) 10f else 16f
-                val minInterval = if (isLowLat) 20 else if (isBalanced) 40 else 80 // At most once every 200ms
+                val driftThreshold = if (isLowLat) 8f else if (isBalanced) 12f else 16f
+                val minInterval = if (isLowLat) 300 else if (isBalanced) 400 else 600 // At most once every 1.5 - 3 seconds
                 if (packetsSinceDriftAdjust >= minInterval && len >= 12) {
                     if (driftDelta > driftThreshold) {
                         applyZeroCrossingFrameDrop(output, len)
@@ -424,8 +426,10 @@ class JitterBuffer(
                 if (is24Sample && len >= 6) {
                     val idxL = len - 6
                     val idxR = len - 3
-                    lastSampleLeft24 = (output[idxL].toInt() and 0xFF) or ((output[idxL + 1].toInt() and 0xFF) shl 8) or (output[idxL + 2].toInt() shl 16)
-                    lastSampleRight24 = (output[idxR].toInt() and 0xFF) or ((output[idxR + 1].toInt() and 0xFF) shl 8) or (output[idxR + 2].toInt() shl 16)
+                    val rawL = (output[idxL].toInt() and 0xFF) or ((output[idxL + 1].toInt() and 0xFF) shl 8) or ((output[idxL + 2].toInt() and 0xFF) shl 16)
+                    lastSampleLeft24 = if (rawL and 0x800000 != 0) rawL or 0xFF000000.toInt() else rawL
+                    val rawR = (output[idxR].toInt() and 0xFF) or ((output[idxR + 1].toInt() and 0xFF) shl 8) or ((output[idxR + 2].toInt() and 0xFF) shl 16)
+                    lastSampleRight24 = if (rawR and 0x800000 != 0) rawR or 0xFF000000.toInt() else rawR
                 } else if (len >= 4) {
                     val lastIdx = len - 4
                     lastSampleLeft16 = ((output[lastIdx].toInt() and 0xFF) or (output[lastIdx + 1].toInt() shl 8)).toShort()

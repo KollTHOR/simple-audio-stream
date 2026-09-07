@@ -355,8 +355,7 @@ class AudioCaptureService : Service() {
 
         val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
         val profile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
-        val isVideoActive = (profile == AudioConfig.PROFILE_VIDEO || profile == AudioConfig.PROFILE_LOW_LATENCY)
-        val isAacActive = isVideoActive
+        val isAacActive = false
 
         val sampleRatePref = prefs.getString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_AUTO) ?: AudioConfig.SAMPLE_RATE_AUTO
         val captureSampleRate: Int = when (sampleRatePref) {
@@ -550,22 +549,20 @@ class AudioCaptureService : Service() {
                 // Populate Magic Header "SA"
                 val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
                 var activeProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
-                val initialIsVideo = (activeProfile == AudioConfig.PROFILE_VIDEO || activeProfile == AudioConfig.PROFILE_LOW_LATENCY)
+                val initialIsLowLat = (activeProfile == AudioConfig.PROFILE_VIDEO || activeProfile == AudioConfig.PROFILE_LOW_LATENCY)
                 val initialIsBalanced = (activeProfile == AudioConfig.PROFILE_BALANCED)
                 val rateFlag = if (captureSampleRate == AudioConfig.SAMPLE_RATE_44100) AudioConfig.FLAG_SAMPLE_RATE_44100.toInt() else 0
-                val prof = if (initialIsVideo || initialIsBalanced) AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt() else AudioConfig.FLAG_PROFILE_MUSIC.toInt()
+                val prof = if (initialIsLowLat || initialIsBalanced) AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt() else AudioConfig.FLAG_PROFILE_MUSIC.toInt()
                 var flag = prof or rateFlag
-                if (isAacActive) {
-                    flag = flag or AudioConfig.FLAG_CODEC_AAC.toInt()
-                } else if (is24BitActive) {
+                if (is24BitActive) {
                     flag = flag or AudioConfig.FLAG_24BIT.toInt()
                 }
                 var profileFlag = flag.toByte()
 
-                val initialProfileDisplayName = if (isAacActive) {
-                    "Video 40ms AAC (Server)"
+                val initialProfileDisplayName = if (initialIsLowLat) {
+                    if (is24BitActive) "Low Latency 20ms 24-bit (Server)" else "Low Latency 20ms PCM (Server)"
                 } else if (initialIsBalanced) {
-                    if (is24BitActive) "Balanced 150ms 24-bit (Server)" else "Balanced 150ms PCM (Server)"
+                    if (is24BitActive) "Balanced 100ms 24-bit (Server)" else "Balanced 100ms PCM (Server)"
                 } else if (is24BitActive) {
                     "Studio 24-bit Music (Server)"
                 } else {
@@ -895,11 +892,12 @@ class AudioCaptureService : Service() {
                             } else {
                                 if (is24Now) 2304 else 1536
                             }
+                            val isLowLatNow = (activeProfile == AudioConfig.PROFILE_VIDEO || activeProfile == AudioConfig.PROFILE_LOW_LATENCY)
                             val isBalancedNow = (activeProfile == AudioConfig.PROFILE_BALANCED)
-                            val profileDisplayName = if (isAacActive) {
-                                "Video 40ms AAC (Server)"
+                            val profileDisplayName = if (isLowLatNow) {
+                                if (is24Now) "Low Latency 20ms 24-bit (Server)" else "Low Latency 20ms PCM (Server)"
                             } else if (isBalancedNow) {
-                                if (is24Now) "Balanced 150ms 24-bit (Server)" else "Balanced 150ms PCM (Server)"
+                                if (is24Now) "Balanced 100ms 24-bit (Server)" else "Balanced 100ms PCM (Server)"
                             } else if (is24BitActive) {
                                 "Studio 24-bit Music (Server)"
                             } else {

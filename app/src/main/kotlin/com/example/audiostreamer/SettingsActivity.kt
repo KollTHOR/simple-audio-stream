@@ -257,8 +257,8 @@ class SettingsActivity : AppCompatActivity() {
         btnProfileMusic.setTextColor(if (isMusic) Color.WHITE else colorTextSecondary)
 
         tvProfileDescription.text = when {
-            isVideo -> "Video Mode (40ms): 192 kbps AAC compressed audio (~47 pkts/s) with ultra-low 40ms buffer. Eliminates Wi-Fi packet aggregation jitter and guarantees instant lip-sync for video, YouTube, and gaming."
-            isBalanced -> "Balanced Mode (150ms): Lossless 24-bit Studio PCM with responsive 150ms buffer. Excellent responsiveness with solid Wi-Fi jitter resilience."
+            isVideo -> "Low Latency (20ms): Pure uncompressed PCM with 15ms buffer cushion. Instantaneous ~20-25ms response for real-time video lip-sync and competitive gaming."
+            isBalanced -> "Balanced Mode (100ms): Lossless Studio PCM with responsive 100ms cushion. Fast reaction time with solid Wi-Fi jitter resilience."
             else -> "Music Mode (500ms): Lossless 24-bit Studio Master PCM with deep 500ms buffer and 2.56s headroom. Maximum jitter protection for uninterrupted hi-fi listening."
         }
     }
