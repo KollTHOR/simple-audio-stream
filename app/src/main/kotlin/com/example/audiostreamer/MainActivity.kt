@@ -104,6 +104,7 @@ class MainActivity : AppCompatActivity() {
             }
             isStarting = true
             isStopping = false
+            DiscoveryManager.stopDiscovery()
             ContextCompat.startForegroundService(this, serviceIntent)
             updateModeAndButtonUi()
         } else {
@@ -213,10 +214,24 @@ class MainActivity : AppCompatActivity() {
 
         layoutIpPill.setOnClickListener {
             refreshLocalIp()
-            detectedLocalIp?.let { ip ->
-                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                clipboard.setPrimaryClip(ClipData.newPlainText("IP Address", ip))
-                Toast.makeText(this, "IP copied: $ip", Toast.LENGTH_SHORT).show()
+            val allIps = NetworkUtils.getAllLocalIpAddresses()
+            if (allIps.size > 1) {
+                MaterialAlertDialogBuilder(this)
+                    .setTitle("Active Network Addresses")
+                    .setItems(allIps.toTypedArray()) { _, which ->
+                        val selectedIp = allIps[which]
+                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("IP Address", selectedIp))
+                        Toast.makeText(this, "IP copied: $selectedIp", Toast.LENGTH_SHORT).show()
+                    }
+                    .setPositiveButton("Close", null)
+                    .show()
+            } else {
+                detectedLocalIp?.let { ip ->
+                    val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("IP Address", ip))
+                    Toast.makeText(this, "IP copied: $ip", Toast.LENGTH_SHORT).show()
+                }
             }
         }
 
@@ -231,6 +246,7 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     Mode.RECEIVER
                 }
+                syncDiscoveryMode()
                 updateModeAndButtonUi()
             }
         }
@@ -276,15 +292,34 @@ class MainActivity : AppCompatActivity() {
             toggleModeGroup.check(R.id.btn_mode_receiver)
         }
         updateModeAndButtonUi()
-
-        if (currentMode == Mode.TRANSMITTER && !AudioCaptureService.isRunning.get()) {
-            DiscoveryManager.startDiscovery(lifecycleScope)
-        }
+        syncDiscoveryMode()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         DiscoveryManager.stopDiscovery()
+        DiscoveryManager.stopReceiverResponder()
+    }
+
+    private fun syncDiscoveryMode() {
+        when (currentMode) {
+            Mode.TRANSMITTER -> {
+                DiscoveryManager.stopReceiverResponder()
+                if (!AudioCaptureService.isRunning.get()) {
+                    DiscoveryManager.startDiscovery(lifecycleScope)
+                } else {
+                    DiscoveryManager.stopDiscovery()
+                }
+            }
+            Mode.RECEIVER -> {
+                DiscoveryManager.stopDiscovery()
+                if (!AudioSinkService.isRunning.get()) {
+                    DiscoveryManager.startReceiverResponder(lifecycleScope)
+                } else {
+                    DiscoveryManager.stopReceiverResponder()
+                }
+            }
+        }
     }
 
     private fun updateDiscoveredChips(devices: List<DiscoveredDevice>) {
@@ -309,7 +344,8 @@ class MainActivity : AppCompatActivity() {
         val allIps = NetworkUtils.getAllLocalIpAddresses()
         if (allIps.isNotEmpty()) {
             detectedLocalIp = allIps.first()
-            tvHeaderIp.text = if (allIps.size > 1) allIps.joinToString(" | ") else allIps.first()
+            val extra = allIps.size - 1
+            tvHeaderIp.text = if (extra > 0) "${allIps.first()} (+$extra)" else allIps.first()
             if (etTargetIp.text.isNullOrEmpty() ||
                 etTargetIp.text.toString() == "192.168.1.255" ||
                 etTargetIp.text.toString() == "192.168.43.255") {
@@ -572,6 +608,7 @@ class MainActivity : AppCompatActivity() {
         isStopping = true
         isStarting = false
         startService(stopIntent)
+        syncDiscoveryMode()
         updateModeAndButtonUi()
     }
 
@@ -596,6 +633,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startReceiverService() {
+        DiscoveryManager.stopReceiverResponder()
         val port = etPort.text?.toString()?.toIntOrNull() ?: AudioConfig.DEFAULT_PORT
         val serviceIntent = Intent(this, AudioSinkService::class.java).apply {
             action = AudioSinkService.ACTION_START
@@ -614,6 +652,7 @@ class MainActivity : AppCompatActivity() {
         isStopping = true
         isStarting = false
         startService(stopIntent)
+        syncDiscoveryMode()
         updateModeAndButtonUi()
     }
 

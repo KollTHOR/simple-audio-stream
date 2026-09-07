@@ -172,12 +172,6 @@ class AudioSinkService : Service() {
             }
             datagramSocket = socket
 
-            // Set system media volume to maximum once at startup so software AudioTrack.setVolume has full dynamic range
-            try {
-                val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVol, 0)
-            } catch (ignored: Exception) {}
-
             val localIp = NetworkUtils.getLocalIpAddress() ?: "0.0.0.0"
             StreamState.update {
                 it.copy(
@@ -188,34 +182,42 @@ class AudioSinkService : Service() {
                 )
             }
 
-            // Send initial discovery announcement broadcast across all active interfaces
+            // Periodic discovery announcement thread across all active interfaces
             Thread({
-                try {
-                    val deviceName = DiscoveryManager.getLocalDeviceName()
-                    val nameBytes = deviceName.toByteArray(Charsets.UTF_8).take(64).toByteArray()
-                    val announceBuf = ByteArray(AudioConfig.HEADER_SIZE + nameBytes.size)
-                    announceBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
-                    announceBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
-                    announceBuf[4] = currentRemoteVolume.toByte()
-                    announceBuf[5] = AudioConfig.FLAG_DISCOVERY_ANNOUNCE
-                    announceBuf[6] = (nameBytes.size shr 8).toByte()
-                    announceBuf[7] = (nameBytes.size and 0xFF).toByte()
-                    System.arraycopy(nameBytes, 0, announceBuf, AudioConfig.HEADER_SIZE, nameBytes.size)
+                while (isRunning.get() && !Thread.currentThread().isInterrupted) {
+                    try {
+                        val deviceName = DiscoveryManager.getLocalDeviceName()
+                        val nameBytes = deviceName.toByteArray(Charsets.UTF_8).take(64).toByteArray()
+                        val announceBuf = ByteArray(AudioConfig.HEADER_SIZE + nameBytes.size)
+                        announceBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
+                        announceBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
+                        announceBuf[4] = currentRemoteVolume.toByte()
+                        announceBuf[5] = AudioConfig.FLAG_DISCOVERY_ANNOUNCE
+                        announceBuf[6] = (nameBytes.size shr 8).toByte()
+                        announceBuf[7] = (nameBytes.size and 0xFF).toByte()
+                        System.arraycopy(nameBytes, 0, announceBuf, AudioConfig.HEADER_SIZE, nameBytes.size)
 
-                    val targets = NetworkUtils.getAllBroadcastAddresses()
-                    for (bcastIp in targets) {
-                        try {
-                            val bcastPacket = DatagramPacket(announceBuf, announceBuf.size, InetAddress.getByName(bcastIp), port)
-                            socket.send(bcastPacket)
-                            Log.d(TAG, "Sent initial discovery announce broadcast to $bcastIp:$port")
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Failed sending announce to $bcastIp: ${e.message}")
+                        val targets = NetworkUtils.getAllBroadcastAddresses()
+                        for (bcastIp in targets) {
+                            try {
+                                val bcastPacket = DatagramPacket(announceBuf, announceBuf.size, InetAddress.getByName(bcastIp), port)
+                                socket.send(bcastPacket)
+                            } catch (ignored: Exception) {}
                         }
+                    } catch (e: Exception) {
+                        Log.d(TAG, "Sink announce loop error: ${e.message}")
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to send initial discovery announce: ${e.message}")
+
+                    try {
+                        Thread.sleep(3000)
+                    } catch (e: InterruptedException) {
+                        break
+                    }
                 }
-            }, "SinkAnnounceThread").start()
+            }, "SinkAnnounceThread").apply {
+                isDaemon = true
+                start()
+            }
 
             // 1. Dedicated UDP Receiver Thread
             receiverThread = Thread({

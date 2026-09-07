@@ -27,8 +27,16 @@ object NetworkUtils {
         try {
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return emptyList()
             for (intf in interfaces) {
-                if (intf.isLoopback || !intf.isUp) continue
-                val addrs = intf.inetAddresses ?: continue
+                try {
+                    if (intf.isLoopback) continue
+                } catch (ignored: Exception) {}
+
+                val addrs = try {
+                    intf.inetAddresses
+                } catch (e: Exception) {
+                    null
+                } ?: continue
+
                 for (addr in addrs) {
                     if (!addr.isLoopbackAddress && addr is Inet4Address) {
                         val host = addr.hostAddress ?: continue
@@ -41,7 +49,7 @@ object NetworkUtils {
         } catch (e: Exception) {
             Log.w(TAG, "Failed to get all local IP addresses", e)
         }
-        return ips
+        return ips.distinct()
     }
 
     /**
@@ -53,21 +61,43 @@ object NetworkUtils {
         try {
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return listOf("255.255.255.255")
             for (intf in interfaces) {
-                if (intf.isLoopback || !intf.isUp) continue
-                for (ifAddr in intf.interfaceAddresses) {
+                try {
+                    if (intf.isLoopback) continue
+                } catch (ignored: Exception) {}
+
+                val ifAddresses = try {
+                    intf.interfaceAddresses
+                } catch (e: Exception) {
+                    null
+                } ?: continue
+
+                for (ifAddr in ifAddresses) {
                     val addr = ifAddr.address
                     if (addr is Inet4Address && !addr.isLoopbackAddress) {
-                        val bcast = ifAddr.broadcast
-                        if (bcast != null && bcast is Inet4Address) {
-                            val host = bcast.hostAddress
-                            if (!host.isNullOrEmpty() && !host.startsWith("127.")) {
-                                broadcasts.add(host)
+                        val host = addr.hostAddress ?: continue
+                        if (host.startsWith("127.")) continue
+
+                        // 1. Direct interface broadcast if provided by OS
+                        try {
+                            val bcast = ifAddr.broadcast
+                            if (bcast != null && bcast is Inet4Address) {
+                                val bcastHost = bcast.hostAddress
+                                if (!bcastHost.isNullOrEmpty() && !bcastHost.startsWith("127.")) {
+                                    broadcasts.add(bcastHost)
+                                }
                             }
-                        } else {
-                            val calculated = calculateBroadcastAddress(addr, ifAddr.networkPrefixLength)
-                            if (!calculated.isNullOrEmpty() && !calculated.startsWith("127.")) {
-                                broadcasts.add(calculated)
-                            }
+                        } catch (ignored: Exception) {}
+
+                        // 2. Prefix-calculated broadcast
+                        val calculated = calculateBroadcastAddress(addr, ifAddr.networkPrefixLength)
+                        if (!calculated.isNullOrEmpty() && !calculated.startsWith("127.")) {
+                            broadcasts.add(calculated)
+                        }
+
+                        // 3. Guaranteed /24 broadcast fallback (e.g. 10.164.116.1 -> 10.164.116.255)
+                        val parts = host.split(".")
+                        if (parts.size == 4) {
+                            broadcasts.add("${parts[0]}.${parts[1]}.${parts[2]}.255")
                         }
                     }
                 }
