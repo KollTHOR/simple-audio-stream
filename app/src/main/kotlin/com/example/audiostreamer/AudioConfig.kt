@@ -15,10 +15,13 @@ object AudioConfig {
     // Packet Header
     const val HEADER_SIZE = 8
     const val MAGIC_HEADER: Short = 0x5341 // "SA" (Simple Audio)
+    // Packet Header Flags
     const val FLAG_NORMAL: Byte = 0x00
     const val FLAG_MUTE: Byte = 0x01
     const val FLAG_CONTROL_ONLY: Byte = 0x02
     const val FLAG_DISCONNECT: Byte = 0x04
+    const val FLAG_PROFILE_MUSIC: Byte = 0x00
+    const val FLAG_PROFILE_LOW_LATENCY: Byte = 0x08
 
     const val DEFAULT_PORT = 50005
 
@@ -33,12 +36,12 @@ object AudioConfig {
     const val MUSIC_MAX_UNDERRUN_FRAMES = 30 // ~150ms
     const val MUSIC_WAIT_TIMEOUT_MS = 20L
 
-    // Low Latency Mode: Optimized for instant audio (<30ms, video/TikTok sync)
-    const val LOW_LATENCY_JITTER_BUFFER_SLOTS = 12 // ~60ms max headroom
-    const val LOW_LATENCY_PRE_ROLL_PACKETS = 1 // 5ms instant start on first packet
-    const val LOW_LATENCY_MAX_UNDERRUN_FRAMES = 2 // ~10ms
-    const val LOW_LATENCY_WAIT_TIMEOUT_MS = 2L
-    const val LOW_LATENCY_TARGET_WATERMARK_SLOTS = 3 // 15ms clamp: drops backlog to prevent audio drift
+    // Low Latency Mode: Optimized for video/TikTok sync without stutter (~40-50ms)
+    const val LOW_LATENCY_JITTER_BUFFER_SLOTS = 24 // ~120ms max headroom
+    const val LOW_LATENCY_PRE_ROLL_PACKETS = 6 // 30ms pre-roll cushion (under 1 video frame)
+    const val LOW_LATENCY_MAX_UNDERRUN_FRAMES = 6 // ~30ms
+    const val LOW_LATENCY_WAIT_TIMEOUT_MS = 8L // 8ms wait absorbs Wi-Fi jitter
+    const val LOW_LATENCY_TARGET_WATERMARK_SLOTS = 10 // 50ms target clamp for lip-sync
 
     // Defaults (Music Mode)
     const val MUSIC_TARGET_WATERMARK_SLOTS = MUSIC_JITTER_BUFFER_SLOTS

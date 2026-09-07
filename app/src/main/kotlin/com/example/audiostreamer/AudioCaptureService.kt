@@ -398,14 +398,18 @@ class AudioCaptureService : Service() {
                 val packet = DatagramPacket(sendBuffer, sendBuffer.size, address, targetPort)
 
                 // Populate Magic Header "SA"
+                val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+                var activeProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
+                var profileFlag = if (activeProfile == AudioConfig.PROFILE_LOW_LATENCY) AudioConfig.FLAG_PROFILE_LOW_LATENCY else AudioConfig.FLAG_PROFILE_MUSIC
+
                 sendBuffer[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
                 sendBuffer[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
-                sendBuffer[5] = AudioConfig.FLAG_NORMAL
+                sendBuffer[5] = profileFlag
                 sendBuffer[6] = (AudioConfig.PACKET_SIZE shr 8).toByte()
                 sendBuffer[7] = (AudioConfig.PACKET_SIZE and 0xFF).toByte()
 
                 record.startRecording()
-                Log.i(TAG, "AudioRecord recording started. Streaming 5ms chunks to $targetIp:$targetPort")
+                Log.i(TAG, "AudioRecord recording started. Streaming 5ms chunks to $targetIp:$targetPort (Profile: $activeProfile)")
 
                 var sequence = 0
                 var totalPackets = 0L
@@ -420,7 +424,8 @@ class AudioCaptureService : Service() {
                         isActive = true,
                         isTransmitter = true,
                         remoteEndpoint = "$targetIp:$targetPort",
-                        statusDetail = "Transmitting to $targetIp:$targetPort"
+                        statusDetail = "Transmitting to $targetIp:$targetPort",
+                        streamProfileName = if (activeProfile == AudioConfig.PROFILE_LOW_LATENCY) "Low Latency (Server)" else "Music (Server)"
                     )
                 }
 
@@ -434,6 +439,9 @@ class AudioCaptureService : Service() {
 
                         // Remote volume
                         sendBuffer[4] = remoteVolumePercent.get().toByte()
+
+                        // Profile flag (Server commands client)
+                        sendBuffer[5] = profileFlag
 
                         packet.length = AudioConfig.HEADER_SIZE + bytesRead
                         socket.send(packet)
@@ -456,6 +464,10 @@ class AudioCaptureService : Service() {
                         val now = SystemClock.elapsedRealtime()
                         val dt = now - lastStatsTime
                         if (dt >= 250) {
+                            // Check if profile was changed dynamically in Settings
+                            activeProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
+                            profileFlag = if (activeProfile == AudioConfig.PROFILE_LOW_LATENCY) AudioConfig.FLAG_PROFILE_LOW_LATENCY else AudioConfig.FLAG_PROFILE_MUSIC
+
                             val pps = ((intervalPackets * 1000L) / dt).toInt()
                             val bps = ((intervalBytes * 1000L) / dt).toInt()
                             val peakPercent = ((maxSampleInInterval * 100) / 32768).coerceIn(0, 100)
@@ -469,7 +481,8 @@ class AudioCaptureService : Service() {
                                     bytesPerSec = bps,
                                     audioPeakPercent = peakPercent,
                                     remoteEndpoint = "$targetIp:$targetPort (DAP Vol: ${remoteVolumePercent.get()}%)",
-                                    statusDetail = if (peakPercent > 1) "Active Audio (DAP Vol: ${remoteVolumePercent.get()}%)" else "Silent Stream"
+                                    statusDetail = if (peakPercent > 1) "Active Audio (DAP Vol: ${remoteVolumePercent.get()}%)" else "Silent Stream",
+                                    streamProfileName = if (activeProfile == AudioConfig.PROFILE_LOW_LATENCY) "Low Latency (Server)" else "Music (Server)"
                                 )
                             }
 

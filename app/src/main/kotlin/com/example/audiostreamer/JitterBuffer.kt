@@ -5,16 +5,20 @@ import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
 class JitterBuffer(
-    private val slotCount: Int = AudioConfig.JITTER_BUFFER_SLOTS,
-    private val packetSize: Int = AudioConfig.PACKET_SIZE,
-    private val preRollThreshold: Int = AudioConfig.PRE_ROLL_PACKETS,
-    private val maxUnderrunFrames: Int = AudioConfig.MAX_UNDERRUN_CONCEAL_FRAMES,
-    private val waitTimeoutMs: Long = AudioConfig.RECEIVER_WAIT_TIMEOUT_MS,
-    private val targetWatermarkSlots: Int = slotCount
+    initialProfile: String = AudioConfig.PROFILE_MUSIC,
+    private val packetSize: Int = AudioConfig.PACKET_SIZE
 ) {
-    private val buffer = Array(slotCount) { ByteArray(packetSize) }
+    private val maxSlots = AudioConfig.MUSIC_JITTER_BUFFER_SLOTS
+    private val buffer = Array(maxSlots) { ByteArray(packetSize) }
     private val lock = ReentrantLock()
     private val notEmptyCondition = lock.newCondition()
+
+    private var currentProfile: String = initialProfile
+    private var slotCount: Int = AudioConfig.getJitterBufferSlots(initialProfile)
+    private var preRollThreshold: Int = AudioConfig.getPreRollPackets(initialProfile)
+    private var maxUnderrunFrames: Int = AudioConfig.getMaxUnderrunFrames(initialProfile)
+    private var waitTimeoutMs: Long = AudioConfig.getReceiverWaitTimeoutMs(initialProfile)
+    private var targetWatermarkSlots: Int = AudioConfig.getTargetWatermarkSlots(initialProfile)
 
     private var writeIndex = 0
     private var readIndex = 0
@@ -24,19 +28,43 @@ class JitterBuffer(
     private var lastSampleLeft: Short = 0
     private var lastSampleRight: Short = 0
 
+    fun setProfile(profile: String) {
+        lock.withLock {
+            if (currentProfile == profile) return
+            currentProfile = profile
+            slotCount = AudioConfig.getJitterBufferSlots(profile)
+            preRollThreshold = AudioConfig.getPreRollPackets(profile)
+            maxUnderrunFrames = AudioConfig.getMaxUnderrunFrames(profile)
+            waitTimeoutMs = AudioConfig.getReceiverWaitTimeoutMs(profile)
+            targetWatermarkSlots = AudioConfig.getTargetWatermarkSlots(profile)
+
+            while (availableCount > slotCount) {
+                readIndex = (readIndex + 1) % maxSlots
+                availableCount--
+            }
+        }
+    }
+
     fun write(data: ByteArray, offset: Int, length: Int) {
         if (length != packetSize) return
 
         lock.withLock {
-            // Drop oldest slot if we exceed targetWatermarkSlots or slotCount
-            // This actively clamps latency so delayed packet bursts never cause audio lag
-            while (availableCount >= targetWatermarkSlots || availableCount >= slotCount) {
-                readIndex = (readIndex + 1) % slotCount
+            // Gentle latency catch-up for low latency mode:
+            // If buffer accumulated noticeable backlog (> targetWatermarkSlots + 4),
+            // drop at most 1 oldest packet per write to smoothly converge without stutter.
+            if (availableCount > targetWatermarkSlots + 4) {
+                readIndex = (readIndex + 1) % maxSlots
+                availableCount--
+            }
+
+            // Hard capacity clamp: buffer overflow
+            if (availableCount >= slotCount) {
+                readIndex = (readIndex + 1) % maxSlots
                 availableCount--
             }
 
             System.arraycopy(data, offset, buffer[writeIndex], 0, packetSize)
-            writeIndex = (writeIndex + 1) % slotCount
+            writeIndex = (writeIndex + 1) % maxSlots
             availableCount++
 
             if (isBuffering && availableCount >= preRollThreshold) {
@@ -78,7 +106,7 @@ class JitterBuffer(
 
             if (availableCount > 0) {
                 System.arraycopy(buffer[readIndex], 0, output, 0, packetSize)
-                readIndex = (readIndex + 1) % slotCount
+                readIndex = (readIndex + 1) % maxSlots
                 availableCount--
                 consecutiveUnderruns = 0
 
@@ -146,4 +174,5 @@ class JitterBuffer(
     }
 
     fun getSlotCount(): Int = slotCount
+    fun getCurrentProfile(): String = currentProfile
 }

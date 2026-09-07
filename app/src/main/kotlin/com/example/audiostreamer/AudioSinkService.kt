@@ -89,28 +89,12 @@ class AudioSinkService : Service() {
 
             val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
             currentProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
-            val isLowLatency = currentProfile == AudioConfig.PROFILE_LOW_LATENCY
+            jitterBuffer = JitterBuffer(currentProfile, AudioConfig.PACKET_SIZE)
 
-            val slotCount = AudioConfig.getJitterBufferSlots(currentProfile)
-            val preRoll = AudioConfig.getPreRollPackets(currentProfile)
-            val maxUnderrun = AudioConfig.getMaxUnderrunFrames(currentProfile)
-            val waitTimeout = AudioConfig.getReceiverWaitTimeoutMs(currentProfile)
-            val targetWatermark = AudioConfig.getTargetWatermarkSlots(currentProfile)
-            jitterBuffer = JitterBuffer(slotCount, AudioConfig.PACKET_SIZE, preRoll, maxUnderrun, waitTimeout, targetWatermark)
-
-            @Suppress("DEPRECATION")
-            val audioAttributes = if (isLowLatency) {
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_GAME)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .setFlags(AudioAttributes.FLAG_LOW_LATENCY)
-                    .build()
-            } else {
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .build()
-            }
+            val audioAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                .build()
 
             val audioFormat = AudioFormat.Builder()
                 .setEncoding(AudioConfig.ENCODING)
@@ -123,28 +107,15 @@ class AudioSinkService : Service() {
                 AudioConfig.CHANNEL_OUT_MASK,
                 AudioConfig.ENCODING
             )
-            val bufferSize = if (isLowLatency) minBufferSize else maxOf(minBufferSize * 2, AudioConfig.PACKET_SIZE * preRoll * 2)
+            val bufferSize = maxOf(minBufferSize, AudioConfig.PACKET_SIZE * 16)
 
             val track = AudioTrack.Builder()
                 .setAudioAttributes(audioAttributes)
                 .setAudioFormat(audioFormat)
                 .setBufferSizeInBytes(bufferSize)
-                .setPerformanceMode(
-                    if (isLowLatency) AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
-                    else AudioTrack.PERFORMANCE_MODE_NONE
-                )
+                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
-
-            if (isLowLatency) {
-                try {
-                    val bytesPerFrame = AudioConfig.CHANNELS * 2
-                    val minFrames = minBufferSize / bytesPerFrame
-                    track.bufferSizeInFrames = minFrames
-                } catch (e: Exception) {
-                    Log.w(TAG, "Could not set AudioTrack bufferSizeInFrames: ${e.message}")
-                }
-            }
 
             track.setVolume(1.0f)
             track.play()
@@ -219,8 +190,19 @@ class AudioSinkService : Service() {
                                     Log.d(TAG, "Applied remote volume: $volume%")
                                 }
 
+                                // Extract server streaming profile from flags (client strictly follows server)
+                                val isServerLowLatency = (flags.toInt() and AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt()) != 0
+                                val serverProfile = if (isServerLowLatency) AudioConfig.PROFILE_LOW_LATENCY else AudioConfig.PROFILE_MUSIC
+                                if (serverProfile != currentProfile) {
+                                    currentProfile = serverProfile
+                                    jitterBuffer.setProfile(serverProfile)
+                                    Log.i(TAG, "Adapted client buffer to server profile: $serverProfile")
+                                }
+
                                 // Route PCM audio to JitterBuffer
-                                if (payloadLen == AudioConfig.PACKET_SIZE && flags.toInt() == AudioConfig.FLAG_NORMAL.toInt()) {
+                                val isDisconnect = (flags.toInt() and AudioConfig.FLAG_DISCONNECT.toInt()) != 0
+                                val isControlOnly = (flags.toInt() and AudioConfig.FLAG_CONTROL_ONLY.toInt()) != 0
+                                if (payloadLen == AudioConfig.PACKET_SIZE && !isDisconnect && !isControlOnly) {
                                     val pcmOffset = offset + AudioConfig.HEADER_SIZE
                                     jitterBuffer.write(data, pcmOffset, payloadLen)
 
@@ -252,7 +234,7 @@ class AudioSinkService : Service() {
                             val fill = jitterBuffer.getFillLevel()
                             val usedSlots = jitterBuffer.getAvailableCount()
                             val totalSlots = jitterBuffer.getSlotCount()
-                            val profileName = if (currentProfile == AudioConfig.PROFILE_LOW_LATENCY) "Low Latency (30ms)" else "Music Mode (200ms)"
+                            val profileName = if (currentProfile == AudioConfig.PROFILE_LOW_LATENCY) "Low Latency (Server)" else "Music (Server)"
 
                             StreamState.update {
                                 it.copy(

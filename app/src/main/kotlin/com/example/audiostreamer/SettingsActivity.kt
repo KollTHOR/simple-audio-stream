@@ -164,13 +164,13 @@ class SettingsActivity : AppCompatActivity() {
             btnProfileLowLatency.setTextColor(Color.WHITE)
             btnProfileMusic.backgroundTintList = ColorStateList.valueOf(colorCard)
             btnProfileMusic.setTextColor(colorTextSecondary)
-            tvProfileDescription.text = "Low Latency Mode: 5ms instant start, 15ms active clamp, and Android Fast Track. Optimized for TikTok, video sync, and instant reaction audio."
+            tvProfileDescription.text = "Low Latency Mode: 30ms pre-roll, 50ms target clamp, and Android Fast Track. Optimized for TikTok, video lip-sync, and instant reaction audio. Controlled by server."
         } else {
             btnProfileMusic.backgroundTintList = ColorStateList.valueOf(colorPrimary)
             btnProfileMusic.setTextColor(Color.WHITE)
             btnProfileLowLatency.backgroundTintList = ColorStateList.valueOf(colorCard)
             btnProfileLowLatency.setTextColor(colorTextSecondary)
-            tvProfileDescription.text = "Music Mode: 200ms pre-roll cushion with a 1.28s jitter buffer. Ideal for uninterrupted lossless audio listening."
+            tvProfileDescription.text = "Music Mode: 200ms pre-roll cushion with a 1.28s jitter buffer. Ideal for uninterrupted lossless audio listening. Controlled by server."
         }
     }
 
