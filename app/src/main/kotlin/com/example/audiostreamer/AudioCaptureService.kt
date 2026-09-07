@@ -442,18 +442,24 @@ class AudioCaptureService : Service() {
                     start()
                 }
 
-                val sendBuffer = ByteArray(AudioConfig.HEADER_SIZE + activePayloadSize)
+                val sendBuffer = ByteArray(AudioConfig.HEADER_SIZE + AudioConfig.MAX_PACKET_SIZE)
                 val packet = DatagramPacket(sendBuffer, sendBuffer.size, address, targetPort)
 
                 // Populate Magic Header "SA"
                 val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
                 var activeProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
-                var profileFlag = if (activeProfile == AudioConfig.PROFILE_LOW_LATENCY) AudioConfig.FLAG_PROFILE_LOW_LATENCY else AudioConfig.FLAG_PROFILE_MUSIC
-                if (is24BitActive) {
-                    profileFlag = (profileFlag.toInt() or AudioConfig.FLAG_24BIT.toInt()).toByte()
+                val initialInLowLatency = (activeProfile == AudioConfig.PROFILE_LOW_LATENCY)
+                var profileFlag = if (initialInLowLatency) {
+                    AudioConfig.FLAG_PROFILE_LOW_LATENCY
+                } else {
+                    var flag = AudioConfig.FLAG_PROFILE_MUSIC
+                    if (is24BitActive) {
+                        flag = (flag.toInt() or AudioConfig.FLAG_24BIT.toInt()).toByte()
+                    }
+                    flag
                 }
 
-                val initialProfileDisplayName = if (activeProfile == AudioConfig.PROFILE_LOW_LATENCY) {
+                val initialProfileDisplayName = if (initialInLowLatency) {
                     "Low Latency (Server)"
                 } else if (is24BitActive) {
                     "Studio 24-bit Music (Server)"
@@ -461,14 +467,15 @@ class AudioCaptureService : Service() {
                     "Music (Server)"
                 }
 
+                val initialPayload = if (initialInLowLatency) AudioConfig.PACKET_SIZE_16BIT else activePayloadSize
                 sendBuffer[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
                 sendBuffer[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
                 sendBuffer[5] = profileFlag
-                sendBuffer[6] = (activePayloadSize shr 8).toByte()
-                sendBuffer[7] = (activePayloadSize and 0xFF).toByte()
+                sendBuffer[6] = (initialPayload shr 8).toByte()
+                sendBuffer[7] = (initialPayload and 0xFF).toByte()
 
                 record.startRecording()
-                Log.i(TAG, "AudioRecord recording started. Streaming 5ms chunks to $targetIp:$targetPort (Profile: $initialProfileDisplayName, Payload: $activePayloadSize bytes)")
+                Log.i(TAG, "AudioRecord recording started. Streaming 5ms chunks to $targetIp:$targetPort (Profile: $initialProfileDisplayName, Payload: $initialPayload bytes)")
 
                 var sequence = 0
                 var totalPackets = 0L
@@ -478,6 +485,9 @@ class AudioCaptureService : Service() {
                 var lastStatsTime = SystemClock.elapsedRealtime()
                 var maxSampleInInterval = 0
 
+                val initialBitDepth = if (is24BitActive && !initialInLowLatency) 24 else 16
+                val initialBitrate = if (initialBitDepth == 24) 2304 else 1536
+
                 StreamState.update {
                     it.copy(
                         isActive = true,
@@ -485,14 +495,46 @@ class AudioCaptureService : Service() {
                         remoteEndpoint = "$targetIp:$targetPort",
                         statusDetail = "Transmitting to $targetIp:$targetPort",
                         streamProfileName = initialProfileDisplayName,
-                        bitDepth = if (is24BitActive) 24 else 16,
-                        bitrateKbps = if (is24BitActive) 2304 else 1536
+                        bitDepth = initialBitDepth,
+                        bitrateKbps = initialBitrate
                     )
                 }
 
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                     val bytesRead = record.read(sendBuffer, AudioConfig.HEADER_SIZE, activePayloadSize, AudioRecord.READ_BLOCKING)
                     if (bytesRead > 0) {
+                        val currentInLowLatency = (activeProfile == AudioConfig.PROFILE_LOW_LATENCY)
+                        val effectivePayloadLen: Int
+                        val isEffective24: Boolean
+
+                        if (currentInLowLatency) {
+                            if (is24BitActive) {
+                                // Downconvert 24-bit packed PCM to 16-bit PCM in-place for low latency mode
+                                var src = AudioConfig.HEADER_SIZE
+                                var dst = AudioConfig.HEADER_SIZE
+                                val end = AudioConfig.HEADER_SIZE + bytesRead
+                                while (src < end) {
+                                    sendBuffer[dst] = sendBuffer[src + 1]
+                                    sendBuffer[dst + 1] = sendBuffer[src + 2]
+                                    dst += 2
+                                    src += 3
+                                }
+                                effectivePayloadLen = dst - AudioConfig.HEADER_SIZE
+                            } else {
+                                effectivePayloadLen = bytesRead
+                            }
+                            isEffective24 = false
+                            profileFlag = AudioConfig.FLAG_PROFILE_LOW_LATENCY
+                        } else {
+                            effectivePayloadLen = bytesRead
+                            isEffective24 = is24BitActive
+                            var flag = AudioConfig.FLAG_PROFILE_MUSIC
+                            if (is24BitActive) {
+                                flag = (flag.toInt() or AudioConfig.FLAG_24BIT.toInt()).toByte()
+                            }
+                            profileFlag = flag
+                        }
+
                         // Sequence number
                         sendBuffer[2] = (sequence shr 8).toByte()
                         sendBuffer[3] = (sequence and 0xFF).toByte()
@@ -504,7 +546,11 @@ class AudioCaptureService : Service() {
                         // Profile flag (Server commands client)
                         sendBuffer[5] = profileFlag
 
-                        packet.length = AudioConfig.HEADER_SIZE + bytesRead
+                        // Payload length in header
+                        sendBuffer[6] = (effectivePayloadLen shr 8).toByte()
+                        sendBuffer[7] = (effectivePayloadLen and 0xFF).toByte()
+
+                        packet.length = AudioConfig.HEADER_SIZE + effectivePayloadLen
                         socket.send(packet)
 
                         totalPackets++
@@ -513,9 +559,9 @@ class AudioCaptureService : Service() {
                         intervalBytes += packet.length
 
                         // Compute peak amplitude
-                        if (is24BitActive) {
+                        if (isEffective24) {
                             var i = AudioConfig.HEADER_SIZE
-                            val end = AudioConfig.HEADER_SIZE + bytesRead
+                            val end = AudioConfig.HEADER_SIZE + effectivePayloadLen
                             while (i < end - 2) {
                                 // Correct little-endian 24-bit sign extension
                                 val raw = (sendBuffer[i].toInt() and 0xFF) or
@@ -528,7 +574,7 @@ class AudioCaptureService : Service() {
                             }
                         } else {
                             var i = AudioConfig.HEADER_SIZE
-                            val end = AudioConfig.HEADER_SIZE + bytesRead
+                            val end = AudioConfig.HEADER_SIZE + effectivePayloadLen
                             while (i < end - 1) {
                                 val sample = (sendBuffer[i].toInt() and 0xFF) or (sendBuffer[i + 1].toInt() shl 8)
                                 val abs = kotlin.math.abs(sample.toShort().toInt())
@@ -540,23 +586,20 @@ class AudioCaptureService : Service() {
                         val now = SystemClock.elapsedRealtime()
                         val dt = now - lastStatsTime
                         if (dt >= 250) {
-                            // Check if profile was changed dynamically in Settings
                             activeProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
-                            profileFlag = if (activeProfile == AudioConfig.PROFILE_LOW_LATENCY) AudioConfig.FLAG_PROFILE_LOW_LATENCY else AudioConfig.FLAG_PROFILE_MUSIC
-                            if (is24BitActive) {
-                                profileFlag = (profileFlag.toInt() or AudioConfig.FLAG_24BIT.toInt()).toByte()
-                            }
+                            val inLowLatencyNow = (activeProfile == AudioConfig.PROFILE_LOW_LATENCY)
+                            val is24Now = is24BitActive && !inLowLatencyNow
 
                             val pps = ((intervalPackets * 1000L) / dt).toInt()
                             val bps = ((intervalBytes * 1000L) / dt).toInt()
-                            val peakPercent = if (is24BitActive) {
+                            val peakPercent = if (is24Now) {
                                 ((maxSampleInInterval * 100L) / 8388608L).toInt().coerceIn(0, 100)
                             } else {
                                 ((maxSampleInInterval * 100) / 32768).coerceIn(0, 100)
                             }
-                            val bitDepth = if (is24BitActive) 24 else 16
-                            val bitrate = if (is24BitActive) 2304 else 1536
-                            val profileDisplayName = if (activeProfile == AudioConfig.PROFILE_LOW_LATENCY) {
+                            val bitDepth = if (is24Now) 24 else 16
+                            val bitrate = if (is24Now) 2304 else 1536
+                            val profileDisplayName = if (inLowLatencyNow) {
                                 "Low Latency (Server)"
                             } else if (is24BitActive) {
                                 "Studio 24-bit Music (Server)"

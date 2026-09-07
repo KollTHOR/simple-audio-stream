@@ -217,7 +217,7 @@ class AudioSinkService : Service() {
 
                                 // Extract server streaming profile from flags (client strictly follows server)
                                 val isServerLowLatency = (flags.toInt() and AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt()) != 0
-                                val isServer24Bit = (flags.toInt() and AudioConfig.FLAG_24BIT.toInt()) != 0 || payloadLen == AudioConfig.PACKET_SIZE_24BIT
+                                val isServer24Bit = !isServerLowLatency && ((flags.toInt() and AudioConfig.FLAG_24BIT.toInt()) != 0 || payloadLen == AudioConfig.PACKET_SIZE_24BIT)
                                 val serverProfile = if (isServerLowLatency) AudioConfig.PROFILE_LOW_LATENCY else AudioConfig.PROFILE_MUSIC
                                 if (serverProfile != currentProfile) {
                                     currentProfile = serverProfile
@@ -264,17 +264,41 @@ class AudioSinkService : Service() {
                                 val isControlOnly = (flags.toInt() and AudioConfig.FLAG_CONTROL_ONLY.toInt()) != 0
                                 if ((payloadLen == AudioConfig.PACKET_SIZE_16BIT || payloadLen == AudioConfig.PACKET_SIZE_24BIT) && !isDisconnect && !isControlOnly) {
                                     val pcmOffset = offset + AudioConfig.HEADER_SIZE
-                                    jitterBuffer.write(data, pcmOffset, payloadLen)
+                                    val effectivePayloadLen: Int
+                                    val writeData: ByteArray
+                                    val writeOffset: Int
+
+                                    if (isServerLowLatency && payloadLen == AudioConfig.PACKET_SIZE_24BIT) {
+                                        // Downconvert 24-bit to 16-bit for low latency mode (safety net)
+                                        val downconverted16 = ByteArray(AudioConfig.PACKET_SIZE_16BIT)
+                                        var s = pcmOffset
+                                        var d = 0
+                                        while (s < pcmOffset + payloadLen && d < AudioConfig.PACKET_SIZE_16BIT) {
+                                            downconverted16[d] = data[s + 1]
+                                            downconverted16[d + 1] = data[s + 2]
+                                            d += 2
+                                            s += 3
+                                        }
+                                        writeData = downconverted16
+                                        writeOffset = 0
+                                        effectivePayloadLen = AudioConfig.PACKET_SIZE_16BIT
+                                    } else {
+                                        writeData = data
+                                        writeOffset = pcmOffset
+                                        effectivePayloadLen = payloadLen
+                                    }
+
+                                    jitterBuffer.write(writeData, writeOffset, effectivePayloadLen)
 
                                     // Compute audio peak level
-                                    var i = pcmOffset
-                                    val end = pcmOffset + payloadLen
-                                    if (payloadLen == AudioConfig.PACKET_SIZE_24BIT) {
+                                    var i = writeOffset
+                                    val end = writeOffset + effectivePayloadLen
+                                    if (effectivePayloadLen == AudioConfig.PACKET_SIZE_24BIT) {
                                         while (i < end - 2) {
                                             // Correct little-endian 24-bit sign extension
-                                            val raw = (data[i].toInt() and 0xFF) or
-                                                ((data[i + 1].toInt() and 0xFF) shl 8) or
-                                                ((data[i + 2].toInt() and 0xFF) shl 16)
+                                            val raw = (writeData[i].toInt() and 0xFF) or
+                                                ((writeData[i + 1].toInt() and 0xFF) shl 8) or
+                                                ((writeData[i + 2].toInt() and 0xFF) shl 16)
                                             val sample = if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw
                                             val abs = kotlin.math.abs(sample)
                                             if (abs > maxSampleInInterval) maxSampleInInterval = abs
@@ -282,7 +306,7 @@ class AudioSinkService : Service() {
                                         }
                                     } else {
                                         while (i < end - 1) {
-                                            val sample = (data[i].toInt() and 0xFF) or (data[i + 1].toInt() shl 8)
+                                            val sample = (writeData[i].toInt() and 0xFF) or (writeData[i + 1].toInt() shl 8)
                                             val abs = kotlin.math.abs(sample.toShort().toInt())
                                             if (abs > maxSampleInInterval) maxSampleInInterval = abs
                                             i += 2
@@ -300,7 +324,7 @@ class AudioSinkService : Service() {
                         val now = SystemClock.elapsedRealtime()
                         val dt = now - lastStatsTime
                         if (dt >= 250) {
-                            val is24 = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && currentEncoding == AudioFormat.ENCODING_PCM_24BIT_PACKED)
+                            val is24 = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && currentEncoding == AudioFormat.ENCODING_PCM_24BIT_PACKED && currentProfile != AudioConfig.PROFILE_LOW_LATENCY)
                             val pps = ((intervalPackets * 1000L) / dt).toInt()
                             val bps = ((intervalBytes * 1000L) / dt).toInt()
                             val peakPercent = if (is24) {
