@@ -491,6 +491,9 @@ class AudioCaptureService : Service() {
                 var intervalBytes = 0
                 var lastStatsTime = SystemClock.elapsedRealtime()
                 var maxSampleInInterval = 0
+                var silentPacketsCount = 0
+                var isSilenceSuppressed = false
+                var lastHeartbeatTime = 0L
 
                 val initialBitDepth = if (is24BitActive && !initialInLowLatency) 24 else 16
                 val initialBitrate = if (initialBitDepth == 24) 2304 else 1536
@@ -503,7 +506,8 @@ class AudioCaptureService : Service() {
                         statusDetail = "Transmitting to $targetIp:$targetPort",
                         streamProfileName = initialProfileDisplayName,
                         bitDepth = initialBitDepth,
-                        bitrateKbps = initialBitrate
+                        bitrateKbps = initialBitrate,
+                        isSilenceSuppressed = false
                     )
                 }
 
@@ -542,41 +546,18 @@ class AudioCaptureService : Service() {
                             profileFlag = flag
                         }
 
-                        // Sequence number
-                        sendBuffer[2] = (sequence shr 8).toByte()
-                        sendBuffer[3] = (sequence and 0xFF).toByte()
-                        sequence = (sequence + 1) and 0xFFFF
-
-                        // Remote volume
-                        sendBuffer[4] = remoteVolumePercent.get().toByte()
-
-                        // Profile flag (Server commands client)
-                        sendBuffer[5] = profileFlag
-
-                        // Payload length in header
-                        sendBuffer[6] = (effectivePayloadLen shr 8).toByte()
-                        sendBuffer[7] = (effectivePayloadLen and 0xFF).toByte()
-
-                        packet.length = AudioConfig.HEADER_SIZE + effectivePayloadLen
-                        socket.send(packet)
-
-                        totalPackets++
-                        totalBytes += packet.length
-                        intervalPackets++
-                        intervalBytes += packet.length
-
-                        // Compute peak amplitude
+                        // Compute peak amplitude of current chunk
+                        var chunkPeak = 0
                         if (isEffective24) {
                             var i = AudioConfig.HEADER_SIZE
                             val end = AudioConfig.HEADER_SIZE + effectivePayloadLen
                             while (i < end - 2) {
-                                // Correct little-endian 24-bit sign extension
                                 val raw = (sendBuffer[i].toInt() and 0xFF) or
                                     ((sendBuffer[i + 1].toInt() and 0xFF) shl 8) or
                                     ((sendBuffer[i + 2].toInt() and 0xFF) shl 16)
                                 val sample = if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw
                                 val abs = kotlin.math.abs(sample)
-                                if (abs > maxSampleInInterval) maxSampleInInterval = abs
+                                if (abs > chunkPeak) chunkPeak = abs
                                 i += 3
                             }
                         } else {
@@ -585,12 +566,66 @@ class AudioCaptureService : Service() {
                             while (i < end - 1) {
                                 val sample = (sendBuffer[i].toInt() and 0xFF) or (sendBuffer[i + 1].toInt() shl 8)
                                 val abs = kotlin.math.abs(sample.toShort().toInt())
-                                if (abs > maxSampleInInterval) maxSampleInInterval = abs
+                                if (abs > chunkPeak) chunkPeak = abs
                                 i += 2
                             }
                         }
+                        if (chunkPeak > maxSampleInInterval) maxSampleInInterval = chunkPeak
+
+                        // Silence suppression evaluation
+                        val isChunkSilent = if (isEffective24) {
+                            chunkPeak <= AudioConfig.SILENCE_AMPLITUDE_THRESHOLD_24BIT
+                        } else {
+                            chunkPeak <= AudioConfig.SILENCE_AMPLITUDE_THRESHOLD_16BIT
+                        }
+
+                        if (isChunkSilent) {
+                            silentPacketsCount++
+                            if (silentPacketsCount >= AudioConfig.SILENCE_PACKETS_THRESHOLD) {
+                                isSilenceSuppressed = true
+                            }
+                        } else {
+                            silentPacketsCount = 0
+                            isSilenceSuppressed = false
+                        }
 
                         val now = SystemClock.elapsedRealtime()
+                        val shouldSendHeartbeat = isSilenceSuppressed && (now - lastHeartbeatTime >= AudioConfig.SILENCE_HEARTBEAT_INTERVAL_MS)
+
+                        // Transmit regular audio immediately (<5ms wakeup) or silence heartbeat at 2 pps
+                        if (!isSilenceSuppressed || shouldSendHeartbeat) {
+                            sendBuffer[2] = (sequence shr 8).toByte()
+                            sendBuffer[3] = (sequence and 0xFF).toByte()
+                            sequence = (sequence + 1) and 0xFFFF
+
+                            sendBuffer[4] = remoteVolumePercent.get().toByte()
+
+                            val sendFlags = if (isSilenceSuppressed) {
+                                (profileFlag.toInt() or AudioConfig.FLAG_SILENCE.toInt()).toByte()
+                            } else {
+                                profileFlag
+                            }
+                            sendBuffer[5] = sendFlags
+
+                            if (isSilenceSuppressed) {
+                                sendBuffer[6] = 0
+                                sendBuffer[7] = 0
+                                packet.length = AudioConfig.HEADER_SIZE
+                                lastHeartbeatTime = now
+                            } else {
+                                sendBuffer[6] = (effectivePayloadLen shr 8).toByte()
+                                sendBuffer[7] = (effectivePayloadLen and 0xFF).toByte()
+                                packet.length = AudioConfig.HEADER_SIZE + effectivePayloadLen
+                            }
+
+                            socket.send(packet)
+
+                            totalPackets++
+                            totalBytes += packet.length
+                            intervalPackets++
+                            intervalBytes += packet.length
+                        }
+
                         val dt = now - lastStatsTime
                         if (dt >= 250) {
                             activeProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
@@ -614,6 +649,14 @@ class AudioCaptureService : Service() {
                                 "Music (Server)"
                             }
 
+                            val statusDetailText = if (isSilenceSuppressed) {
+                                "Silence Suppressed (Standby)"
+                            } else if (peakPercent > 1) {
+                                "Active Audio ($bitDepth-bit)"
+                            } else {
+                                "Silent Stream"
+                            }
+
                             StreamState.update {
                                 it.copy(
                                     isActive = true,
@@ -623,10 +666,11 @@ class AudioCaptureService : Service() {
                                     bytesPerSec = bps,
                                     audioPeakPercent = peakPercent,
                                     remoteEndpoint = "$targetIp:$targetPort (DAP Vol: ${remoteVolumePercent.get()}%)",
-                                    statusDetail = if (peakPercent > 1) "Active Audio ($bitDepth-bit)" else "Silent Stream",
+                                    statusDetail = statusDetailText,
                                     streamProfileName = profileDisplayName,
                                     bitDepth = bitDepth,
-                                    bitrateKbps = bitrate
+                                    bitrateKbps = bitrate,
+                                    isSilenceSuppressed = isSilenceSuppressed
                                 )
                             }
 

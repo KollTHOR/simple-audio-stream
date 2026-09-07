@@ -20,7 +20,8 @@ data class Telemetry(
     val sampleRate: Int = AudioConfig.SAMPLE_RATE,
     val bitDepth: Int = 16,
     val channels: Int = AudioConfig.CHANNELS,
-    val bitrateKbps: Int = 1536
+    val bitrateKbps: Int = 1536,
+    val isSilenceSuppressed: Boolean = false
 )
 
 object StreamState {

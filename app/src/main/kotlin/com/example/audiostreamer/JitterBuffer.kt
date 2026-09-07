@@ -30,6 +30,16 @@ class JitterBuffer(
     private var lastSampleLeft24: Int = 0
     private var lastSampleRight24: Int = 0
     private var lastPacketSize: Int = AudioConfig.PACKET_SIZE_16BIT
+    private var smoothBufferFill: Float = preRollThreshold.toFloat()
+    private var isTransmitterSilent = false
+
+    fun onSilenceHeartbeat() {
+        lock.withLock {
+            isTransmitterSilent = true
+            consecutiveUnderruns = 0
+            notEmptyCondition.signal()
+        }
+    }
 
     fun setProfile(profile: String) {
         lock.withLock {
@@ -40,6 +50,7 @@ class JitterBuffer(
             maxUnderrunFrames = AudioConfig.getMaxUnderrunFrames(profile)
             waitTimeoutMs = AudioConfig.getReceiverWaitTimeoutMs(profile)
             targetWatermarkSlots = AudioConfig.getTargetWatermarkSlots(profile)
+            smoothBufferFill = preRollThreshold.toFloat()
 
             while (availableCount > slotCount) {
                 readIndex = (readIndex + 1) % maxSlots
@@ -52,6 +63,9 @@ class JitterBuffer(
         if (length <= 0 || length > AudioConfig.MAX_PACKET_SIZE) return
 
         lock.withLock {
+            isTransmitterSilent = false
+            smoothBufferFill = smoothBufferFill * 0.998f + availableCount * 0.002f
+
             // Gentle latency catch-up ONLY for low latency mode (when targetWatermarkSlots < slotCount):
             // If buffer accumulated noticeable backlog (> targetWatermarkSlots + 4),
             // drop at most 1 oldest packet per write to smoothly converge without stutter.
@@ -99,8 +113,13 @@ class JitterBuffer(
                 }
             }
 
-            // If empty, wait briefly for the next packet to absorb network jitter
+            // If empty, check if transmitter is in silence suppression mode
             if (availableCount == 0) {
+                if (isTransmitterSilent) {
+                    val fillLen = minOf(output.size, lastPacketSize)
+                    output.fill(0, 0, fillLen)
+                    return fillLen
+                }
                 try {
                     notEmptyCondition.await(waitTimeoutMs, TimeUnit.MILLISECONDS)
                 } catch (ignored: InterruptedException) {
@@ -117,6 +136,20 @@ class JitterBuffer(
                 availableCount--
                 consecutiveUnderruns = 0
                 lastPacketSize = len
+
+                // Audio Clock Drift Management:
+                // Smooth zero-crossing micro-resampling (1 frame = 20.8 microseconds)
+                // Prevents long-term buffer accumulation or drainage without clicks or pitch wobble
+                if (currentProfile == AudioConfig.PROFILE_MUSIC) {
+                    val driftDelta = smoothBufferFill - targetWatermarkSlots
+                    if (driftDelta > 16f && len >= 12) {
+                        applyZeroCrossingFrameDrop(output, len)
+                        smoothBufferFill -= 0.5f
+                    } else if (driftDelta < -16f && len >= 12) {
+                        applyZeroCrossingFrameDuplicate(output, len)
+                        smoothBufferFill += 0.5f
+                    }
+                }
 
                 // Cache last samples for concealment if needed
                 if (len == AudioConfig.PACKET_SIZE_24BIT && len >= 6) {
@@ -209,6 +242,77 @@ class JitterBuffer(
     fun getAvailableCount(): Int {
         lock.withLock {
             return availableCount
+        }
+    }
+
+    private fun applyZeroCrossingFrameDrop(output: ByteArray, len: Int) {
+        val is24 = (len == AudioConfig.PACKET_SIZE_24BIT)
+        val frameBytes = if (is24) 6 else 4
+        val totalFrames = len / frameBytes
+        val searchStart = totalFrames / 4
+        val searchEnd = (3 * totalFrames) / 4
+
+        var bestFrame = searchStart
+        var minAbs = Int.MAX_VALUE
+
+        for (f in searchStart until searchEnd) {
+            val idx = f * frameBytes
+            val sampleL = if (is24) {
+                val raw = (output[idx].toInt() and 0xFF) or
+                    ((output[idx + 1].toInt() and 0xFF) shl 8) or
+                    ((output[idx + 2].toInt() and 0xFF) shl 16)
+                if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw
+            } else {
+                ((output[idx].toInt() and 0xFF) or (output[idx + 1].toInt() shl 8)).toShort().toInt()
+            }
+            val absVal = kotlin.math.abs(sampleL)
+            if (absVal < minAbs) {
+                minAbs = absVal
+                bestFrame = f
+                if (absVal == 0) break
+            }
+        }
+
+        val dropIdx = bestFrame * frameBytes
+        val remaining = len - dropIdx - frameBytes
+        if (remaining > 0) {
+            System.arraycopy(output, dropIdx + frameBytes, output, dropIdx, remaining)
+            System.arraycopy(output, len - 2 * frameBytes, output, len - frameBytes, frameBytes)
+        }
+    }
+
+    private fun applyZeroCrossingFrameDuplicate(output: ByteArray, len: Int) {
+        val is24 = (len == AudioConfig.PACKET_SIZE_24BIT)
+        val frameBytes = if (is24) 6 else 4
+        val totalFrames = len / frameBytes
+        val searchStart = totalFrames / 4
+        val searchEnd = (3 * totalFrames) / 4
+
+        var bestFrame = searchStart
+        var minAbs = Int.MAX_VALUE
+
+        for (f in searchStart until searchEnd) {
+            val idx = f * frameBytes
+            val sampleL = if (is24) {
+                val raw = (output[idx].toInt() and 0xFF) or
+                    ((output[idx + 1].toInt() and 0xFF) shl 8) or
+                    ((output[idx + 2].toInt() and 0xFF) shl 16)
+                if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw
+            } else {
+                ((output[idx].toInt() and 0xFF) or (output[idx + 1].toInt() shl 8)).toShort().toInt()
+            }
+            val absVal = kotlin.math.abs(sampleL)
+            if (absVal < minAbs) {
+                minAbs = absVal
+                bestFrame = f
+                if (absVal == 0) break
+            }
+        }
+
+        val insertIdx = bestFrame * frameBytes
+        val shiftLen = len - insertIdx - frameBytes
+        if (shiftLen > 0) {
+            System.arraycopy(output, insertIdx, output, insertIdx + frameBytes, shiftLen)
         }
     }
 

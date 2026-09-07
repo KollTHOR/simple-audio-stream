@@ -32,6 +32,8 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.button.MaterialButtonToggleGroup
+import com.google.android.material.chip.Chip
+import com.google.android.material.chip.ChipGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.google.android.material.slider.Slider
@@ -54,6 +56,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvModeGuide: TextView
     private lateinit var tilTargetIp: TextInputLayout
     private lateinit var etTargetIp: TextInputEditText
+    private lateinit var layoutDiscovery: LinearLayout
+    private lateinit var btnScanReceivers: MaterialButton
+    private lateinit var chipGroupReceivers: ChipGroup
     private lateinit var tilPort: TextInputLayout
     private lateinit var etPort: TextInputEditText
     private lateinit var btnAction: MaterialButton
@@ -155,10 +160,26 @@ class MainActivity : AppCompatActivity() {
         tvModeGuide = findViewById(R.id.tv_mode_guide)
         tilTargetIp = findViewById(R.id.til_target_ip)
         etTargetIp = findViewById(R.id.et_target_ip)
+        layoutDiscovery = findViewById(R.id.layout_discovery)
+        btnScanReceivers = findViewById(R.id.btn_scan_receivers)
+        chipGroupReceivers = findViewById(R.id.chip_group_receivers)
         tilPort = findViewById(R.id.til_port)
         etPort = findViewById(R.id.et_port)
         btnAction = findViewById(R.id.btn_action)
         fabSettings = findViewById(R.id.fab_settings)
+
+        btnScanReceivers.setOnClickListener {
+            DiscoveryManager.startDiscovery(lifecycleScope)
+            Toast.makeText(this, "Scanning for receivers...", Toast.LENGTH_SHORT).show()
+        }
+
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                DiscoveryManager.discoveredDevices.collect { devices ->
+                    updateDiscoveredChips(devices)
+                }
+            }
+        }
 
         layoutVolumeControl = findViewById(R.id.layout_volume_control)
         tvRemoteVolLabel = findViewById(R.id.tv_remote_vol_label)
@@ -255,6 +276,33 @@ class MainActivity : AppCompatActivity() {
             toggleModeGroup.check(R.id.btn_mode_receiver)
         }
         updateModeAndButtonUi()
+
+        if (currentMode == Mode.TRANSMITTER && !AudioCaptureService.isRunning.get()) {
+            DiscoveryManager.startDiscovery(lifecycleScope)
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        DiscoveryManager.stopDiscovery()
+    }
+
+    private fun updateDiscoveredChips(devices: List<DiscoveredDevice>) {
+        chipGroupReceivers.removeAllViews()
+        val currentTarget = etTargetIp.text?.toString()?.trim().orEmpty()
+
+        for (dev in devices) {
+            val chip = Chip(this).apply {
+                text = "${dev.name} (${dev.ip})"
+                isCheckable = true
+                isChecked = (currentTarget == dev.ip)
+                setOnClickListener {
+                    etTargetIp.setText(dev.ip)
+                    Toast.makeText(this@MainActivity, "Selected ${dev.name}", Toast.LENGTH_SHORT).show()
+                }
+            }
+            chipGroupReceivers.addView(chip)
+        }
     }
 
     private fun refreshLocalIp() {
@@ -348,35 +396,45 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (isSenderRunning) {
-            tvBadgeStatus.text = "TRANSMITTING"
-            tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
+            if (t.isSilenceSuppressed) {
+                tvBadgeStatus.text = "STANDBY"
+                tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_gray))
+                tvDiagnosticTip.text = "Silence suppression active (Battery saver: 2 pkts/s). Instant wake-up (<5ms) when audio resumes."
+            } else {
+                tvBadgeStatus.text = "TRANSMITTING"
+                tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
+                tvDiagnosticTip.text = if (t.audioPeakPercent > 1) {
+                    "Audio signal detected. Sending live system audio to target."
+                } else {
+                    "Capturing system audio, but signal is currently silent. Start playing media on this device."
+                }
+            }
             tvEndpointInfo.text = "Target: ${t.remoteEndpoint ?: "Configuring..."}"
             val kbps = (t.bytesPerSec * 8) / 1000
             tvPacketsStat.text = "Sent: ${t.packetsTotal} pkts (${t.packetsPerSec} pkts/s • ${kbps} kbps)"
             pbAudioLevel.progress = t.audioPeakPercent
             tvAudioLevelVal.text = "${t.audioPeakPercent}%"
-
-            tvDiagnosticTip.text = if (t.audioPeakPercent > 1) {
-                "Audio signal detected. Sending live system audio to target."
-            } else {
-                "Capturing system audio, but signal is currently silent. Start playing media on this device."
-            }
         } else if (isSinkRunning) {
             val hasReceivedPackets = t.packetsTotal > 0
             if (hasReceivedPackets) {
-                tvBadgeStatus.text = "PLAYING"
-                tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_green))
+                if (t.isSilenceSuppressed) {
+                    tvBadgeStatus.text = "STANDBY"
+                    tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_gray))
+                    tvDiagnosticTip.text = "Transmitter in silence standby mode. Ready to play instantly."
+                } else {
+                    tvBadgeStatus.text = "PLAYING"
+                    tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_green))
+                    tvDiagnosticTip.text = if (t.audioPeakPercent > 1) {
+                        "Audio playing through AudioTrack. Adjust device volume if needed."
+                    } else {
+                        "Packets arriving, but audio data is silent. Ensure transmitter phone is playing media."
+                    }
+                }
                 tvEndpointInfo.text = "From: ${t.remoteEndpoint ?: "Unknown"}"
                 val kbps = (t.bytesPerSec * 8) / 1000
                 tvPacketsStat.text = "Received: ${t.packetsTotal} pkts (${t.packetsPerSec} pkts/s • ${kbps} kbps)"
                 pbAudioLevel.progress = t.audioPeakPercent
                 tvAudioLevelVal.text = "${t.audioPeakPercent}%"
-
-                tvDiagnosticTip.text = if (t.audioPeakPercent > 1) {
-                    "Audio playing through AudioTrack. Adjust device volume if needed."
-                } else {
-                    "Packets arriving, but audio data is silent. Ensure transmitter phone is playing media."
-                }
             } else {
                 tvBadgeStatus.text = "WAITING"
                 tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_orange))
@@ -584,6 +642,7 @@ class MainActivity : AppCompatActivity() {
 
                 tvModeGuide.text = "Capture & stream system audio to a receiver device"
                 tilTargetIp.visibility = View.VISIBLE
+                layoutDiscovery.visibility = View.VISIBLE
                 layoutVolumeControl.visibility = View.VISIBLE
                 etTargetIp.isEnabled = !isSenderActive && !isStarting && !isStopping
                 etPort.isEnabled = !isSenderActive && !isStarting && !isStopping
@@ -626,6 +685,7 @@ class MainActivity : AppCompatActivity() {
 
                 tvModeGuide.text = "Play raw audio stream received from transmitter"
                 tilTargetIp.visibility = View.GONE
+                layoutDiscovery.visibility = View.GONE
                 layoutVolumeControl.visibility = View.GONE
                 etPort.isEnabled = !isSinkActive && !isStarting && !isStopping
 

@@ -22,6 +22,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.SocketException
 import java.util.concurrent.atomic.AtomicBoolean
@@ -187,6 +188,28 @@ class AudioSinkService : Service() {
                 )
             }
 
+            // Send initial discovery announcement broadcast to local subnet
+            Thread({
+                try {
+                    val bcastIp = NetworkUtils.getSuggestedBroadcastIp()
+                    val deviceName = DiscoveryManager.getLocalDeviceName()
+                    val nameBytes = deviceName.toByteArray(Charsets.UTF_8).take(64).toByteArray()
+                    val announceBuf = ByteArray(AudioConfig.HEADER_SIZE + nameBytes.size)
+                    announceBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
+                    announceBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
+                    announceBuf[4] = currentRemoteVolume.toByte()
+                    announceBuf[5] = AudioConfig.FLAG_DISCOVERY_ANNOUNCE
+                    announceBuf[6] = (nameBytes.size shr 8).toByte()
+                    announceBuf[7] = (nameBytes.size and 0xFF).toByte()
+                    System.arraycopy(nameBytes, 0, announceBuf, AudioConfig.HEADER_SIZE, nameBytes.size)
+                    val bcastPacket = DatagramPacket(announceBuf, announceBuf.size, InetAddress.getByName(bcastIp), port)
+                    socket.send(bcastPacket)
+                    Log.d(TAG, "Sent initial discovery announce broadcast to $bcastIp:$port")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to send initial discovery announce: ${e.message}")
+                }
+            }, "SinkAnnounceThread").start()
+
             // 1. Dedicated UDP Receiver Thread
             receiverThread = Thread({
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
@@ -200,6 +223,7 @@ class AudioSinkService : Service() {
                 var intervalBytes = 0
                 var lastStatsTime = SystemClock.elapsedRealtime()
                 var maxSampleInInterval = 0
+                var lastSilencePacketTime = 0L
 
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                     try {
@@ -214,19 +238,51 @@ class AudioSinkService : Service() {
                             // Verify magic header "SA"
                             val magic = ((data[offset].toInt() and 0xFF) shl 8) or (data[offset + 1].toInt() and 0xFF)
                             if (magic == AudioConfig.MAGIC_HEADER.toInt()) {
+                                val flags = data[offset + 5]
+
+                                // Discovery probe from transmitter: respond with announcement containing device name
+                                val isDiscoveryProbe = (flags.toInt() and AudioConfig.FLAG_DISCOVERY_PROBE.toInt()) != 0
+                                if (isDiscoveryProbe) {
+                                    try {
+                                        val deviceName = DiscoveryManager.getLocalDeviceName()
+                                        val nameBytes = deviceName.toByteArray(Charsets.UTF_8).take(64).toByteArray()
+                                        val replyBuf = ByteArray(AudioConfig.HEADER_SIZE + nameBytes.size)
+                                        replyBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
+                                        replyBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
+                                        replyBuf[4] = currentRemoteVolume.toByte()
+                                        replyBuf[5] = AudioConfig.FLAG_DISCOVERY_ANNOUNCE
+                                        replyBuf[6] = (nameBytes.size shr 8).toByte()
+                                        replyBuf[7] = (nameBytes.size and 0xFF).toByte()
+                                        System.arraycopy(nameBytes, 0, replyBuf, AudioConfig.HEADER_SIZE, nameBytes.size)
+                                        val replyPacket = DatagramPacket(replyBuf, replyBuf.size, packet.address, packet.port)
+                                        socket.send(replyPacket)
+                                        Log.d(TAG, "Sent discovery reply to ${packet.address}:${packet.port}")
+                                    } catch (e: Exception) {
+                                        Log.w(TAG, "Error sending discovery reply: ${e.message}")
+                                    }
+                                    continue
+                                }
+
                                 lastSenderAddress = packet.address
                                 lastSenderPort = packet.port
 
                                 val volume = data[offset + 4].toInt() and 0xFF
-                                val flags = data[offset + 5]
                                 val payloadLen = ((data[offset + 6].toInt() and 0xFF) shl 8) or (data[offset + 7].toInt() and 0xFF)
+
+                                val isSilence = (flags.toInt() and AudioConfig.FLAG_SILENCE.toInt()) != 0
+                                if (isSilence) {
+                                    jitterBuffer.onSilenceHeartbeat()
+                                    lastSilencePacketTime = SystemClock.elapsedRealtime()
+                                } else if (payloadLen > 0) {
+                                    lastSilencePacketTime = 0L
+                                }
 
                                 val isDisconnect = (flags.toInt() and AudioConfig.FLAG_DISCONNECT.toInt()) != 0
                                 val isControlOnly = (flags.toInt() and AudioConfig.FLAG_CONTROL_ONLY.toInt()) != 0
                                 val isServerLowLatency = (flags.toInt() and AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt()) != 0
 
                                 // Only adapt profile and reconfigure AudioTrack on audio packets (never on control-only packets)
-                                if (!isControlOnly && !isDisconnect) {
+                                if (!isControlOnly && !isDisconnect && !isSilence) {
                                     val isServer24Bit = !isServerLowLatency && ((flags.toInt() and AudioConfig.FLAG_24BIT.toInt()) != 0 || payloadLen == AudioConfig.PACKET_SIZE_24BIT)
                                     val serverProfile = if (isServerLowLatency) AudioConfig.PROFILE_LOW_LATENCY else AudioConfig.PROFILE_MUSIC
                                     if (serverProfile != currentProfile) {
@@ -352,6 +408,15 @@ class AudioSinkService : Service() {
                                 "Music (Server)"
                             }
 
+                            val isSilenceSuppressed = (now - lastSilencePacketTime) < 1500L
+                            val statusDetailText = if (isSilenceSuppressed) {
+                                "Silent Standby (Suppressed)"
+                            } else if (peakPercent > 1) {
+                                "Playing Audio (Vol: $currentRemoteVolume%)"
+                            } else {
+                                "Receiving (Silent)"
+                            }
+
                             StreamState.update {
                                 it.copy(
                                     isActive = true,
@@ -361,13 +426,14 @@ class AudioSinkService : Service() {
                                     bytesPerSec = bps,
                                     audioPeakPercent = peakPercent,
                                     remoteEndpoint = "$lastSenderHost:${packet.port} (Vol: $currentRemoteVolume%)",
-                                    statusDetail = if (peakPercent > 1) "Playing Audio (Vol: $currentRemoteVolume%)" else "Receiving (Silent)",
+                                    statusDetail = statusDetailText,
                                     bufferFillPercent = fill,
                                     bufferSlotsUsed = usedSlots,
                                     bufferSlotsTotal = totalSlots,
                                     streamProfileName = profileName,
                                     bitDepth = bitDepth,
-                                    bitrateKbps = bitrate
+                                    bitrateKbps = bitrate,
+                                    isSilenceSuppressed = isSilenceSuppressed
                                 )
                             }
 
