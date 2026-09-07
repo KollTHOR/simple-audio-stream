@@ -203,6 +203,7 @@ class AudioSinkService : Service() {
                 var lastStatsTime = SystemClock.elapsedRealtime()
                 var maxSampleInInterval = 0
                 var lastSilencePacketTime = 0L
+                var fecRecoveredTotal = 0L
 
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                     try {
@@ -218,18 +219,33 @@ class AudioSinkService : Service() {
                             val magic = ((data[offset].toInt() and 0xFF) shl 8) or (data[offset + 1].toInt() and 0xFF)
                             if (magic == AudioConfig.MAGIC_HEADER.toInt()) {
                                 val flags = data[offset + 5]
+                                val seq = ((data[offset + 2].toInt() and 0xFF) shl 8) or (data[offset + 3].toInt() and 0xFF)
+                                val volume = data[offset + 4].toInt() and 0xFF
+                                val payloadLen = ((data[offset + 6].toInt() and 0xFF) shl 8) or (data[offset + 7].toInt() and 0xFF)
 
-                                // Discovery probe from transmitter: ignore on audio port (discovery is on port 50006)
-                                val isDiscoveryProbe = (flags.toInt() and AudioConfig.FLAG_DISCOVERY_PROBE.toInt()) != 0
-                                if (isDiscoveryProbe) {
+                                // Check for XOR FEC Parity packet
+                                val isFecParity = (flags.toInt() and AudioConfig.FLAG_FEC_PARITY.toInt()) != 0
+                                if (isFecParity) {
+                                    val baseSeq = seq
+                                    val blockSize = if (volume in 2..16) volume else AudioConfig.FEC_BLOCK_SIZE
+                                    val parityLen = payloadLen
+                                    if (parityLen > 0 && length >= AudioConfig.HEADER_SIZE + parityLen) {
+                                        val recovered = jitterBuffer.recoverFecPacket(
+                                            baseSeq = baseSeq,
+                                            blockSize = blockSize,
+                                            parityPayload = data,
+                                            parityOffset = offset + AudioConfig.HEADER_SIZE,
+                                            parityLen = parityLen
+                                        )
+                                        if (recovered) {
+                                            fecRecoveredTotal++
+                                        }
+                                    }
                                     continue
                                 }
 
                                 lastSenderAddress = packet.address
                                 lastSenderPort = packet.port
-
-                                val volume = data[offset + 4].toInt() and 0xFF
-                                val payloadLen = ((data[offset + 6].toInt() and 0xFF) shl 8) or (data[offset + 7].toInt() and 0xFF)
 
                                 val isSilence = (flags.toInt() and AudioConfig.FLAG_SILENCE.toInt()) != 0
                                 if (isSilence) {
@@ -313,7 +329,7 @@ class AudioSinkService : Service() {
                                         effectivePayloadLen = payloadLen
                                     }
 
-                                    jitterBuffer.write(writeData, writeOffset, effectivePayloadLen)
+                                    jitterBuffer.write(seq, writeData, writeOffset, effectivePayloadLen)
 
                                     // Compute audio peak level
                                     var i = writeOffset
@@ -395,7 +411,8 @@ class AudioSinkService : Service() {
                                     streamProfileName = profileName,
                                     bitDepth = bitDepth,
                                     bitrateKbps = bitrate,
-                                    isSilenceSuppressed = isSilenceSuppressed
+                                    isSilenceSuppressed = isSilenceSuppressed,
+                                    fecRecoveredTotal = fecRecoveredTotal
                                 )
                             }
 
@@ -624,7 +641,8 @@ class AudioSinkService : Service() {
                 audioPeakPercent = 0,
                 packetsPerSec = 0,
                 bytesPerSec = 0,
-                statusDetail = "Stopped"
+                statusDetail = "Stopped",
+                fecRecoveredTotal = 0L
             )
         }
 

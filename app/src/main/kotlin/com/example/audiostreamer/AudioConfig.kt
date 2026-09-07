@@ -29,8 +29,13 @@ object AudioConfig {
     const val FLAG_PROFILE_LOW_LATENCY: Byte = 0x08
     const val FLAG_24BIT: Byte = 0x10
     const val FLAG_SILENCE: Byte = 0x20
+    const val FLAG_FEC_PARITY: Byte = 0x40
     const val FLAG_DISCOVERY_PROBE: Byte = 0x40
     const val FLAG_DISCOVERY_ANNOUNCE: Byte = 0x80.toByte()
+
+    // Forward Error Correction (XOR FEC)
+    const val FEC_BLOCK_SIZE = 4 // 1 parity packet per 4 audio packets (25% overhead)
+    const val PREF_KEY_FEC_ENABLED = "pref_fec_enabled"
 
     // Silence Suppression (Battery Saver)
     const val SILENCE_PACKETS_THRESHOLD = 100 // 500ms of sustained silence enters suppression

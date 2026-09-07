@@ -164,6 +164,7 @@ class MainActivity : AppCompatActivity() {
         layoutDiscovery = findViewById(R.id.layout_discovery)
         btnScanReceivers = findViewById(R.id.btn_scan_receivers)
         chipGroupReceivers = findViewById(R.id.chip_group_receivers)
+        chipGroupReceivers.isSingleSelection = false
         tilPort = findViewById(R.id.til_port)
         etPort = findViewById(R.id.et_port)
         btnAction = findViewById(R.id.btn_action)
@@ -320,17 +321,42 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateDiscoveredChips(devices: List<DiscoveredDevice>) {
         chipGroupReceivers.removeAllViews()
-        val currentTarget = etTargetIp.text?.toString()?.trim().orEmpty()
+        val currentIps = etTargetIp.text?.toString()
+            ?.split(",", ";", " ")
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            ?.toMutableSet() ?: mutableSetOf()
 
         for (dev in devices) {
-            val isSelected = (currentTarget == dev.ip)
+            val isSelected = currentIps.contains(dev.ip)
             val chip = Chip(this).apply {
                 text = "${dev.name} (${dev.ip})"
                 isCheckable = true
                 isChecked = isSelected
                 setOnClickListener {
-                    etTargetIp.setText(dev.ip)
-                    Toast.makeText(this@MainActivity, "Selected ${dev.name}", Toast.LENGTH_SHORT).show()
+                    val ips = etTargetIp.text?.toString()
+                        ?.split(",", ";", " ")
+                        ?.map { it.trim() }
+                        ?.filter { it.isNotEmpty() }
+                        ?.toMutableSet() ?: mutableSetOf()
+
+                    val added = if (ips.contains(dev.ip)) {
+                        ips.remove(dev.ip)
+                        false
+                    } else {
+                        ips.removeAll { it.endsWith(".255") || it == "255.255.255.255" }
+                        ips.add(dev.ip)
+                        true
+                    }
+
+                    val newText = if (ips.isEmpty()) {
+                        NetworkUtils.getSuggestedBroadcastIp()
+                    } else {
+                        ips.joinToString(", ")
+                    }
+                    etTargetIp.setText(newText)
+                    val action = if (added) "Added" else "Removed"
+                    Toast.makeText(this@MainActivity, "$action ${dev.name}", Toast.LENGTH_SHORT).show()
                     updateDiscoveredChips(DiscoveryManager.discoveredDevices.value)
                 }
             }
@@ -339,8 +365,9 @@ class MainActivity : AppCompatActivity() {
 
         // Auto-select discovered device directly via unicast (no whole subnet broadcast)
         if (devices.isNotEmpty()) {
-            val firstDev = devices.first()
+            val currentTarget = etTargetIp.text?.toString()?.trim().orEmpty()
             if (currentTarget.isEmpty() || currentTarget.endsWith(".255") || currentTarget == "255.255.255.255") {
+                val firstDev = devices.first()
                 etTargetIp.setText(firstDev.ip)
                 for (i in 0 until chipGroupReceivers.childCount) {
                     val child = chipGroupReceivers.getChildAt(i) as? Chip
@@ -449,15 +476,21 @@ class MainActivity : AppCompatActivity() {
                 tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_gray))
                 tvDiagnosticTip.text = "Silence suppression active (Battery saver: 2 pkts/s). Instant wake-up (<5ms) when audio resumes."
             } else {
-                tvBadgeStatus.text = "TRANSMITTING"
+                tvBadgeStatus.text = if (t.activeReceiversCount > 1) "MULTI-CAST" else "TRANSMITTING"
                 tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
-                tvDiagnosticTip.text = if (t.audioPeakPercent > 1) {
+                tvDiagnosticTip.text = if (t.activeReceiversCount > 1) {
+                    "Multi-unicast active to ${t.activeReceiversCount} receivers. Synchronous silent disco listening."
+                } else if (t.audioPeakPercent > 1) {
                     "Audio signal detected. Sending live system audio to target."
                 } else {
                     "Capturing system audio, but signal is currently silent. Start playing media on this device."
                 }
             }
-            tvEndpointInfo.text = "Target: ${t.remoteEndpoint ?: "Configuring..."}"
+            tvEndpointInfo.text = if (t.activeReceiversCount > 1) {
+                "Targets: Multi-Unicast (${t.activeReceiversCount} devices)"
+            } else {
+                "Target: ${t.remoteEndpoint ?: "Configuring..."}"
+            }
             val kbps = (t.bytesPerSec * 8) / 1000
             tvPacketsStat.text = "Sent: ${t.packetsTotal} pkts (${t.packetsPerSec} pkts/s • ${kbps} kbps)"
             pbAudioLevel.progress = t.audioPeakPercent
@@ -480,7 +513,8 @@ class MainActivity : AppCompatActivity() {
                 }
                 tvEndpointInfo.text = "From: ${t.remoteEndpoint ?: "Unknown"}"
                 val kbps = (t.bytesPerSec * 8) / 1000
-                tvPacketsStat.text = "Received: ${t.packetsTotal} pkts (${t.packetsPerSec} pkts/s • ${kbps} kbps)"
+                val fecText = if (t.fecRecoveredTotal > 0) " • FEC: ${t.fecRecoveredTotal} recovered" else ""
+                tvPacketsStat.text = "Received: ${t.packetsTotal} pkts (${t.packetsPerSec} pkts/s • ${kbps} kbps)$fecText"
                 pbAudioLevel.progress = t.audioPeakPercent
                 tvAudioLevelVal.text = "${t.audioPeakPercent}%"
             } else {

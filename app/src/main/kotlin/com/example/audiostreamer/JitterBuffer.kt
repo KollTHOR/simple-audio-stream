@@ -20,8 +20,6 @@ class JitterBuffer(
     private var waitTimeoutMs: Long = AudioConfig.getReceiverWaitTimeoutMs(initialProfile)
     private var targetWatermarkSlots: Int = AudioConfig.getTargetWatermarkSlots(initialProfile)
 
-    private var writeIndex = 0
-    private var readIndex = 0
     private var availableCount = 0
     private var isBuffering = true
     private var consecutiveUnderruns = 0
@@ -32,6 +30,33 @@ class JitterBuffer(
     private var lastPacketSize: Int = AudioConfig.PACKET_SIZE_16BIT
     private var smoothBufferFill: Float = preRollThreshold.toFloat()
     private var isTransmitterSilent = false
+
+    private val isSlotFilled = BooleanArray(maxSlots)
+    private val slotSeq = IntArray(maxSlots) { -1 }
+    private var expectedReadSeq = -1
+    private var syntheticSeq = 0
+
+    private fun seqDiff(s1: Int, s2: Int): Int {
+        val diff = (s1 - s2) and 0xFFFF
+        return if (diff > 32767) diff - 65536 else diff
+    }
+
+    private fun dropOldestSlot() {
+        if (expectedReadSeq == -1) return
+        var checked = 0
+        while (checked < maxSlots) {
+            val slot = expectedReadSeq and (maxSlots - 1)
+            val wasFilled = isSlotFilled[slot] && slotSeq[slot] == expectedReadSeq
+            isSlotFilled[slot] = false
+            slotSeq[slot] = -1
+            expectedReadSeq = (expectedReadSeq + 1) and 0xFFFF
+            if (wasFilled) {
+                if (availableCount > 0) availableCount--
+                break
+            }
+            checked++
+        }
+    }
 
     fun onSilenceHeartbeat() {
         lock.withLock {
@@ -53,37 +78,74 @@ class JitterBuffer(
             smoothBufferFill = preRollThreshold.toFloat()
 
             while (availableCount > slotCount) {
-                readIndex = (readIndex + 1) % maxSlots
-                availableCount--
+                dropOldestSlot()
             }
         }
     }
 
-    fun write(data: ByteArray, offset: Int, length: Int) {
+    fun write(sequence: Int, data: ByteArray, offset: Int, length: Int) {
         if (length <= 0 || length > AudioConfig.MAX_PACKET_SIZE) return
 
         lock.withLock {
-            isTransmitterSilent = false
+            if (isTransmitterSilent) {
+                isTransmitterSilent = false
+                expectedReadSeq = sequence
+                isBuffering = false
+                availableCount = 0
+                for (i in 0 until maxSlots) {
+                    isSlotFilled[i] = false
+                    slotSeq[i] = -1
+                }
+            } else if (expectedReadSeq == -1 || kotlin.math.abs(seqDiff(sequence, expectedReadSeq)) > maxSlots / 2) {
+                expectedReadSeq = sequence
+                isBuffering = true
+                availableCount = 0
+                for (i in 0 until maxSlots) {
+                    isSlotFilled[i] = false
+                    slotSeq[i] = -1
+                }
+            }
+
+            val diff = seqDiff(sequence, expectedReadSeq)
+            if (diff < 0) {
+                // Outdated packet already passed playback point
+                return
+            }
+            if (diff >= maxSlots) {
+                // Sequence leap / reconnection
+                expectedReadSeq = sequence
+                isBuffering = true
+                availableCount = 0
+                for (i in 0 until maxSlots) {
+                    isSlotFilled[i] = false
+                    slotSeq[i] = -1
+                }
+            }
+
+            val slot = sequence and (maxSlots - 1)
+            if (isSlotFilled[slot] && slotSeq[slot] == sequence) {
+                // Duplicate packet
+                return
+            }
+
+            while (availableCount >= slotCount) {
+                dropOldestSlot()
+            }
+
+            System.arraycopy(data, offset, buffer[slot], 0, length)
+            packetLengths[slot] = length
+            slotSeq[slot] = sequence
+            if (!isSlotFilled[slot]) {
+                isSlotFilled[slot] = true
+                availableCount++
+            }
+
             smoothBufferFill = smoothBufferFill * 0.998f + availableCount * 0.002f
 
-            // Gentle latency catch-up ONLY for low latency mode (when targetWatermarkSlots < slotCount):
-            // If buffer accumulated noticeable backlog (> targetWatermarkSlots + 4),
-            // drop at most 1 oldest packet per write to smoothly converge without stutter.
+            // Gentle latency catch-up ONLY for low latency mode:
             if (targetWatermarkSlots < slotCount && availableCount > targetWatermarkSlots + 4) {
-                readIndex = (readIndex + 1) % maxSlots
-                availableCount--
+                dropOldestSlot()
             }
-
-            // Hard capacity clamp: buffer overflow
-            if (availableCount >= slotCount) {
-                readIndex = (readIndex + 1) % maxSlots
-                availableCount--
-            }
-
-            System.arraycopy(data, offset, buffer[writeIndex], 0, length)
-            packetLengths[writeIndex] = length
-            writeIndex = (writeIndex + 1) % maxSlots
-            availableCount++
 
             if (isBuffering && availableCount >= preRollThreshold) {
                 isBuffering = false
@@ -94,6 +156,83 @@ class JitterBuffer(
         }
     }
 
+    fun write(data: ByteArray, offset: Int, length: Int) {
+        val s = syntheticSeq
+        syntheticSeq = (syntheticSeq + 1) and 0xFFFF
+        write(s, data, offset, length)
+    }
+
+    fun recoverFecPacket(
+        baseSeq: Int,
+        blockSize: Int,
+        parityPayload: ByteArray,
+        parityOffset: Int,
+        parityLen: Int
+    ): Boolean {
+        if (blockSize !in 2..16 || parityLen <= 0 || parityLen > AudioConfig.MAX_PACKET_SIZE) {
+            return false
+        }
+
+        lock.withLock {
+            if (expectedReadSeq == -1) return false
+
+            var missingSeq = -1
+            var missingCount = 0
+            var maxLen = parityLen
+
+            for (i in 0 until blockSize) {
+                val seq = (baseSeq + i) and 0xFFFF
+                if (seqDiff(seq, expectedReadSeq) < 0) {
+                    // Already played, cannot reconstruct for future playback
+                    return false
+                }
+                val slot = seq and (maxSlots - 1)
+                if (isSlotFilled[slot] && slotSeq[slot] == seq) {
+                    val len = packetLengths[slot]
+                    if (len > maxLen) maxLen = len
+                } else {
+                    missingSeq = seq
+                    missingCount++
+                }
+            }
+
+            // Exactly 1 dropped packet can be reconstructed losslessly
+            if (missingCount == 1 && missingSeq != -1) {
+                val slot = missingSeq and (maxSlots - 1)
+                val recovered = buffer[slot]
+                System.arraycopy(parityPayload, parityOffset, recovered, 0, parityLen)
+                if (maxLen > parityLen) {
+                    recovered.fill(0, parityLen, maxLen)
+                }
+
+                for (i in 0 until blockSize) {
+                    val seq = (baseSeq + i) and 0xFFFF
+                    if (seq == missingSeq) continue
+                    val sSlot = seq and (maxSlots - 1)
+                    if (isSlotFilled[sSlot] && slotSeq[sSlot] == seq) {
+                        val pData = buffer[sSlot]
+                        val pLen = packetLengths[sSlot]
+                        val xorLen = minOf(pLen, maxLen)
+                        for (b in 0 until xorLen) {
+                            recovered[b] = (recovered[b].toInt() xor pData[b].toInt()).toByte()
+                        }
+                    }
+                }
+
+                packetLengths[slot] = maxLen
+                slotSeq[slot] = missingSeq
+                if (!isSlotFilled[slot]) {
+                    isSlotFilled[slot] = true
+                    availableCount++
+                }
+                notEmptyCondition.signal()
+                return true
+            }
+
+            return false
+        }
+    }
+
     /**
      * Reads a chunk into outputBuffer.
      * Waits on condition if momentary jitter delay occurs.
@@ -101,8 +240,13 @@ class JitterBuffer(
      */
     fun read(output: ByteArray): Int {
         lock.withLock {
+            if (expectedReadSeq == -1) {
+                val fillLen = minOf(output.size, lastPacketSize)
+                output.fill(0, 0, fillLen)
+                return fillLen
+            }
+
             if (isBuffering) {
-                // If buffering, check if pre-roll threshold is reached
                 if (availableCount >= preRollThreshold) {
                     isBuffering = false
                     consecutiveUnderruns = 0
@@ -113,15 +257,23 @@ class JitterBuffer(
                 }
             }
 
-            // If empty, check if transmitter is in silence suppression mode
-            if (availableCount == 0) {
+            var slot = expectedReadSeq and (maxSlots - 1)
+            var hasPacket = isSlotFilled[slot] && (slotSeq[slot] == expectedReadSeq)
+
+            if (!hasPacket) {
                 if (isTransmitterSilent) {
                     val fillLen = minOf(output.size, lastPacketSize)
                     output.fill(0, 0, fillLen)
                     return fillLen
                 }
+
+                var nanosLeft = TimeUnit.MILLISECONDS.toNanos(waitTimeoutMs)
                 try {
-                    notEmptyCondition.await(waitTimeoutMs, TimeUnit.MILLISECONDS)
+                    while (!hasPacket && nanosLeft > 0L) {
+                        nanosLeft = notEmptyCondition.awaitNanos(nanosLeft)
+                        slot = expectedReadSeq and (maxSlots - 1)
+                        hasPacket = isSlotFilled[slot] && (slotSeq[slot] == expectedReadSeq)
+                    }
                 } catch (ignored: InterruptedException) {
                     val fillLen = minOf(output.size, lastPacketSize)
                     output.fill(0, 0, fillLen)
@@ -129,11 +281,13 @@ class JitterBuffer(
                 }
             }
 
-            if (availableCount > 0) {
-                val len = packetLengths[readIndex]
-                System.arraycopy(buffer[readIndex], 0, output, 0, len)
-                readIndex = (readIndex + 1) % maxSlots
-                availableCount--
+            if (hasPacket) {
+                val len = packetLengths[slot]
+                System.arraycopy(buffer[slot], 0, output, 0, len)
+                isSlotFilled[slot] = false
+                slotSeq[slot] = -1
+                if (availableCount > 0) availableCount--
+                expectedReadSeq = (expectedReadSeq + 1) and 0xFFFF
                 consecutiveUnderruns = 0
                 lastPacketSize = len
 
@@ -165,7 +319,8 @@ class JitterBuffer(
 
                 return len
             } else {
-                // Still empty after waiting: increment underrun count
+                // Still empty after waiting: increment underrun count and advance expectedReadSeq
+                expectedReadSeq = (expectedReadSeq + 1) and 0xFFFF
                 consecutiveUnderruns++
                 val len = minOf(output.size, lastPacketSize)
                 if (consecutiveUnderruns >= maxUnderrunFrames) {
@@ -220,11 +375,15 @@ class JitterBuffer(
 
     fun reset() {
         lock.withLock {
-            writeIndex = 0
-            readIndex = 0
+            expectedReadSeq = -1
+            syntheticSeq = 0
             availableCount = 0
             isBuffering = true
             consecutiveUnderruns = 0
+            for (i in 0 until maxSlots) {
+                isSlotFilled[i] = false
+                slotSeq[i] = -1
+            }
             lastSampleLeft16 = 0
             lastSampleRight16 = 0
             lastSampleLeft24 = 0

@@ -21,7 +21,9 @@ data class Telemetry(
     val bitDepth: Int = 16,
     val channels: Int = AudioConfig.CHANNELS,
     val bitrateKbps: Int = 1536,
-    val isSilenceSuppressed: Boolean = false
+    val isSilenceSuppressed: Boolean = false,
+    val fecRecoveredTotal: Long = 0L,
+    val activeReceiversCount: Int = 1
 )
 
 object StreamState {
