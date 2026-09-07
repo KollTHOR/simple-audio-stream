@@ -9,7 +9,8 @@ class JitterBuffer(
     private val packetSize: Int = AudioConfig.PACKET_SIZE,
     private val preRollThreshold: Int = AudioConfig.PRE_ROLL_PACKETS,
     private val maxUnderrunFrames: Int = AudioConfig.MAX_UNDERRUN_CONCEAL_FRAMES,
-    private val waitTimeoutMs: Long = AudioConfig.RECEIVER_WAIT_TIMEOUT_MS
+    private val waitTimeoutMs: Long = AudioConfig.RECEIVER_WAIT_TIMEOUT_MS,
+    private val targetWatermarkSlots: Int = slotCount
 ) {
     private val buffer = Array(slotCount) { ByteArray(packetSize) }
     private val lock = ReentrantLock()
@@ -27,8 +28,9 @@ class JitterBuffer(
         if (length != packetSize) return
 
         lock.withLock {
-            if (availableCount >= slotCount) {
-                // Buffer overflow: drop oldest slot to maintain continuous stream
+            // Drop oldest slot if we exceed targetWatermarkSlots or slotCount
+            // This actively clamps latency so delayed packet bursts never cause audio lag
+            while (availableCount >= targetWatermarkSlots || availableCount >= slotCount) {
                 readIndex = (readIndex + 1) % slotCount
                 availableCount--
             }

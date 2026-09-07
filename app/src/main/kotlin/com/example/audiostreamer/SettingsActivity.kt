@@ -164,7 +164,7 @@ class SettingsActivity : AppCompatActivity() {
             btnProfileLowLatency.setTextColor(Color.WHITE)
             btnProfileMusic.backgroundTintList = ColorStateList.valueOf(colorCard)
             btnProfileMusic.setTextColor(colorTextSecondary)
-            tvProfileDescription.text = "Low Latency Mode: 30ms pre-roll cushion with a compact 240ms buffer. Optimized for video, gaming, and real-time audio sync."
+            tvProfileDescription.text = "Low Latency Mode: 5ms instant start, 15ms active clamp, and Android Fast Track. Optimized for TikTok, video sync, and instant reaction audio."
         } else {
             btnProfileMusic.backgroundTintList = ColorStateList.valueOf(colorPrimary)
             btnProfileMusic.setTextColor(Color.WHITE)

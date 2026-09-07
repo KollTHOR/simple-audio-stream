@@ -33,13 +33,15 @@ object AudioConfig {
     const val MUSIC_MAX_UNDERRUN_FRAMES = 30 // ~150ms
     const val MUSIC_WAIT_TIMEOUT_MS = 20L
 
-    // Low Latency Mode: Optimized for video/gaming real-time responsiveness
-    const val LOW_LATENCY_JITTER_BUFFER_SLOTS = 48 // ~240ms
-    const val LOW_LATENCY_PRE_ROLL_PACKETS = 6 // 30ms
-    const val LOW_LATENCY_MAX_UNDERRUN_FRAMES = 6 // ~30ms
-    const val LOW_LATENCY_WAIT_TIMEOUT_MS = 6L
+    // Low Latency Mode: Optimized for instant audio (<30ms, video/TikTok sync)
+    const val LOW_LATENCY_JITTER_BUFFER_SLOTS = 12 // ~60ms max headroom
+    const val LOW_LATENCY_PRE_ROLL_PACKETS = 1 // 5ms instant start on first packet
+    const val LOW_LATENCY_MAX_UNDERRUN_FRAMES = 2 // ~10ms
+    const val LOW_LATENCY_WAIT_TIMEOUT_MS = 2L
+    const val LOW_LATENCY_TARGET_WATERMARK_SLOTS = 3 // 15ms clamp: drops backlog to prevent audio drift
 
     // Defaults (Music Mode)
+    const val MUSIC_TARGET_WATERMARK_SLOTS = MUSIC_JITTER_BUFFER_SLOTS
     const val JITTER_BUFFER_SLOTS = MUSIC_JITTER_BUFFER_SLOTS
     const val PRE_ROLL_PACKETS = MUSIC_PRE_ROLL_PACKETS
     const val MAX_UNDERRUN_CONCEAL_FRAMES = MUSIC_MAX_UNDERRUN_FRAMES
@@ -56,6 +58,9 @@ object AudioConfig {
 
     fun getReceiverWaitTimeoutMs(profile: String): Long =
         if (profile == PROFILE_LOW_LATENCY) LOW_LATENCY_WAIT_TIMEOUT_MS else MUSIC_WAIT_TIMEOUT_MS
+
+    fun getTargetWatermarkSlots(profile: String): Int =
+        if (profile == PROFILE_LOW_LATENCY) LOW_LATENCY_TARGET_WATERMARK_SLOTS else MUSIC_TARGET_WATERMARK_SLOTS
 
     // OS Socket Buffers
     const val SOCKET_SEND_BUFFER_BYTES = 524288 // 512 KB

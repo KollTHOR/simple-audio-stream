@@ -285,12 +285,16 @@ class AudioCaptureService : Service() {
             .setChannelMask(AudioConfig.CHANNEL_IN_MASK)
             .build()
 
+        val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+        val profile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
+        val isLowLatency = profile == AudioConfig.PROFILE_LOW_LATENCY
+
         val minBufferSize = AudioRecord.getMinBufferSize(
             AudioConfig.SAMPLE_RATE,
             AudioConfig.CHANNEL_IN_MASK,
             AudioConfig.ENCODING
         )
-        val bufferSize = maxOf(minBufferSize * 4, AudioConfig.CAPTURE_BUFFER_BYTES)
+        val bufferSize = if (isLowLatency) minBufferSize * 2 else maxOf(minBufferSize * 4, AudioConfig.CAPTURE_BUFFER_BYTES)
 
         val record = AudioRecord.Builder()
             .setAudioPlaybackCaptureConfig(captureConfig)

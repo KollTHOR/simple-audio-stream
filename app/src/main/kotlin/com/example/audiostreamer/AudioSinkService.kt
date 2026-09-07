@@ -87,10 +87,30 @@ class AudioSinkService : Service() {
         try {
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
-            val audioAttributes = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                .build()
+            val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+            currentProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
+            val isLowLatency = currentProfile == AudioConfig.PROFILE_LOW_LATENCY
+
+            val slotCount = AudioConfig.getJitterBufferSlots(currentProfile)
+            val preRoll = AudioConfig.getPreRollPackets(currentProfile)
+            val maxUnderrun = AudioConfig.getMaxUnderrunFrames(currentProfile)
+            val waitTimeout = AudioConfig.getReceiverWaitTimeoutMs(currentProfile)
+            val targetWatermark = AudioConfig.getTargetWatermarkSlots(currentProfile)
+            jitterBuffer = JitterBuffer(slotCount, AudioConfig.PACKET_SIZE, preRoll, maxUnderrun, waitTimeout, targetWatermark)
+
+            @Suppress("DEPRECATION")
+            val audioAttributes = if (isLowLatency) {
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_GAME)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setFlags(AudioAttributes.FLAG_LOW_LATENCY)
+                    .build()
+            } else {
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            }
 
             val audioFormat = AudioFormat.Builder()
                 .setEncoding(AudioConfig.ENCODING)
@@ -98,27 +118,33 @@ class AudioSinkService : Service() {
                 .setChannelMask(AudioConfig.CHANNEL_OUT_MASK)
                 .build()
 
-            val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
-            currentProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
-            val slotCount = AudioConfig.getJitterBufferSlots(currentProfile)
-            val preRoll = AudioConfig.getPreRollPackets(currentProfile)
-            val maxUnderrun = AudioConfig.getMaxUnderrunFrames(currentProfile)
-            val waitTimeout = AudioConfig.getReceiverWaitTimeoutMs(currentProfile)
-            jitterBuffer = JitterBuffer(slotCount, AudioConfig.PACKET_SIZE, preRoll, maxUnderrun, waitTimeout)
-
             val minBufferSize = AudioTrack.getMinBufferSize(
                 AudioConfig.SAMPLE_RATE,
                 AudioConfig.CHANNEL_OUT_MASK,
                 AudioConfig.ENCODING
             )
-            val bufferSize = maxOf(minBufferSize * 2, AudioConfig.PACKET_SIZE * preRoll * 2)
+            val bufferSize = if (isLowLatency) minBufferSize else maxOf(minBufferSize * 2, AudioConfig.PACKET_SIZE * preRoll * 2)
 
             val track = AudioTrack.Builder()
                 .setAudioAttributes(audioAttributes)
                 .setAudioFormat(audioFormat)
                 .setBufferSizeInBytes(bufferSize)
+                .setPerformanceMode(
+                    if (isLowLatency) AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
+                    else AudioTrack.PERFORMANCE_MODE_NONE
+                )
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
+
+            if (isLowLatency) {
+                try {
+                    val bytesPerFrame = AudioConfig.CHANNELS * 2
+                    val minFrames = minBufferSize / bytesPerFrame
+                    track.bufferSizeInFrames = minFrames
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not set AudioTrack bufferSizeInFrames: ${e.message}")
+                }
+            }
 
             track.setVolume(1.0f)
             track.play()
