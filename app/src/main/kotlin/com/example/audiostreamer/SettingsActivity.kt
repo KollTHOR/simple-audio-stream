@@ -28,6 +28,7 @@ import com.google.android.material.button.MaterialButtonToggleGroup
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -39,6 +40,8 @@ class SettingsActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "SettingsActivity"
         private const val GITHUB_REPO_URL = "https://github.com/KollTHOR/simple-audio-stream"
+        private const val GITHUB_API_RELEASES =
+            "https://api.github.com/repos/KollTHOR/simple-audio-stream/releases?per_page=10"
         private const val GITHUB_API_LATEST_RELEASE =
             "https://api.github.com/repos/KollTHOR/simple-audio-stream/releases/latest"
     }
@@ -243,6 +246,25 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
+    private fun parseVersion(versionStr: String): List<Int> {
+        val clean = versionStr.removePrefix("v").trim()
+        return clean.split(".").mapNotNull { it.toIntOrNull() }
+    }
+
+    private fun compareVersions(v1: List<Int>, v2: List<Int>): Int {
+        val maxLen = maxOf(v1.size, v2.size)
+        for (i in 0 until maxLen) {
+            val p1 = v1.getOrElse(i) { 0 }
+            val p2 = v2.getOrElse(i) { 0 }
+            if (p1 != p2) return p1.compareTo(p2)
+        }
+        return 0
+    }
+
+    private fun isNewerVersion(remoteTag: String, currentVersion: String): Boolean {
+        return compareVersions(parseVersion(remoteTag), parseVersion(currentVersion)) > 0
+    }
+
     private fun checkForUpdates() {
         btnCheckUpdate.isEnabled = false
         tvUpdateStatus.text = "Checking GitHub for latest release..."
@@ -251,91 +273,136 @@ class SettingsActivity : AppCompatActivity() {
 
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val url = URL(GITHUB_API_LATEST_RELEASE)
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 8000
-                    readTimeout = 8000
-                    setRequestProperty("Accept", "application/vnd.github.v3+json")
-                    setRequestProperty("User-Agent", "SimpleAudioStream-Android")
+                var tagName: String? = null
+                var apkDownloadUrl: String? = null
+
+                // Attempt fetching releases list to identify the highest semantic release with an APK
+                try {
+                    val releasesUrl = URL(GITHUB_API_RELEASES)
+                    val conn = (releasesUrl.openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 8000
+                        readTimeout = 8000
+                        setRequestProperty("Accept", "application/vnd.github.v3+json")
+                        setRequestProperty("User-Agent", "SimpleAudioStream-Android")
+                    }
+
+                    if (conn.responseCode == 200) {
+                        val responseText = conn.inputStream.bufferedReader().use { it.readText() }
+                        val releasesArray = JSONArray(responseText)
+
+                        var bestTag: String? = null
+                        var bestUrl: String? = null
+                        var bestVer: List<Int>? = null
+
+                        for (i in 0 until releasesArray.length()) {
+                            val rel = releasesArray.getJSONObject(i)
+                            if (rel.optBoolean("draft", false)) continue
+                            val tag = rel.optString("tag_name", "")
+                            if (tag.isEmpty()) continue
+
+                            val assets = rel.optJSONArray("assets") ?: continue
+                            var foundApk: String? = null
+                            for (j in 0 until assets.length()) {
+                                val asset = assets.getJSONObject(j)
+                                val name = asset.optString("name")
+                                if (name.endsWith(".apk", ignoreCase = true)) {
+                                    foundApk = asset.optString("browser_download_url")
+                                    break
+                                }
+                            }
+
+                            if (foundApk != null) {
+                                val ver = parseVersion(tag)
+                                if (bestVer == null || compareVersions(ver, bestVer) > 0) {
+                                    bestVer = ver
+                                    bestTag = tag
+                                    bestUrl = foundApk
+                                }
+                            }
+                        }
+
+                        tagName = bestTag
+                        apkDownloadUrl = bestUrl
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Releases list query failed, falling back to latest: ${e.message}")
                 }
 
-                val responseCode = conn.responseCode
-                if (responseCode == 200) {
-                    val responseText = conn.inputStream.bufferedReader().use { it.readText() }
-                    val releaseJson = JSONObject(responseText)
-                    val tagName = releaseJson.optString("tag_name", "v1.0.0")
-                    latestReleaseTag = tagName
-                    val assets = releaseJson.optJSONArray("assets")
-
-                    var apkDownloadUrl: String? = null
-                    if (assets != null) {
-                        for (i in 0 until assets.length()) {
-                            val asset = assets.getJSONObject(i)
-                            val name = asset.optString("name")
-                            if (name.endsWith(".apk", ignoreCase = true)) {
-                                apkDownloadUrl = asset.optString("browser_download_url")
-                                break
+                // Fallback to /releases/latest if list did not yield an APK
+                if (tagName == null || apkDownloadUrl == null) {
+                    val latestConn = (URL(GITHUB_API_LATEST_RELEASE).openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 8000
+                        readTimeout = 8000
+                        setRequestProperty("Accept", "application/vnd.github.v3+json")
+                        setRequestProperty("User-Agent", "SimpleAudioStream-Android")
+                    }
+                    if (latestConn.responseCode == 200) {
+                        val responseText = latestConn.inputStream.bufferedReader().use { it.readText() }
+                        val releaseJson = JSONObject(responseText)
+                        tagName = releaseJson.optString("tag_name", "v1.0.0")
+                        val assets = releaseJson.optJSONArray("assets")
+                        if (assets != null) {
+                            for (i in 0 until assets.length()) {
+                                val asset = assets.getJSONObject(i)
+                                val name = asset.optString("name")
+                                if (name.endsWith(".apk", ignoreCase = true)) {
+                                    apkDownloadUrl = asset.optString("browser_download_url")
+                                    break
+                                }
                             }
                         }
                     }
+                }
 
-                    withContext(Dispatchers.Main) {
-                        pbDownload.visibility = View.GONE
-                        btnCheckUpdate.isEnabled = true
+                val finalTag = tagName
+                val finalApkUrl = apkDownloadUrl
 
-                        val currentVersionClean = BuildConfig.VERSION_NAME.removePrefix("v").trim()
-                        val latestVersionClean = tagName.removePrefix("v").trim()
+                withContext(Dispatchers.Main) {
+                    pbDownload.visibility = View.GONE
+                    btnCheckUpdate.isEnabled = true
 
-                        if (apkDownloadUrl != null) {
-                            latestApkUrl = apkDownloadUrl
-                            val targetDir = externalCacheDir ?: cacheDir
-                            val versionedApk = File(targetDir, "simple-audio-stream-$tagName.apk")
+                    if (finalTag == null) {
+                        updateState = UpdateState.CHECK
+                        tvUpdateStatus.text = "No releases found on GitHub."
+                        btnCheckUpdate.text = "Check for Updates"
+                        return@withContext
+                    }
 
-                            if (latestVersionClean != currentVersionClean) {
-                                if (versionedApk.exists() && versionedApk.length() > 500_000) {
-                                    downloadedApkFile = versionedApk
-                                    updateState = UpdateState.INSTALL
-                                    tvUpdateStatus.text = "Update downloaded ($tagName).\nTap below to install."
-                                    btnCheckUpdate.text = "Install APK ($tagName)"
-                                } else {
-                                    downloadedApkFile = null
-                                    updateState = UpdateState.DOWNLOAD
-                                    tvUpdateStatus.text = "New release found: $tagName\nTap below to download and install."
-                                    btnCheckUpdate.text = "Download Update ($tagName)"
-                                }
+                    latestReleaseTag = finalTag
+
+                    if (finalApkUrl != null) {
+                        latestApkUrl = finalApkUrl
+                        val targetDir = externalCacheDir ?: cacheDir
+                        val versionedApk = File(targetDir, "simple-audio-stream-$finalTag.apk")
+
+                        if (isNewerVersion(finalTag, BuildConfig.VERSION_NAME)) {
+                            if (versionedApk.exists() && versionedApk.length() > 500_000) {
+                                downloadedApkFile = versionedApk
+                                updateState = UpdateState.INSTALL
+                                tvUpdateStatus.text = "Update downloaded ($finalTag).\nTap below to install."
+                                btnCheckUpdate.text = "Install APK ($finalTag)"
                             } else {
                                 downloadedApkFile = null
-                                updateState = UpdateState.CHECK
-                                tvUpdateStatus.text = "You are on the latest version ($tagName)."
-                                btnCheckUpdate.text = "Check for Updates"
-
-                                // Clean up old cached update APKs to free storage
-                                try {
-                                    targetDir.listFiles { _, name ->
-                                        name.startsWith("simple-audio-stream") && name.endsWith(".apk")
-                                    }?.forEach { it.delete() }
-                                } catch (ignored: Exception) {}
+                                updateState = UpdateState.DOWNLOAD
+                                tvUpdateStatus.text = "New release found: $finalTag\nTap below to download and install."
+                                btnCheckUpdate.text = "Download Update ($finalTag)"
                             }
                         } else {
+                            downloadedApkFile = null
                             updateState = UpdateState.CHECK
-                            tvUpdateStatus.text = "Latest release $tagName found, but no APK asset attached."
+                            tvUpdateStatus.text = "You are on the latest version ($finalTag)."
                             btnCheckUpdate.text = "Check for Updates"
+
+                            // Clean up old cached update APKs to free storage
+                            try {
+                                targetDir.listFiles { _, name ->
+                                    name.startsWith("simple-audio-stream") && name.endsWith(".apk")
+                                }?.forEach { it.delete() }
+                            } catch (ignored: Exception) {}
                         }
-                    }
-                } else if (responseCode == 404) {
-                    withContext(Dispatchers.Main) {
-                        pbDownload.visibility = View.GONE
-                        btnCheckUpdate.isEnabled = true
+                    } else {
                         updateState = UpdateState.CHECK
-                        tvUpdateStatus.text = "No GitHub releases found yet."
-                        btnCheckUpdate.text = "Check for Updates"
-                    }
-                } else {
-                    withContext(Dispatchers.Main) {
-                        pbDownload.visibility = View.GONE
-                        btnCheckUpdate.isEnabled = true
-                        updateState = UpdateState.CHECK
-                        tvUpdateStatus.text = "GitHub API returned status $responseCode."
+                        tvUpdateStatus.text = "Latest release $finalTag found, but no APK asset attached."
                         btnCheckUpdate.text = "Check for Updates"
                     }
                 }
