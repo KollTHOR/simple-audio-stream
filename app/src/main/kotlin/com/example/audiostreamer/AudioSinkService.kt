@@ -100,7 +100,7 @@ class AudioSinkService : Service() {
                 AudioConfig.CHANNEL_OUT_MASK,
                 AudioConfig.ENCODING
             )
-            val bufferSize = maxOf(minBufferSize * 2, AudioConfig.PACKET_SIZE * AudioConfig.JITTER_BUFFER_SLOTS)
+            val bufferSize = maxOf(minBufferSize * 2, AudioConfig.PACKET_SIZE * AudioConfig.PRE_ROLL_PACKETS * 2)
 
             val track = AudioTrack.Builder()
                 .setAudioAttributes(audioAttributes)
@@ -119,7 +119,7 @@ class AudioSinkService : Service() {
             val socket = DatagramSocket(null).apply {
                 reuseAddress = true
                 broadcast = true
-                receiveBufferSize = 262144 // 256KB OS receive buffer
+                receiveBufferSize = AudioConfig.SOCKET_RECEIVE_BUFFER_BYTES // 1MB OS receive buffer
                 bind(InetSocketAddress(port))
             }
             datagramSocket = socket

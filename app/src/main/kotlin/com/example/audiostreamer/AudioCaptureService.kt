@@ -287,7 +287,7 @@ class AudioCaptureService : Service() {
             AudioConfig.CHANNEL_IN_MASK,
             AudioConfig.ENCODING
         )
-        val bufferSize = maxOf(minBufferSize, AudioConfig.PACKET_SIZE * 8)
+        val bufferSize = maxOf(minBufferSize * 4, AudioConfig.CAPTURE_BUFFER_BYTES)
 
         val record = AudioRecord.Builder()
             .setAudioPlaybackCaptureConfig(captureConfig)
@@ -353,7 +353,7 @@ class AudioCaptureService : Service() {
             try {
                 val address = InetAddress.getByName(targetIp)
                 socket = DatagramSocket().apply {
-                    sendBufferSize = 65536
+                    sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
                     broadcast = true
                 }
                 udpSocket = socket
