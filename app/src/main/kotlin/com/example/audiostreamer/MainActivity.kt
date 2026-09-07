@@ -9,9 +9,11 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.media.AudioManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
+import android.view.KeyEvent
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -29,6 +31,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.button.MaterialButtonToggleGroup
 import com.google.android.material.floatingactionbutton.FloatingActionButton
+import com.google.android.material.slider.Slider
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
 import kotlinx.coroutines.launch
@@ -52,6 +55,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var etPort: TextInputEditText
     private lateinit var btnAction: MaterialButton
     private lateinit var fabSettings: FloatingActionButton
+
+    // Volume controls
+    private lateinit var layoutVolumeControl: LinearLayout
+    private lateinit var tvRemoteVolLabel: TextView
+    private lateinit var sliderRemoteVol: Slider
+    private lateinit var btnVolDown: MaterialButton
+    private lateinit var btnVolMute: MaterialButton
+    private lateinit var btnVolUp: MaterialButton
+    private lateinit var btnSilencePhone: MaterialButton
 
     // Telemetry views
     private lateinit var tvBadgeStatus: TextView
@@ -140,6 +152,53 @@ class MainActivity : AppCompatActivity() {
         btnAction = findViewById(R.id.btn_action)
         fabSettings = findViewById(R.id.fab_settings)
 
+        layoutVolumeControl = findViewById(R.id.layout_volume_control)
+        tvRemoteVolLabel = findViewById(R.id.tv_remote_vol_label)
+        sliderRemoteVol = findViewById(R.id.slider_remote_vol)
+        btnVolDown = findViewById(R.id.btn_vol_down)
+        btnVolMute = findViewById(R.id.btn_vol_mute)
+        btnVolUp = findViewById(R.id.btn_vol_up)
+        btnSilencePhone = findViewById(R.id.btn_silence_phone)
+
+        val initialVol = AudioCaptureService.remoteVolumePercent.get()
+        sliderRemoteVol.value = initialVol.toFloat()
+        tvRemoteVolLabel.text = "$initialVol%"
+
+        sliderRemoteVol.addOnChangeListener { _, value, fromUser ->
+            if (fromUser) {
+                val vol = value.toInt()
+                tvRemoteVolLabel.text = "$vol%"
+                sendVolumeIntent(vol)
+            }
+        }
+
+        btnVolDown.setOnClickListener {
+            sendVolumeDeltaIntent(-5)
+        }
+
+        btnVolUp.setOnClickListener {
+            sendVolumeDeltaIntent(5)
+        }
+
+        btnVolMute.setOnClickListener {
+            val cur = AudioCaptureService.remoteVolumePercent.get()
+            if (cur > 0) {
+                sendVolumeIntent(0)
+            } else {
+                sendVolumeIntent(100)
+            }
+        }
+
+        btnSilencePhone.setOnClickListener {
+            try {
+                val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                am.setStreamVolume(AudioManager.STREAM_MUSIC, 0, AudioManager.FLAG_SHOW_UI)
+                Toast.makeText(this, "Phone media volume set to 0", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(this, "Could not adjust phone volume: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+
         tvBadgeStatus = findViewById(R.id.tv_badge_status)
         tvEndpointInfo = findViewById(R.id.tv_endpoint_info)
         tvPacketsStat = findViewById(R.id.tv_packets_stat)
@@ -200,6 +259,10 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         refreshLocalIp()
 
+        val currentRemoteVol = AudioCaptureService.remoteVolumePercent.get()
+        sliderRemoteVol.value = currentRemoteVol.toFloat()
+        tvRemoteVolLabel.text = "$currentRemoteVol%"
+
         if (AudioCaptureService.isRunning.get()) {
             currentMode = Mode.TRANSMITTER
             toggleModeGroup.check(R.id.btn_mode_transmitter)
@@ -237,6 +300,14 @@ class MainActivity : AppCompatActivity() {
     private fun renderTelemetry(t: Telemetry) {
         val isSenderRunning = AudioCaptureService.isRunning.get()
         val isSinkRunning = AudioSinkService.isRunning.get()
+
+        if (currentMode == Mode.TRANSMITTER) {
+            val curVol = AudioCaptureService.remoteVolumePercent.get()
+            if (!sliderRemoteVol.isPressed && sliderRemoteVol.value.toInt() != curVol) {
+                sliderRemoteVol.value = curVol.toFloat()
+                tvRemoteVolLabel.text = "$curVol%"
+            }
+        }
 
         if (!isSenderRunning && !isSinkRunning) {
             tvBadgeStatus.text = "IDLE"
@@ -412,6 +483,7 @@ class MainActivity : AppCompatActivity() {
 
                 tvModeGuide.text = "Capture & stream system audio to a receiver device"
                 tilTargetIp.visibility = View.VISIBLE
+                layoutVolumeControl.visibility = View.VISIBLE
                 etTargetIp.isEnabled = !isSenderActive
                 etPort.isEnabled = !isSenderActive
 
@@ -436,6 +508,7 @@ class MainActivity : AppCompatActivity() {
 
                 tvModeGuide.text = "Play raw audio stream received from transmitter"
                 tilTargetIp.visibility = View.GONE
+                layoutVolumeControl.visibility = View.GONE
                 etPort.isEnabled = !isSinkActive
 
                 if (isSinkActive) {
@@ -449,5 +522,47 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    private fun sendVolumeIntent(volumePercent: Int) {
+        val clamped = volumePercent.coerceIn(0, 100)
+        sliderRemoteVol.value = clamped.toFloat()
+        tvRemoteVolLabel.text = "$clamped%"
+        val intent = Intent(this, AudioCaptureService::class.java).apply {
+            action = AudioCaptureService.ACTION_SET_VOLUME
+            putExtra(AudioCaptureService.EXTRA_VOLUME_PERCENT, clamped)
+        }
+        startService(intent)
+    }
+
+    private fun sendVolumeDeltaIntent(delta: Int) {
+        val cur = AudioCaptureService.remoteVolumePercent.get()
+        val newVol = (cur + delta).coerceIn(0, 100)
+        sendVolumeIntent(newVol)
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (currentMode == Mode.TRANSMITTER && AudioCaptureService.isRunning.get()) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_VOLUME_UP -> {
+                    sendVolumeDeltaIntent(5)
+                    return true
+                }
+                KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                    sendVolumeDeltaIntent(-5)
+                    return true
+                }
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if (currentMode == Mode.TRANSMITTER && AudioCaptureService.isRunning.get()) {
+            if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+                return true
+            }
+        }
+        return super.onKeyUp(keyCode, event)
     }
 }

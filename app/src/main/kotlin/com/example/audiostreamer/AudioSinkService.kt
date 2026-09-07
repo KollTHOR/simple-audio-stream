@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -36,9 +37,6 @@ class AudioSinkService : Service() {
         private const val NOTIFICATION_ID = 2001
         private const val CHANNEL_ID = "AudioSinkChannel"
 
-        // Jitter pre-buffering: 3 packets = ~30ms of audio before starting playback
-        private const val PREFILL_PACKET_COUNT = 3
-
         val isRunning = AtomicBoolean(false)
     }
 
@@ -46,7 +44,10 @@ class AudioSinkService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     private var audioTrack: AudioTrack? = null
     private var datagramSocket: DatagramSocket? = null
-    private var sinkThread: Thread? = null
+    private var receiverThread: Thread? = null
+    private var playbackThread: Thread? = null
+    private val jitterBuffer = JitterBuffer()
+    private var currentRemoteVolume = 100
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -81,6 +82,8 @@ class AudioSinkService : Service() {
         acquireLocks()
 
         try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
             val audioAttributes = AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
@@ -97,7 +100,7 @@ class AudioSinkService : Service() {
                 AudioConfig.CHANNEL_OUT_MASK,
                 AudioConfig.ENCODING
             )
-            val bufferSize = maxOf(minBufferSize * 2, AudioConfig.SINK_BUFFER_SIZE_BYTES * 2)
+            val bufferSize = maxOf(minBufferSize * 2, AudioConfig.PACKET_SIZE * AudioConfig.JITTER_BUFFER_SLOTS)
 
             val track = AudioTrack.Builder()
                 .setAudioAttributes(audioAttributes)
@@ -107,24 +110,36 @@ class AudioSinkService : Service() {
                 .build()
 
             track.setVolume(1.0f)
+            track.play()
             audioTrack = track
 
-            // Bind socket allowing address reuse and broadcast
+            jitterBuffer.reset()
+
+            // Bind UDP socket
             val socket = DatagramSocket(null).apply {
                 reuseAddress = true
                 broadcast = true
-                receiveBufferSize = 131072
+                receiveBufferSize = 262144 // 256KB OS receive buffer
                 bind(InetSocketAddress(port))
             }
             datagramSocket = socket
 
-            sinkThread = Thread({
+            val localIp = NetworkUtils.getLocalIpAddress() ?: "0.0.0.0"
+            StreamState.update {
+                it.copy(
+                    isActive = true,
+                    isTransmitter = false,
+                    remoteEndpoint = "Listening on $localIp:$port",
+                    statusDetail = "Waiting for incoming UDP packets..."
+                )
+            }
+
+            // 1. Dedicated UDP Receiver Thread
+            receiverThread = Thread({
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
 
-                val rawBuffer = ByteArray(AudioConfig.PACKET_SIZE * 2)
+                val rawBuffer = ByteArray(2048)
                 val packet = DatagramPacket(rawBuffer, rawBuffer.size)
-
-                Log.i(TAG, "AudioSink listening on UDP port $port...")
 
                 var totalPackets = 0L
                 var totalBytes = 0L
@@ -132,95 +147,119 @@ class AudioSinkService : Service() {
                 var intervalBytes = 0
                 var lastStatsTime = SystemClock.elapsedRealtime()
                 var maxSampleInInterval = 0
-                var isAudioTrackPlaying = false
-                var bufferedCount = 0
-
-                val localIp = NetworkUtils.getLocalIpAddress() ?: "0.0.0.0"
-                StreamState.update {
-                    it.copy(
-                        isActive = true,
-                        isTransmitter = false,
-                        remoteEndpoint = "Listening on $localIp:$port",
-                        statusDetail = "Waiting for incoming UDP packets..."
-                    )
-                }
 
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                     try {
-                        // Reset packet length before each receive call!
                         packet.length = rawBuffer.size
                         socket.receive(packet)
 
                         val length = packet.length
-                        if (length > 0) {
-                            val senderHost = packet.address.hostAddress
+                        if (length >= AudioConfig.HEADER_SIZE) {
+                            val data = packet.data
+                            val offset = packet.offset
 
-                            // Write to AudioTrack buffer
-                            track.write(packet.data, packet.offset, length, AudioTrack.WRITE_BLOCKING)
+                            // Verify magic header "SA"
+                            val magic = ((data[offset].toInt() and 0xFF) shl 8) or (data[offset + 1].toInt() and 0xFF)
+                            if (magic == AudioConfig.MAGIC_HEADER.toInt()) {
+                                val volume = data[offset + 4].toInt() and 0xFF
+                                val flags = data[offset + 5]
+                                val payloadLen = ((data[offset + 6].toInt() and 0xFF) shl 8) or (data[offset + 7].toInt() and 0xFF)
 
-                            // Pre-buffer a few packets (~30ms) before initiating playback
-                            // to prevent immediate underflow/crackling on hardware DACs
-                            if (!isAudioTrackPlaying) {
-                                bufferedCount++
-                                if (bufferedCount >= PREFILL_PACKET_COUNT) {
-                                    track.play()
-                                    isAudioTrackPlaying = true
-                                    Log.i(TAG, "AudioTrack playback started after pre-buffering")
-                                }
-                            }
+                                // Apply remote volume control if changed
+                                if (volume != currentRemoteVolume) {
+                                    currentRemoteVolume = volume
+                                    val floatVol = (volume / 100.0f).coerceIn(0.0f, 1.0f)
+                                    track.setVolume(floatVol)
 
-                            totalPackets++
-                            totalBytes += length
-                            intervalPackets++
-                            intervalBytes += length
-
-                            // Compute peak level of received PCM data
-                            var i = packet.offset
-                            val end = packet.offset + length
-                            while (i < end - 1) {
-                                val sample = (packet.data[i].toInt() and 0xFF) or (packet.data[i + 1].toInt() shl 8)
-                                val abs = Math.abs(sample.toShort().toInt())
-                                if (abs > maxSampleInInterval) {
-                                    maxSampleInInterval = abs
-                                }
-                                i += 2
-                            }
-
-                            val now = SystemClock.elapsedRealtime()
-                            val dt = now - lastStatsTime
-                            if (dt >= 250) {
-                                val pps = ((intervalPackets * 1000L) / dt).toInt()
-                                val bps = ((intervalBytes * 1000L) / dt).toInt()
-                                val peakPercent = ((maxSampleInInterval * 100) / 32768).coerceIn(0, 100)
-
-                                StreamState.update {
-                                    it.copy(
-                                        isActive = true,
-                                        isTransmitter = false,
-                                        packetsTotal = totalPackets,
-                                        packetsPerSec = pps,
-                                        bytesPerSec = bps,
-                                        audioPeakPercent = peakPercent,
-                                        remoteEndpoint = "$senderHost:${packet.port}",
-                                        statusDetail = if (peakPercent > 1) "Playing Audio" else "Receiving (Silent)"
-                                    )
+                                    try {
+                                        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                                        val targetVol = ((volume * maxVol) / 100).coerceIn(0, maxVol)
+                                        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetVol, 0)
+                                    } catch (ignored: Exception) {}
+                                    Log.d(TAG, "Applied remote volume: $volume%")
                                 }
 
-                                intervalPackets = 0
-                                intervalBytes = 0
-                                maxSampleInInterval = 0
-                                lastStatsTime = now
+                                // Route PCM audio to JitterBuffer
+                                if (payloadLen == AudioConfig.PACKET_SIZE && flags.toInt() == AudioConfig.FLAG_NORMAL.toInt()) {
+                                    val pcmOffset = offset + AudioConfig.HEADER_SIZE
+                                    jitterBuffer.write(data, pcmOffset, payloadLen)
+
+                                    // Compute audio peak level
+                                    var i = pcmOffset
+                                    val end = pcmOffset + payloadLen
+                                    while (i < end - 1) {
+                                        val sample = (data[i].toInt() and 0xFF) or (data[i + 1].toInt() shl 8)
+                                        val abs = Math.abs(sample.toShort().toInt())
+                                        if (abs > maxSampleInInterval) maxSampleInInterval = abs
+                                        i += 2
+                                    }
+                                }
+
+                                totalPackets++
+                                totalBytes += length
+                                intervalPackets++
+                                intervalBytes += length
                             }
                         }
+
+                        val now = SystemClock.elapsedRealtime()
+                        val dt = now - lastStatsTime
+                        if (dt >= 250) {
+                            val pps = ((intervalPackets * 1000L) / dt).toInt()
+                            val bps = ((intervalBytes * 1000L) / dt).toInt()
+                            val peakPercent = ((maxSampleInInterval * 100) / 32768).coerceIn(0, 100)
+                            val senderHost = packet.address?.hostAddress ?: "Transmitter"
+
+                            StreamState.update {
+                                it.copy(
+                                    isActive = true,
+                                    isTransmitter = false,
+                                    packetsTotal = totalPackets,
+                                    packetsPerSec = pps,
+                                    bytesPerSec = bps,
+                                    audioPeakPercent = peakPercent,
+                                    remoteEndpoint = "$senderHost:${packet.port} (Vol: $currentRemoteVolume%)",
+                                    statusDetail = if (peakPercent > 1) "Playing Audio (Vol: $currentRemoteVolume%)" else "Receiving (Silent)"
+                                )
+                            }
+
+                            intervalPackets = 0
+                            intervalBytes = 0
+                            maxSampleInInterval = 0
+                            lastStatsTime = now
+                        }
+
                     } catch (e: SocketException) {
                         Log.d(TAG, "UDP socket closed")
                         break
                     } catch (e: Exception) {
-                        Log.e(TAG, "Audio playback error in sink loop", e)
+                        Log.e(TAG, "Error in receiver loop", e)
                     }
                 }
-                Log.i(TAG, "AudioSink playback thread ended")
-            }, "AudioSinkPlayer").apply {
+                Log.i(TAG, "UDP receiver thread finished")
+            }, "UdpReceiverThread").apply {
+                isDaemon = true
+                start()
+            }
+
+            // 2. Dedicated AudioTrack Playback Thread
+            playbackThread = Thread({
+                Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+
+                val chunk = ByteArray(AudioConfig.PACKET_SIZE)
+
+                while (isRunning.get() && !Thread.currentThread().isInterrupted) {
+                    try {
+                        val bytesToPlay = jitterBuffer.read(chunk)
+                        if (bytesToPlay > 0) {
+                            track.write(chunk, 0, bytesToPlay, AudioTrack.WRITE_BLOCKING)
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error in playback loop", e)
+                    }
+                }
+                Log.i(TAG, "Audio playback thread finished")
+            }, "AudioPlaybackThread").apply {
                 isDaemon = true
                 start()
             }
@@ -340,8 +379,10 @@ class AudioSinkService : Service() {
         }
         Log.i(TAG, "Stopping audio sink")
 
-        sinkThread?.interrupt()
-        sinkThread = null
+        receiverThread?.interrupt()
+        playbackThread?.interrupt()
+        receiverThread = null
+        playbackThread = null
 
         try {
             datagramSocket?.close()
@@ -362,6 +403,7 @@ class AudioSinkService : Service() {
         }
         audioTrack = null
 
+        jitterBuffer.reset()
         releaseLocks()
 
         StreamState.update {

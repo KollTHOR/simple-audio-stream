@@ -25,6 +25,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 class AudioCaptureService : Service() {
 
@@ -32,21 +33,29 @@ class AudioCaptureService : Service() {
         private const val TAG = "AudioCaptureService"
         const val ACTION_START = "com.example.audiostreamer.ACTION_START_CAPTURE"
         const val ACTION_STOP = "com.example.audiostreamer.ACTION_STOP_CAPTURE"
+        const val ACTION_SET_VOLUME = "com.example.audiostreamer.ACTION_SET_VOLUME"
+        const val ACTION_STEP_VOLUME = "com.example.audiostreamer.ACTION_STEP_VOLUME"
+
         const val EXTRA_RESULT_CODE = "EXTRA_RESULT_CODE"
         const val EXTRA_RESULT_DATA = "EXTRA_RESULT_DATA"
         const val EXTRA_TARGET_IP = "EXTRA_TARGET_IP"
         const val EXTRA_TARGET_PORT = "EXTRA_TARGET_PORT"
+        const val EXTRA_VOLUME_PERCENT = "EXTRA_VOLUME_PERCENT"
+        const val EXTRA_VOLUME_DELTA = "EXTRA_VOLUME_DELTA"
 
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "AudioCaptureChannel"
 
         val isRunning = AtomicBoolean(false)
+        val remoteVolumePercent = AtomicInteger(100)
     }
 
     private var mediaProjection: MediaProjection? = null
     private var audioRecord: AudioRecord? = null
     private var udpSocket: DatagramSocket? = null
     private var streamThread: Thread? = null
+    private var currentTargetIp = "192.168.43.255"
+    private var currentTargetPort = AudioConfig.DEFAULT_PORT
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -71,6 +80,17 @@ class AudioCaptureService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
+            ACTION_SET_VOLUME -> {
+                val newVol = intent.getIntExtra(EXTRA_VOLUME_PERCENT, remoteVolumePercent.get())
+                updateRemoteVolume(newVol)
+                return START_NOT_STICKY
+            }
+            ACTION_STEP_VOLUME -> {
+                val delta = intent.getIntExtra(EXTRA_VOLUME_DELTA, 0)
+                val newVol = (remoteVolumePercent.get() + delta).coerceIn(0, 100)
+                updateRemoteVolume(newVol)
+                return START_NOT_STICKY
+            }
             ACTION_START -> {
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
                 val resultData = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -88,6 +108,9 @@ class AudioCaptureService : Service() {
                     return START_NOT_STICKY
                 }
 
+                currentTargetIp = targetIp
+                currentTargetPort = targetPort
+
                 startServiceForeground()
                 startStreaming(resultCode, resultData, targetIp, targetPort)
             }
@@ -95,8 +118,49 @@ class AudioCaptureService : Service() {
         return START_NOT_STICKY
     }
 
+    private fun updateRemoteVolume(newVolume: Int) {
+        val clamped = newVolume.coerceIn(0, 100)
+        remoteVolumePercent.set(clamped)
+        Log.d(TAG, "Remote volume updated: $clamped%")
+
+        // Dispatch immediate control packet
+        sendControlPacket(clamped)
+
+        // Update notification
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.notify(NOTIFICATION_ID, buildNotification("Streaming @ DAP Vol: $clamped%"))
+    }
+
+    private fun sendControlPacket(volume: Int) {
+        val socket = udpSocket ?: return
+        Thread({
+            try {
+                val address = InetAddress.getByName(currentTargetIp)
+                val buffer = ByteArray(AudioConfig.HEADER_SIZE)
+                // Magic "SA"
+                buffer[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
+                buffer[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
+                // Sequence 0
+                buffer[2] = 0
+                buffer[3] = 0
+                // Volume
+                buffer[4] = volume.toByte()
+                // Flags = CONTROL_ONLY
+                buffer[5] = AudioConfig.FLAG_CONTROL_ONLY
+                // Payload length = 0
+                buffer[6] = 0
+                buffer[7] = 0
+
+                val packet = DatagramPacket(buffer, buffer.size, address, currentTargetPort)
+                socket.send(packet)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending volume control packet", e)
+            }
+        }).start()
+    }
+
     private fun startServiceForeground() {
-        val notification = buildNotification("Streaming system audio...")
+        val notification = buildNotification("Streaming @ DAP Vol: ${remoteVolumePercent.get()}%")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 NOTIFICATION_ID,
@@ -116,6 +180,28 @@ class AudioCaptureService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val volDownIntent = Intent(this, AudioCaptureService::class.java).apply {
+            action = ACTION_STEP_VOLUME
+            putExtra(EXTRA_VOLUME_DELTA, -5)
+        }
+        val pVolDown = PendingIntent.getService(
+            this,
+            2,
+            volDownIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val volUpIntent = Intent(this, AudioCaptureService::class.java).apply {
+            action = ACTION_STEP_VOLUME
+            putExtra(EXTRA_VOLUME_DELTA, 5)
+        }
+        val pVolUp = PendingIntent.getService(
+            this,
+            3,
+            volUpIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         val stopIntent = Intent(this, AudioCaptureService::class.java).apply {
             action = ACTION_STOP
         }
@@ -131,6 +217,8 @@ class AudioCaptureService : Service() {
             .setContentText(statusText)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentIntent(pendingActivityIntent)
+            .addAction(android.R.drawable.ic_media_previous, "🔉 -5%", pVolDown)
+            .addAction(android.R.drawable.ic_media_next, "🔊 +5%", pVolUp)
             .addAction(android.R.drawable.ic_media_pause, "Stop", pendingStopIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -174,7 +262,6 @@ class AudioCaptureService : Service() {
         this.mediaProjection = projection
         projection.registerCallback(projectionCallback, null)
 
-        // Capture all typical audio sources (Media, Games, System/Web players)
         val captureConfig = AudioPlaybackCaptureConfiguration.Builder(projection)
             .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
             .addMatchingUsage(AudioAttributes.USAGE_GAME)
@@ -192,7 +279,7 @@ class AudioCaptureService : Service() {
             AudioConfig.CHANNEL_IN_MASK,
             AudioConfig.ENCODING
         )
-        val bufferSize = maxOf(minBufferSize, AudioConfig.PACKET_SIZE * 4)
+        val bufferSize = maxOf(minBufferSize, AudioConfig.PACKET_SIZE * 8)
 
         val record = AudioRecord.Builder()
             .setAudioPlaybackCaptureConfig(captureConfig)
@@ -221,12 +308,20 @@ class AudioCaptureService : Service() {
                 }
                 udpSocket = socket
 
-                val buffer = ByteArray(AudioConfig.PACKET_SIZE)
-                val packet = DatagramPacket(buffer, buffer.size, address, targetPort)
+                val sendBuffer = ByteArray(AudioConfig.HEADER_SIZE + AudioConfig.PACKET_SIZE)
+                val packet = DatagramPacket(sendBuffer, sendBuffer.size, address, targetPort)
+
+                // Populate Magic Header "SA"
+                sendBuffer[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
+                sendBuffer[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
+                sendBuffer[5] = AudioConfig.FLAG_NORMAL
+                sendBuffer[6] = (AudioConfig.PACKET_SIZE shr 8).toByte()
+                sendBuffer[7] = (AudioConfig.PACKET_SIZE and 0xFF).toByte()
 
                 record.startRecording()
-                Log.i(TAG, "AudioRecord recording started. Streaming to $targetIp:$targetPort")
+                Log.i(TAG, "AudioRecord recording started. Streaming 5ms chunks to $targetIp:$targetPort")
 
+                var sequence = 0
                 var totalPackets = 0L
                 var totalBytes = 0L
                 var intervalPackets = 0
@@ -244,30 +339,37 @@ class AudioCaptureService : Service() {
                 }
 
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
-                    val bytesRead = record.read(buffer, 0, buffer.size, AudioRecord.READ_BLOCKING)
+                    val bytesRead = record.read(sendBuffer, AudioConfig.HEADER_SIZE, AudioConfig.PACKET_SIZE, AudioRecord.READ_BLOCKING)
                     if (bytesRead > 0) {
-                        packet.length = bytesRead
+                        // Sequence number
+                        sendBuffer[2] = (sequence shr 8).toByte()
+                        sendBuffer[3] = (sequence and 0xFF).toByte()
+                        sequence = (sequence + 1) and 0xFFFF
+
+                        // Remote volume
+                        sendBuffer[4] = remoteVolumePercent.get().toByte()
+
+                        packet.length = AudioConfig.HEADER_SIZE + bytesRead
                         socket.send(packet)
 
                         totalPackets++
-                        totalBytes += bytesRead
+                        totalBytes += packet.length
                         intervalPackets++
-                        intervalBytes += bytesRead
+                        intervalBytes += packet.length
 
-                        // Compute audio peak amplitude (16-bit PCM stereo)
-                        var i = 0
-                        while (i < bytesRead - 1) {
-                            val sample = (buffer[i].toInt() and 0xFF) or (buffer[i + 1].toInt() shl 8)
+                        // Compute peak amplitude
+                        var i = AudioConfig.HEADER_SIZE
+                        val end = AudioConfig.HEADER_SIZE + bytesRead
+                        while (i < end - 1) {
+                            val sample = (sendBuffer[i].toInt() and 0xFF) or (sendBuffer[i + 1].toInt() shl 8)
                             val abs = Math.abs(sample.toShort().toInt())
-                            if (abs > maxSampleInInterval) {
-                                maxSampleInInterval = abs
-                            }
+                            if (abs > maxSampleInInterval) maxSampleInInterval = abs
                             i += 2
                         }
 
                         val now = SystemClock.elapsedRealtime()
                         val dt = now - lastStatsTime
-                        if (dt >= 250) { // Update telemetry every 250ms
+                        if (dt >= 250) {
                             val pps = ((intervalPackets * 1000L) / dt).toInt()
                             val bps = ((intervalBytes * 1000L) / dt).toInt()
                             val peakPercent = ((maxSampleInInterval * 100) / 32768).coerceIn(0, 100)
@@ -280,8 +382,8 @@ class AudioCaptureService : Service() {
                                     packetsPerSec = pps,
                                     bytesPerSec = bps,
                                     audioPeakPercent = peakPercent,
-                                    remoteEndpoint = "$targetIp:$targetPort",
-                                    statusDetail = if (peakPercent > 1) "Active Audio" else "Silent Stream"
+                                    remoteEndpoint = "$targetIp:$targetPort (DAP Vol: ${remoteVolumePercent.get()}%)",
+                                    statusDetail = if (peakPercent > 1) "Active Audio (DAP Vol: ${remoteVolumePercent.get()}%)" else "Silent Stream"
                                 )
                             }
 

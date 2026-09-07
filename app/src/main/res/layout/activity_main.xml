@@ -185,7 +185,7 @@
                             android:id="@+id/til_port"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginBottom="14dp"
+                            android:layout_marginBottom="12dp"
                             android:hint="@string/port_hint"
                             android:textColorHint="@color/text_hint"
                             app:hintTextColor="@color/primary"
@@ -207,6 +207,116 @@
                                 android:textColorHint="@color/text_hint"
                                 android:text="50005" />
                         </com.google.android.material.textfield.TextInputLayout>
+
+                        <!-- Remote Volume Section (Transmitter Only) -->
+                        <LinearLayout
+                            android:id="@+id/layout_volume_control"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:background="@color/input_bg"
+                            android:padding="10dp"
+                            android:layout_marginBottom="14dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="horizontal"
+                                android:gravity="center_vertical"
+                                android:layout_marginBottom="4dp">
+
+                                <TextView
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="DAP REMOTE VOLUME"
+                                    android:textSize="11sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_hint"
+                                    android:letterSpacing="0.05" />
+
+                                <TextView
+                                    android:id="@+id/tv_remote_vol_label"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="100%"
+                                    android:textSize="12sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/primary" />
+                            </LinearLayout>
+
+                            <!-- Volume Slider -->
+                            <com.google.android.material.slider.Slider
+                                android:id="@+id/slider_remote_vol"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:valueFrom="0.0"
+                                android:valueTo="100.0"
+                                android:stepSize="1.0"
+                                android:value="100.0"
+                                app:thumbColor="@color/primary"
+                                app:trackColorActive="@color/primary"
+                                app:trackColorInactive="#2A2A38" />
+
+                            <!-- Stepper & Mute Actions Row -->
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="horizontal"
+                                android:gravity="center">
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/btn_vol_down"
+                                    style="?attr/materialButtonOutlinedStyle"
+                                    android:layout_width="0dp"
+                                    android:layout_height="36dp"
+                                    android:layout_weight="1"
+                                    android:text="🔉 -5%"
+                                    android:textSize="11sp"
+                                    android:textColor="@color/text_primary"
+                                    app:strokeColor="@color/card_stroke"
+                                    android:layout_marginEnd="4dp"
+                                    app:cornerRadius="6dp" />
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/btn_vol_mute"
+                                    style="?attr/materialButtonOutlinedStyle"
+                                    android:layout_width="0dp"
+                                    android:layout_height="36dp"
+                                    android:layout_weight="1"
+                                    android:text="🔇 Mute"
+                                    android:textSize="11sp"
+                                    android:textColor="@color/text_primary"
+                                    app:strokeColor="@color/card_stroke"
+                                    android:layout_marginEnd="4dp"
+                                    app:cornerRadius="6dp" />
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/btn_vol_up"
+                                    style="?attr/materialButtonOutlinedStyle"
+                                    android:layout_width="0dp"
+                                    android:layout_height="36dp"
+                                    android:layout_weight="1"
+                                    android:text="🔊 +5%"
+                                    android:textSize="11sp"
+                                    android:textColor="@color/text_primary"
+                                    app:strokeColor="@color/card_stroke"
+                                    app:cornerRadius="6dp" />
+                            </LinearLayout>
+
+                            <!-- Silence Phone Speaker 1-Tap Button -->
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_silence_phone"
+                                style="?attr/materialButtonOutlinedStyle"
+                                android:layout_width="match_parent"
+                                android:layout_height="36dp"
+                                android:layout_marginTop="6dp"
+                                android:text="🤫 Set Phone Media Vol to 0 (Silence Phone)"
+                                android:textSize="11sp"
+                                android:textColor="@color/text_secondary"
+                                app:strokeColor="@color/card_stroke"
+                                app:cornerRadius="6dp" />
+                        </LinearLayout>
 
                         <!-- Action Button -->
                         <com.google.android.material.button.MaterialButton
