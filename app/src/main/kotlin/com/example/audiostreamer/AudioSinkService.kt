@@ -91,7 +91,7 @@ class AudioSinkService : Service() {
 
     @Synchronized
     private fun configureAudioTrack(sampleRate: Int, encoding: Int, isLowLatency: Boolean, currentVolume: Int): AudioTrack {
-        val perfMode = if (isLowLatency) AudioTrack.PERFORMANCE_MODE_LOW_LATENCY else AudioTrack.PERFORMANCE_MODE_NONE
+        val perfMode = AudioTrack.PERFORMANCE_MODE_NONE
         val existing = audioTrack
         if (existing != null && currentSampleRate == sampleRate && currentEncoding == encoding && currentPerformanceMode == perfMode && existing.state == AudioTrack.STATE_INITIALIZED) {
             return existing
@@ -299,7 +299,7 @@ class AudioSinkService : Service() {
 
                                 // Only adapt profile and reconfigure AudioTrack on audio packets (never on control-only packets)
                                 if (!isControlOnly && !isDisconnect && !isSilence) {
-                                    val isServer24Bit = !isServerLowLatency && !isIncomingAac && ((flags.toInt() and AudioConfig.FLAG_24BIT.toInt()) != 0 ||
+                                    val isServer24Bit = !isIncomingAac && ((flags.toInt() and AudioConfig.FLAG_24BIT.toInt()) != 0 ||
                                         payloadLen == AudioConfig.PACKET_SIZE_24BIT_48K || payloadLen == AudioConfig.PACKET_SIZE_24BIT_44K)
                                     val serverProfile = if (isServerLowLatency) AudioConfig.PROFILE_LOW_LATENCY else AudioConfig.PROFILE_MUSIC
                                     if (serverProfile != currentProfile || isIncomingAac != lastConfiguredIsAac) {
@@ -349,30 +349,9 @@ class AudioSinkService : Service() {
                                 val isAacPayload = isIncomingAac && payloadLen > 0
                                 if ((is16Payload || is24Payload || isAacPayload) && !isDisconnect && !isControlOnly) {
                                     val pcmOffset = offset + AudioConfig.HEADER_SIZE
-                                    val effectivePayloadLen: Int
-                                    val writeData: ByteArray
-                                    val writeOffset: Int
-
-                                    if (isServerLowLatency && is24Payload) {
-                                        // Downconvert 24-bit to 16-bit for low latency mode (safety net)
-                                        val target16Len = if (payloadLen == AudioConfig.PACKET_SIZE_24BIT_44K) AudioConfig.PACKET_SIZE_16BIT_44K else AudioConfig.PACKET_SIZE_16BIT_48K
-                                        val downconverted16 = ByteArray(target16Len)
-                                        var s = pcmOffset
-                                        var d = 0
-                                        while (s < pcmOffset + payloadLen && d < target16Len) {
-                                            downconverted16[d] = data[s + 1]
-                                            downconverted16[d + 1] = data[s + 2]
-                                            d += 2
-                                            s += 3
-                                        }
-                                        writeData = downconverted16
-                                        writeOffset = 0
-                                        effectivePayloadLen = target16Len
-                                    } else {
-                                        writeData = data
-                                        writeOffset = pcmOffset
-                                        effectivePayloadLen = payloadLen
-                                    }
+                                    val effectivePayloadLen = payloadLen
+                                    val writeData = data
+                                    val writeOffset = pcmOffset
 
                                     jitterBuffer.write(seq, writeData, writeOffset, effectivePayloadLen)
 
@@ -413,7 +392,7 @@ class AudioSinkService : Service() {
                         val now = SystemClock.elapsedRealtime()
                         val dt = now - lastStatsTime
                         if (dt >= 250) {
-                            val is24 = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && currentEncoding == AudioFormat.ENCODING_PCM_24BIT_PACKED && currentProfile != AudioConfig.PROFILE_LOW_LATENCY)
+                            val is24 = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && currentEncoding == AudioFormat.ENCODING_PCM_24BIT_PACKED)
                             val instantPps = ((intervalPackets * 1000L) / dt).toFloat()
                             val instantBps = ((intervalBytes * 1000L) / dt).toFloat()
                             smoothPps = if (smoothPps == 0f) instantPps else (smoothPps * 0.7f + instantPps * 0.3f)
@@ -441,7 +420,7 @@ class AudioSinkService : Service() {
                             val profileName = if (currentIsAac) {
                                 "Low Latency AAC (Server)"
                             } else if (currentProfile == AudioConfig.PROFILE_LOW_LATENCY) {
-                                "Low Latency PCM (Server)"
+                                if (is24) "Low Latency 24-bit (Server)" else "Low Latency PCM (Server)"
                             } else if (is24) {
                                 "Studio 24-bit Music (Server)"
                             } else {

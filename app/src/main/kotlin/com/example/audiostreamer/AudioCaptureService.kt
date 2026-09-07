@@ -378,7 +378,7 @@ class AudioCaptureService : Service() {
         var is24BitActive = false
         var activePayloadSize = packetSize16
 
-        if (!isLowLatency && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        if (!isAacActive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             try {
                 val audioFormat24 = AudioFormat.Builder()
                     .setEncoding(AudioFormat.ENCODING_PCM_24BIT_PACKED)
@@ -401,7 +401,7 @@ class AudioCaptureService : Service() {
                         record = candidateRecord
                         is24BitActive = true
                         activePayloadSize = packetSize24
-                        Log.i(TAG, "Initialized 24-bit packed PCM AudioRecord at $captureSampleRate Hz for Music Mode")
+                        Log.i(TAG, "Initialized 24-bit packed PCM AudioRecord at $captureSampleRate Hz (LowLatency=$isLowLatency)")
                     } else {
                         candidateRecord.release()
                         Log.w(TAG, "24-bit AudioRecord not initialized by HAL at $captureSampleRate Hz, falling back to 16-bit")
@@ -553,27 +553,24 @@ class AudioCaptureService : Service() {
                 var activeProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
                 val initialInLowLatency = (activeProfile == AudioConfig.PROFILE_LOW_LATENCY)
                 val rateFlag = if (captureSampleRate == AudioConfig.SAMPLE_RATE_44100) AudioConfig.FLAG_SAMPLE_RATE_44100.toInt() else 0
-                var profileFlag = if (initialInLowLatency) {
-                    (AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt() or rateFlag).toByte()
-                } else {
-                    var flag = AudioConfig.FLAG_PROFILE_MUSIC.toInt() or rateFlag
-                    if (is24BitActive) {
-                        flag = flag or AudioConfig.FLAG_24BIT.toInt()
-                    }
-                    flag.toByte()
+                val prof = if (initialInLowLatency) AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt() else AudioConfig.FLAG_PROFILE_MUSIC.toInt()
+                var flag = prof or rateFlag
+                if (is24BitActive && !isAacActive) {
+                    flag = flag or AudioConfig.FLAG_24BIT.toInt()
                 }
+                var profileFlag = flag.toByte()
 
                 val initialProfileDisplayName = if (isAacActive) {
                     "Low Latency AAC (Server)"
                 } else if (initialInLowLatency) {
-                    "Low Latency (Server)"
+                    if (is24BitActive) "Low Latency 24-bit (Server)" else "Low Latency PCM (Server)"
                 } else if (is24BitActive) {
                     "Studio 24-bit Music (Server)"
                 } else {
                     "Music (Server)"
                 }
 
-                val initialPayload = if (initialInLowLatency) packetSize16 else activePayloadSize
+                val initialPayload = activePayloadSize
                 sendBuffer[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
                 sendBuffer[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
                 sendBuffer[5] = profileFlag
@@ -608,7 +605,7 @@ class AudioCaptureService : Service() {
                 var smoothPps = 0f
                 var smoothBps = 0f
 
-                val initialBitDepth = if (isAacActive) 16 else if (is24BitActive && !initialInLowLatency) 24 else 16
+                val initialBitDepth = if (isAacActive) 16 else if (is24BitActive) 24 else 16
                 val initialBitrate = if (isAacActive) {
                     192
                 } else if (captureSampleRate == AudioConfig.SAMPLE_RATE_44100) {
@@ -731,36 +728,14 @@ class AudioCaptureService : Service() {
                     val bytesRead = record.read(sendBuffer, AudioConfig.HEADER_SIZE, activePayloadSize, AudioRecord.READ_BLOCKING)
                     if (bytesRead > 0) {
                         val currentInLowLatency = (activeProfile == AudioConfig.PROFILE_LOW_LATENCY)
-                        val effectivePayloadLen: Int
-                        val isEffective24: Boolean
-
-                        if (currentInLowLatency) {
-                            if (is24BitActive) {
-                                // Downconvert 24-bit packed PCM to 16-bit PCM in-place for low latency mode
-                                var src = AudioConfig.HEADER_SIZE
-                                var dst = AudioConfig.HEADER_SIZE
-                                val end = AudioConfig.HEADER_SIZE + bytesRead
-                                while (src < end) {
-                                    sendBuffer[dst] = sendBuffer[src + 1]
-                                    sendBuffer[dst + 1] = sendBuffer[src + 2]
-                                    dst += 2
-                                    src += 3
-                                }
-                                effectivePayloadLen = dst - AudioConfig.HEADER_SIZE
-                            } else {
-                                effectivePayloadLen = bytesRead
-                            }
-                            isEffective24 = false
-                            profileFlag = (AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt() or rateFlag).toByte()
-                        } else {
-                            effectivePayloadLen = bytesRead
-                            isEffective24 = is24BitActive
-                            var flag = AudioConfig.FLAG_PROFILE_MUSIC.toInt() or rateFlag
-                            if (is24BitActive) {
-                                flag = flag or AudioConfig.FLAG_24BIT.toInt()
-                            }
-                            profileFlag = flag.toByte()
+                        val effectivePayloadLen = bytesRead
+                        val isEffective24 = is24BitActive
+                        val baseProfileFlag = if (currentInLowLatency) AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt() else AudioConfig.FLAG_PROFILE_MUSIC.toInt()
+                        var flag = baseProfileFlag or rateFlag
+                        if (isEffective24) {
+                            flag = flag or AudioConfig.FLAG_24BIT.toInt()
                         }
+                        profileFlag = flag.toByte()
 
                         // Compute peak amplitude of current chunk
                         var chunkPeak = 0
@@ -897,7 +872,7 @@ class AudioCaptureService : Service() {
                         if (dt >= 250) {
                             activeProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
                             val inLowLatencyNow = (activeProfile == AudioConfig.PROFILE_LOW_LATENCY)
-                            val is24Now = is24BitActive && !inLowLatencyNow
+                            val is24Now = is24BitActive && !isAacActive
 
                             val instantPps = ((intervalPackets * 1000L) / dt).toFloat()
                             val instantBps = ((intervalBytes * 1000L) / dt).toFloat()
@@ -921,7 +896,7 @@ class AudioCaptureService : Service() {
                             val profileDisplayName = if (isAacActive) {
                                 "Low Latency AAC (Server)"
                             } else if (inLowLatencyNow) {
-                                "Low Latency PCM (Server)"
+                                if (is24Now) "Low Latency 24-bit (Server)" else "Low Latency PCM (Server)"
                             } else if (is24BitActive) {
                                 "Studio 24-bit Music (Server)"
                             } else {
