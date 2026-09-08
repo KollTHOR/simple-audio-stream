@@ -72,6 +72,7 @@ class AudioSinkService : Service() {
     @Volatile private var lastConfiguredCodec: String? = null
     @Volatile private var sinkAudioPeakSample = 0
     @Volatile private var currentBufferSizeInBytes = 0
+    @Volatile private var currentTrackProfile: String = ""
     @Volatile private var lastDecodeDurationNs: Long = 0L
     @Volatile private var lastLatencyLogTime: Long = 0L
 
@@ -98,12 +99,39 @@ class AudioSinkService : Service() {
         return START_NOT_STICKY
     }
 
+    private fun applyBufferSizeForProfile(track: AudioTrack, profile: String, sampleRate: Int) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val targetFrames = when (profile) {
+                AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> {
+                    // Clamp to ~35ms (1,680 frames @ 48kHz) to eliminate AudioFlinger's default 160ms (7,688 frames) FIFO bloat
+                    // while remaining strictly in PERFORMANCE_MODE_NONE with pure USAGE_MEDIA music fidelity
+                    (sampleRate * 35) / 1000
+                }
+                AudioConfig.PROFILE_BALANCED -> {
+                    // Clamp to ~100ms (4,800 frames @ 48kHz)
+                    (sampleRate * 100) / 1000
+                }
+                else -> {
+                    // Music mode: allow full capacity (~500ms)
+                    track.bufferCapacityInFrames
+                }
+            }
+            val clampedFrames = track.setBufferSizeInFrames(targetFrames)
+            val clampedMs = (clampedFrames * 1000L) / sampleRate
+            Log.i(TAG, "AudioTrack setBufferSizeInFrames for profile $profile: requested=$targetFrames, actual=$clampedFrames (~${clampedMs}ms), capacity=${track.bufferCapacityInFrames} frames")
+        }
+    }
+
     @Synchronized
     private fun configureAudioTrack(sampleRate: Int, encoding: Int, profile: String, currentVolume: Int): AudioTrack {
         val isLowLatency = (profile == AudioConfig.PROFILE_VIDEO || profile == AudioConfig.PROFILE_LOW_LATENCY)
         val perfMode = AudioTrack.PERFORMANCE_MODE_NONE
         val existing = audioTrack
         if (existing != null && currentSampleRate == sampleRate && currentEncoding == encoding && currentPerformanceMode == perfMode && existing.state == AudioTrack.STATE_INITIALIZED) {
+            if (currentTrackProfile != profile) {
+                currentTrackProfile = profile
+                applyBufferSizeForProfile(existing, profile, sampleRate)
+            }
             return existing
         }
 
@@ -162,26 +190,8 @@ class AudioSinkService : Service() {
         }
 
         // Clamp AudioTrack active buffer depth via setBufferSizeInFrames
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            val targetFrames = when (profile) {
-                AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> {
-                    // Clamp to ~40ms (1,920 frames @ 48kHz) to eliminate AudioFlinger's default 160ms (7,688 frames) FIFO bloat
-                    // while remaining strictly in PERFORMANCE_MODE_NONE with pure USAGE_MEDIA music fidelity
-                    (sampleRate * 40) / 1000
-                }
-                AudioConfig.PROFILE_BALANCED -> {
-                    // Clamp to ~100ms (4,800 frames @ 48kHz)
-                    (sampleRate * 100) / 1000
-                }
-                else -> {
-                    // Music mode: allow full capacity (~500ms)
-                    track.bufferCapacityInFrames
-                }
-            }
-            val clampedFrames = track.setBufferSizeInFrames(targetFrames)
-            val clampedMs = (clampedFrames * 1000L) / sampleRate
-            Log.i(TAG, "AudioTrack setBufferSizeInFrames: requested=$targetFrames, actual=$clampedFrames (~${clampedMs}ms), capacity=${track.bufferCapacityInFrames} frames")
-        }
+        applyBufferSizeForProfile(track, profile, sampleRate)
+        currentTrackProfile = profile
 
         // Prime AudioTrack with pre-roll silence so DAC ring buffer is never at 0 frames on startup
         val primeBytes = when (profile) {
@@ -372,6 +382,8 @@ class AudioSinkService : Service() {
                                         currentProfile = serverProfile
                                         lastConfiguredCodec = currentCodec
                                         jitterBuffer.setProfile(serverProfile, isCompressed)
+                                        audioTrack?.let { applyBufferSizeForProfile(it, serverProfile, currentSampleRate) }
+                                        currentTrackProfile = serverProfile
                                         Log.i(TAG, "Adapted client buffer to server profile: $serverProfile, codec=$currentCodec")
                                     }
 
@@ -382,7 +394,7 @@ class AudioSinkService : Service() {
                                     }
                                     val targetPerfMode = AudioTrack.PERFORMANCE_MODE_NONE
                                     // Fast-path: skip @Synchronized call if nothing has changed
-                                    if (targetSampleRate != currentSampleRate || targetEncoding != currentEncoding || targetPerfMode != currentPerformanceMode) {
+                                    if (targetSampleRate != currentSampleRate || targetEncoding != currentEncoding || targetPerfMode != currentPerformanceMode || serverProfile != currentTrackProfile) {
                                         configureAudioTrack(targetSampleRate, targetEncoding, serverProfile, currentRemoteVolume)
                                     }
                                 }
