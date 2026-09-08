@@ -101,12 +101,12 @@ object AudioConfig {
     const val BALANCED_WAIT_TIMEOUT_MS = 30L // 30ms wait
     const val BALANCED_TARGET_WATERMARK_SLOTS = 20 // 100ms target watermark
 
-    // Low Latency Mode: High-efficiency Opus / AAC compressed audio (~20-40ms cushion, 80-85% less airtime)
+    // Low Latency Mode: High-efficiency Opus / AAC compressed audio (~60ms cushion, 80-85% less airtime)
     const val LOW_LATENCY_JITTER_BUFFER_SLOTS = 32 // ~640ms max headroom
-    const val LOW_LATENCY_PRE_ROLL_PACKETS = 2 // ~40ms pre-roll cushion
+    const val LOW_LATENCY_PRE_ROLL_PACKETS = 3 // ~60ms pre-roll cushion
     const val LOW_LATENCY_MAX_UNDERRUN_FRAMES = 8 // ~160ms concealment before rebuffering
-    const val LOW_LATENCY_WAIT_TIMEOUT_MS = 40L // 40ms wait absorbs Wi-Fi jitter smoothly
-    const val LOW_LATENCY_TARGET_WATERMARK_SLOTS = 2 // ~40ms target watermark
+    const val LOW_LATENCY_WAIT_TIMEOUT_MS = 50L // 50ms wait absorbs Wi-Fi jitter smoothly
+    const val LOW_LATENCY_TARGET_WATERMARK_SLOTS = 3 // ~60ms target watermark
 
     // Video AAC Mode (Fallback): 1024-sample frames (~21.3ms per packet)
     const val LOW_LATENCY_AAC_JITTER_BUFFER_SLOTS = 32 // ~680ms headroom

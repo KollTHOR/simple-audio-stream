@@ -547,6 +547,9 @@ class AudioSinkService : Service() {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
 
                 val chunk = ByteArray(AudioConfig.MAX_PACKET_SIZE)
+                var lastPlayedSampleLeft16: Short = 0
+                var lastPlayedSampleRight16: Short = 0
+                var wasInSilenceFill = false
 
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                     try {
@@ -560,8 +563,24 @@ class AudioSinkService : Service() {
                                          val t0 = SystemClock.elapsedRealtimeNanos()
                                          val pcmList = opusDecoder?.decode(chunk, 0, bytesToPlay) ?: emptyList()
                                          lastDecodeDurationNs = SystemClock.elapsedRealtimeNanos() - t0
-                                         for (pcm in pcmList) {
+                                         for (i in pcmList.indices) {
+                                             val pcm = pcmList[i]
                                              if (pcm.isNotEmpty()) {
+                                                 if (wasInSilenceFill && i == 0) {
+                                                     val rampFrames = minOf(64, pcm.size / 4)
+                                                     for (f in 0 until rampFrames) {
+                                                         val factor = f.toFloat() / rampFrames.toFloat()
+                                                         val p = f * 4
+                                                         val sL = (((pcm[p].toInt() and 0xFF) or (pcm[p + 1].toInt() shl 8)).toShort() * factor).toInt().toShort()
+                                                         val sR = (((pcm[p + 2].toInt() and 0xFF) or (pcm[p + 3].toInt() shl 8)).toShort() * factor).toInt().toShort()
+                                                         pcm[p] = (sL.toInt() and 0xFF).toByte()
+                                                         pcm[p + 1] = ((sL.toInt() shr 8) and 0xFF).toByte()
+                                                         pcm[p + 2] = (sR.toInt() and 0xFF).toByte()
+                                                         pcm[p + 3] = ((sR.toInt() shr 8) and 0xFF).toByte()
+                                                     }
+                                                     wasInSilenceFill = false
+                                                 }
+
                                                  track.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
                                                  var p = 0
                                                  while (p < pcm.size - 1) {
@@ -572,9 +591,32 @@ class AudioSinkService : Service() {
                                                  }
                                              }
                                          }
+                                         val lastPcm = pcmList.lastOrNull { it.size >= 4 }
+                                         if (lastPcm != null) {
+                                             val lastOff = lastPcm.size - 4
+                                             lastPlayedSampleLeft16 = ((lastPcm[lastOff].toInt() and 0xFF) or (lastPcm[lastOff + 1].toInt() shl 8)).toShort()
+                                             lastPlayedSampleRight16 = ((lastPcm[lastOff + 2].toInt() and 0xFF) or (lastPcm[lastOff + 3].toInt() shl 8)).toShort()
+                                             wasInSilenceFill = false
+                                         }
                                      } else {
                                          val silenceBytes = if (currentSampleRate == AudioConfig.SAMPLE_RATE_44100) 3528 else 3840
                                          val silence = ByteArray(silenceBytes)
+                                         if (!wasInSilenceFill && (lastPlayedSampleLeft16 != 0.toShort() || lastPlayedSampleRight16 != 0.toShort())) {
+                                             val rampFrames = minOf(64, silenceBytes / 4)
+                                             for (f in 0 until rampFrames) {
+                                                 val factor = (rampFrames - f).toFloat() / rampFrames.toFloat()
+                                                 val sL = (lastPlayedSampleLeft16 * factor).toInt().toShort()
+                                                 val sR = (lastPlayedSampleRight16 * factor).toInt().toShort()
+                                                 val p = f * 4
+                                                 silence[p] = (sL.toInt() and 0xFF).toByte()
+                                                 silence[p + 1] = ((sL.toInt() shr 8) and 0xFF).toByte()
+                                                 silence[p + 2] = (sR.toInt() and 0xFF).toByte()
+                                                 silence[p + 3] = ((sR.toInt() shr 8) and 0xFF).toByte()
+                                             }
+                                         }
+                                         lastPlayedSampleLeft16 = 0
+                                         lastPlayedSampleRight16 = 0
+                                         wasInSilenceFill = true
                                          track.write(silence, 0, silence.size, AudioTrack.WRITE_BLOCKING)
                                      }
                                  } else if (currentIsAac) {
@@ -583,22 +625,60 @@ class AudioSinkService : Service() {
                                          val t0 = SystemClock.elapsedRealtimeNanos()
                                          val pcmList = aacDecoder?.decode(chunk, 0, bytesToPlay) ?: emptyList()
                                          lastDecodeDurationNs = SystemClock.elapsedRealtimeNanos() - t0
-                                        for (pcm in pcmList) {
-                                            if (pcm.isNotEmpty()) {
-                                                track.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
-                                                var p = 0
-                                                while (p < pcm.size - 1) {
-                                                    val sample = (pcm[p].toInt() and 0xFF) or (pcm[p + 1].toInt() shl 8)
-                                                    val abs = kotlin.math.abs(sample.toShort().toInt())
-                                                    if (abs > sinkAudioPeakSample) sinkAudioPeakSample = abs
-                                                    p += 2
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        val silence = ByteArray(4096)
-                                        track.write(silence, 0, silence.size, AudioTrack.WRITE_BLOCKING)
-                                    }
+                                         for (i in pcmList.indices) {
+                                             val pcm = pcmList[i]
+                                             if (pcm.isNotEmpty()) {
+                                                 if (wasInSilenceFill && i == 0) {
+                                                     val rampFrames = minOf(64, pcm.size / 4)
+                                                     for (f in 0 until rampFrames) {
+                                                         val factor = f.toFloat() / rampFrames.toFloat()
+                                                         val p = f * 4
+                                                         val sL = (((pcm[p].toInt() and 0xFF) or (pcm[p + 1].toInt() shl 8)).toShort() * factor).toInt().toShort()
+                                                         val sR = (((pcm[p + 2].toInt() and 0xFF) or (pcm[p + 3].toInt() shl 8)).toShort() * factor).toInt().toShort()
+                                                         pcm[p] = (sL.toInt() and 0xFF).toByte()
+                                                         pcm[p + 1] = ((sL.toInt() shr 8) and 0xFF).toByte()
+                                                         pcm[p + 2] = (sR.toInt() and 0xFF).toByte()
+                                                         pcm[p + 3] = ((sR.toInt() shr 8) and 0xFF).toByte()
+                                                     }
+                                                     wasInSilenceFill = false
+                                                 }
+                                                 track.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
+                                                 var p = 0
+                                                 while (p < pcm.size - 1) {
+                                                     val sample = (pcm[p].toInt() and 0xFF) or (pcm[p + 1].toInt() shl 8)
+                                                     val abs = kotlin.math.abs(sample.toShort().toInt())
+                                                     if (abs > sinkAudioPeakSample) sinkAudioPeakSample = abs
+                                                     p += 2
+                                                 }
+                                             }
+                                         }
+                                         val lastPcm = pcmList.lastOrNull { it.size >= 4 }
+                                         if (lastPcm != null) {
+                                             val lastOff = lastPcm.size - 4
+                                             lastPlayedSampleLeft16 = ((lastPcm[lastOff].toInt() and 0xFF) or (lastPcm[lastOff + 1].toInt() shl 8)).toShort()
+                                             lastPlayedSampleRight16 = ((lastPcm[lastOff + 2].toInt() and 0xFF) or (lastPcm[lastOff + 3].toInt() shl 8)).toShort()
+                                             wasInSilenceFill = false
+                                         }
+                                     } else {
+                                         val silence = ByteArray(4096)
+                                         if (!wasInSilenceFill && (lastPlayedSampleLeft16 != 0.toShort() || lastPlayedSampleRight16 != 0.toShort())) {
+                                             val rampFrames = minOf(64, silence.size / 4)
+                                             for (f in 0 until rampFrames) {
+                                                 val factor = (rampFrames - f).toFloat() / rampFrames.toFloat()
+                                                 val sL = (lastPlayedSampleLeft16 * factor).toInt().toShort()
+                                                 val sR = (lastPlayedSampleRight16 * factor).toInt().toShort()
+                                                 val p = f * 4
+                                                 silence[p] = (sL.toInt() and 0xFF).toByte()
+                                                 silence[p + 1] = ((sL.toInt() shr 8) and 0xFF).toByte()
+                                                 silence[p + 2] = (sR.toInt() and 0xFF).toByte()
+                                                 silence[p + 3] = ((sR.toInt() shr 8) and 0xFF).toByte()
+                                             }
+                                         }
+                                         lastPlayedSampleLeft16 = 0
+                                         lastPlayedSampleRight16 = 0
+                                         wasInSilenceFill = true
+                                         track.write(silence, 0, silence.size, AudioTrack.WRITE_BLOCKING)
+                                     }
                                 } else {
                                     track.write(chunk, 0, bytesToPlay, AudioTrack.WRITE_BLOCKING)
                                 }

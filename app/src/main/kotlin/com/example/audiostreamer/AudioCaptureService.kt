@@ -741,9 +741,57 @@ class AudioCaptureService : Service() {
                                         totalBytes += packet.length
                                         intervalPackets++
                                         intervalBytes += packet.length
+
+                                        // Forward Error Correction (XOR FEC) for compressed stream
+                                        if (isFecEnabled) {
+                                            if (fecBlockCount == 0) {
+                                                fecBaseSeq = currentSeq
+                                                fecMaxPayloadLen = frameLen
+                                                System.arraycopy(sendBuffer, AudioConfig.HEADER_SIZE, fecParityBuffer, 0, frameLen)
+                                                fecBlockCount = 1
+                                            } else {
+                                                if (frameLen > fecMaxPayloadLen) {
+                                                    fecParityBuffer.fill(0, fecMaxPayloadLen, frameLen)
+                                                    fecMaxPayloadLen = frameLen
+                                                }
+                                                for (b in 0 until frameLen) {
+                                                    fecParityBuffer[b] = (fecParityBuffer[b].toInt() xor sendBuffer[AudioConfig.HEADER_SIZE + b].toInt()).toByte()
+                                                }
+                                                fecBlockCount++
+
+                                                if (fecBlockCount == AudioConfig.FEC_BLOCK_SIZE) {
+                                                    fecPacketBuffer[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
+                                                    fecPacketBuffer[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
+                                                    fecPacketBuffer[2] = (fecBaseSeq shr 8).toByte()
+                                                    fecPacketBuffer[3] = (fecBaseSeq and 0xFF).toByte()
+                                                    fecPacketBuffer[4] = AudioConfig.FEC_BLOCK_SIZE.toByte()
+                                                    fecPacketBuffer[5] = (profileFlag.toInt() or codecFlag.toInt() or AudioConfig.FLAG_FEC_PARITY.toInt()).toByte()
+                                                    fecPacketBuffer[6] = (fecMaxPayloadLen shr 8).toByte()
+                                                    fecPacketBuffer[7] = (fecMaxPayloadLen and 0xFF).toByte()
+                                                    System.arraycopy(fecParityBuffer, 0, fecPacketBuffer, AudioConfig.HEADER_SIZE, fecMaxPayloadLen)
+                                                    fecDatagramPacket.length = AudioConfig.HEADER_SIZE + fecMaxPayloadLen
+
+                                                    for (targetAddr in targetAddresses) {
+                                                        fecDatagramPacket.address = targetAddr
+                                                        fecDatagramPacket.port = targetPort
+                                                        socket.send(fecDatagramPacket)
+                                                    }
+
+                                                    totalPackets++
+                                                    totalBytes += fecDatagramPacket.length
+                                                    intervalPackets++
+                                                    intervalBytes += fecDatagramPacket.length
+
+                                                    fecBlockCount = 0
+                                                    fecMaxPayloadLen = 0
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             } else if (shouldSendHeartbeat) {
+                                fecBlockCount = 0
+                                fecMaxPayloadLen = 0
                                 sendBuffer[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
                                 sendBuffer[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
                                 sendBuffer[2] = (sequence shr 8).toByte()
@@ -888,7 +936,10 @@ class AudioCaptureService : Service() {
                                     System.arraycopy(sendBuffer, AudioConfig.HEADER_SIZE, fecParityBuffer, 0, effectivePayloadLen)
                                     fecBlockCount = 1
                                 } else {
-                                    fecMaxPayloadLen = maxOf(fecMaxPayloadLen, effectivePayloadLen)
+                                    if (effectivePayloadLen > fecMaxPayloadLen) {
+                                        fecParityBuffer.fill(0, fecMaxPayloadLen, effectivePayloadLen)
+                                        fecMaxPayloadLen = effectivePayloadLen
+                                    }
                                     for (b in 0 until effectivePayloadLen) {
                                         fecParityBuffer[b] = (fecParityBuffer[b].toInt() xor sendBuffer[AudioConfig.HEADER_SIZE + b].toInt()).toByte()
                                     }
