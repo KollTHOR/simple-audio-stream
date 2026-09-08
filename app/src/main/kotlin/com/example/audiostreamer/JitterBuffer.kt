@@ -106,10 +106,10 @@ class JitterBuffer(
         if (length <= 0 || length > AudioConfig.MAX_PACKET_SIZE) return
 
         lock.withLock {
-            if (isTransmitterSilent) {
+            if (isTransmitterSilent || (isBuffering && availableCount == 0)) {
                 isTransmitterSilent = false
                 expectedReadSeq = sequence
-                isBuffering = false
+                isBuffering = (preRollThreshold > 1)
                 availableCount = 0
                 for (i in 0 until maxSlots) {
                     isSlotFilled[i] = false
@@ -151,6 +151,15 @@ class JitterBuffer(
                 dropOldestSlot()
             }
 
+            // In Low Latency mode, enforce tight watermark ceiling:
+            // Never allow network bursts or video pauses to queue more than targetWatermark + 2 slots (~20ms)
+            val isLowLat = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY || currentProfile == AudioConfig.PROFILE_VIDEO)
+            if (isLowLat && availableCount > targetWatermarkSlots + 2) {
+                while (availableCount > targetWatermarkSlots + 1) {
+                    dropOldestSlot()
+                }
+            }
+
             System.arraycopy(data, offset, buffer[slot], 0, length)
             packetLengths[slot] = length
             slotSeq[slot] = sequence
@@ -167,12 +176,10 @@ class JitterBuffer(
 
             smoothBufferFill = smoothBufferFill * 0.998f + availableCount * 0.002f
 
-            // Smooth latency catch-up for extreme network stalls:
-            // Zero-crossing micro-resampling in read() handles normal drift and bursts smoothly.
-            // Only drop an oldest slot if buffer has sustained severe backlog beyond target watermark + 16 (~140ms extra).
-            if (currentProfile == AudioConfig.PROFILE_LOW_LATENCY && smoothBufferFill > targetWatermarkSlots + 16) {
+            // Fast catch-up for low latency mode:
+            if (isLowLat && smoothBufferFill > targetWatermarkSlots + 2) {
                 packetsSinceCatchUp++
-                if (packetsSinceCatchUp >= 150) {
+                if (packetsSinceCatchUp >= 40) {
                     dropOldestSlot()
                     packetsSinceCatchUp = 0
                     smoothBufferFill -= 1.0f
@@ -407,8 +414,8 @@ class JitterBuffer(
                 val driftDelta = smoothBufferFill - targetWatermarkSlots
                 val isLowLat = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY || currentProfile == AudioConfig.PROFILE_VIDEO)
                 val isBalanced = (currentProfile == AudioConfig.PROFILE_BALANCED)
-                val driftThreshold = if (isLowLat) 8f else if (isBalanced) 12f else 16f
-                val minInterval = if (isLowLat) 300 else if (isBalanced) 400 else 600 // At most once every 1.5 - 3 seconds
+                val driftThreshold = if (isLowLat) 2f else if (isBalanced) 10f else 16f
+                val minInterval = if (isLowLat) 100 else if (isBalanced) 400 else 600 // In Low Latency: adjust every 500ms
                 if (packetsSinceDriftAdjust >= minInterval && len >= 12) {
                     if (driftDelta > driftThreshold) {
                         applyZeroCrossingFrameDrop(output, len)

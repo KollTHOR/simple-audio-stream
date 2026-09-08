@@ -91,7 +91,8 @@ class AudioSinkService : Service() {
 
     @Synchronized
     private fun configureAudioTrack(sampleRate: Int, encoding: Int, profile: String, currentVolume: Int): AudioTrack {
-        val perfMode = AudioTrack.PERFORMANCE_MODE_NONE
+        val isLowLatency = (profile == AudioConfig.PROFILE_VIDEO || profile == AudioConfig.PROFILE_LOW_LATENCY)
+        val perfMode = if (isLowLatency) AudioTrack.PERFORMANCE_MODE_LOW_LATENCY else AudioTrack.PERFORMANCE_MODE_NONE
         val existing = audioTrack
         if (existing != null && currentSampleRate == sampleRate && currentEncoding == encoding && currentPerformanceMode == perfMode && existing.state == AudioTrack.STATE_INITIALIZED) {
             return existing
@@ -132,7 +133,7 @@ class AudioSinkService : Service() {
             if (is24) AudioConfig.PACKET_SIZE_24BIT_48K else AudioConfig.PACKET_SIZE_16BIT_48K
         }
         val bufferSize = when (profile) {
-            AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> maxOf(minBufferSize, packetSize * 10) // ~50ms
+            AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> minBufferSize
             AudioConfig.PROFILE_BALANCED -> maxOf(minBufferSize, packetSize * 40) // ~200ms
             else -> maxOf(minBufferSize * 4, packetSize * 100) // Deep buffer ~500ms
         }
@@ -151,9 +152,22 @@ class AudioSinkService : Service() {
             return configureAudioTrack(sampleRate, AudioConfig.ENCODING, profile, currentVolume)
         }
 
+        // In Low Latency mode, clamp AudioTrack internal bufferSizeInFrames to ~10ms (480 frames)
+        if (isLowLatency && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            try {
+                val bytesPerFrame = AudioConfig.CHANNELS * (if (is24) 3 else 2)
+                val minFrames = minBufferSize / bytesPerFrame
+                val targetFrames = if (sampleRate == AudioConfig.SAMPLE_RATE_44100) AudioConfig.FRAMES_PER_PACKET_44K * 2 else AudioConfig.FRAMES_PER_PACKET_48K * 2 // 10ms
+                track.bufferSizeInFrames = minOf(track.bufferCapacityInFrames, maxOf(minFrames, targetFrames))
+                Log.i(TAG, "Clamped low latency AudioTrack bufferSizeInFrames to ${track.bufferSizeInFrames} (capacity: ${track.bufferCapacityInFrames})")
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not clamp AudioTrack bufferSizeInFrames: ${e.message}")
+            }
+        }
+
         // Prime AudioTrack with pre-roll silence so DAC ring buffer is never at 0 frames on startup
         val primeBytes = when (profile) {
-            AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> packetSize * 2 // 10ms prime
+            AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> packetSize * 1 // 5ms prime
             AudioConfig.PROFILE_BALANCED -> packetSize * 4 // 20ms prime
             else -> packetSize * 8 // 40ms prime
         }
@@ -284,8 +298,9 @@ class AudioSinkService : Service() {
                                 }
 
                                 val isDisconnect = (flags.toInt() and AudioConfig.FLAG_DISCONNECT.toInt()) != 0
-                                val isControlOnly = (flags.toInt() and AudioConfig.FLAG_CONTROL_ONLY.toInt()) != 0
+                                val isControlOnly = payloadLen == 0 && ((flags.toInt() and AudioConfig.FLAG_CONTROL_ONLY.toInt()) != 0)
                                 val isServerLowLatency = (flags.toInt() and AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt()) != 0
+                                val isServerBalanced = !isControlOnly && ((flags.toInt() and AudioConfig.FLAG_PROFILE_BALANCED.toInt()) != 0)
                                 val isIncomingAac = (flags.toInt() and AudioConfig.FLAG_CODEC_AAC.toInt()) != 0
                                 currentIsAac = isIncomingAac
                                 val isIncoming44k = (flags.toInt() and AudioConfig.FLAG_SAMPLE_RATE_44100.toInt()) != 0 ||
@@ -304,12 +319,11 @@ class AudioSinkService : Service() {
                                 if (!isControlOnly && !isDisconnect && !isSilence) {
                                     val isServer24Bit = !isIncomingAac && ((flags.toInt() and AudioConfig.FLAG_24BIT.toInt()) != 0 ||
                                         payloadLen == AudioConfig.PACKET_SIZE_24BIT_48K || payloadLen == AudioConfig.PACKET_SIZE_24BIT_44K)
-                                    val serverProfile = if (isIncomingAac) {
-                                        AudioConfig.PROFILE_VIDEO
-                                    } else if (isServerLowLatency) {
-                                        AudioConfig.PROFILE_BALANCED
-                                    } else {
-                                        AudioConfig.PROFILE_MUSIC
+                                    val serverProfile = when {
+                                        isIncomingAac -> AudioConfig.PROFILE_VIDEO
+                                        isServerLowLatency -> AudioConfig.PROFILE_LOW_LATENCY
+                                        isServerBalanced -> AudioConfig.PROFILE_BALANCED
+                                        else -> AudioConfig.PROFILE_MUSIC
                                     }
                                     if (serverProfile != currentProfile || isIncomingAac != lastConfiguredIsAac) {
                                         currentProfile = serverProfile
@@ -323,7 +337,8 @@ class AudioSinkService : Service() {
                                     } else {
                                         AudioConfig.ENCODING
                                     }
-                                    val targetPerfMode = AudioTrack.PERFORMANCE_MODE_NONE
+                                    val isLowLat = (serverProfile == AudioConfig.PROFILE_VIDEO || serverProfile == AudioConfig.PROFILE_LOW_LATENCY)
+                                    val targetPerfMode = if (isLowLat) AudioTrack.PERFORMANCE_MODE_LOW_LATENCY else AudioTrack.PERFORMANCE_MODE_NONE
                                     // Fast-path: skip @Synchronized call if nothing has changed
                                     if (targetSampleRate != currentSampleRate || targetEncoding != currentEncoding || targetPerfMode != currentPerformanceMode) {
                                         configureAudioTrack(targetSampleRate, targetEncoding, serverProfile, currentRemoteVolume)

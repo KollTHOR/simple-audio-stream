@@ -43,6 +43,7 @@ object AudioConfig {
     const val FLAG_CONTROL_ONLY: Byte = 0x02
     const val FLAG_DISCONNECT: Byte = 0x04
     const val FLAG_PROFILE_MUSIC: Byte = 0x00
+    const val FLAG_PROFILE_BALANCED: Byte = 0x02 // In audio packets (payloadLen > 0); distinguishes Balanced from Low Latency / Music
     const val FLAG_PROFILE_LOW_LATENCY: Byte = 0x08
     const val FLAG_24BIT: Byte = 0x10
     const val FLAG_SILENCE: Byte = 0x20
@@ -95,12 +96,12 @@ object AudioConfig {
     const val BALANCED_WAIT_TIMEOUT_MS = 30L // 30ms wait
     const val BALANCED_TARGET_WATERMARK_SLOTS = 20 // 100ms target watermark
 
-    // Low Latency Mode: Ultra-fast lossless studio PCM with 15ms cushion (~20-25ms end-to-end latency)
-    const val LOW_LATENCY_JITTER_BUFFER_SLOTS = 24 // ~120ms max headroom
-    const val LOW_LATENCY_PRE_ROLL_PACKETS = 3 // 15ms pre-roll cushion
-    const val LOW_LATENCY_MAX_UNDERRUN_FRAMES = 10 // ~50ms concealment before rebuffering
-    const val LOW_LATENCY_WAIT_TIMEOUT_MS = 15L // 15ms wait
-    const val LOW_LATENCY_TARGET_WATERMARK_SLOTS = 4 // 20ms target watermark
+    // Low Latency Mode: Ultra-fast lossless studio PCM with 10ms cushion (~15-20ms end-to-end latency)
+    const val LOW_LATENCY_JITTER_BUFFER_SLOTS = 6 // ~30ms max headroom
+    const val LOW_LATENCY_PRE_ROLL_PACKETS = 2 // 10ms pre-roll cushion
+    const val LOW_LATENCY_MAX_UNDERRUN_FRAMES = 4 // ~20ms concealment before rebuffering
+    const val LOW_LATENCY_WAIT_TIMEOUT_MS = 8L // 8ms wait
+    const val LOW_LATENCY_TARGET_WATERMARK_SLOTS = 2 // 10ms target watermark
 
     // Video AAC Mode (Fallback): 1024-sample frames (~21.3ms per packet)
     const val LOW_LATENCY_AAC_JITTER_BUFFER_SLOTS = 32 // ~680ms headroom

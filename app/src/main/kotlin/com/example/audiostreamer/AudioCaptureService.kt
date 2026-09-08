@@ -188,7 +188,11 @@ class AudioCaptureService : Service() {
                 val buffer = ByteArray(AudioConfig.HEADER_SIZE)
                 val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
                 val profile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
-                val profileFlag = if (profile == AudioConfig.PROFILE_LOW_LATENCY) AudioConfig.FLAG_PROFILE_LOW_LATENCY else AudioConfig.FLAG_PROFILE_MUSIC
+                val profileFlag = when (profile) {
+                    AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> AudioConfig.FLAG_PROFILE_LOW_LATENCY
+                    AudioConfig.PROFILE_BALANCED -> AudioConfig.FLAG_PROFILE_BALANCED
+                    else -> AudioConfig.FLAG_PROFILE_MUSIC
+                }
 
                 // Magic "SA"
                 buffer[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
@@ -376,6 +380,7 @@ class AudioCaptureService : Service() {
         var is24BitActive = false
         var activePayloadSize = packetSize16
 
+        val isLowLatency = (profile == AudioConfig.PROFILE_VIDEO || profile == AudioConfig.PROFILE_LOW_LATENCY)
         if (!isAacActive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             try {
                 val audioFormat24 = AudioFormat.Builder()
@@ -389,7 +394,7 @@ class AudioCaptureService : Service() {
                     AudioFormat.ENCODING_PCM_24BIT_PACKED
                 )
                 if (minBuf24 > 0) {
-                    val bufSize24 = maxOf(minBuf24 * 4, AudioConfig.CAPTURE_BUFFER_BYTES_24BIT)
+                    val bufSize24 = if (isLowLatency) minBuf24 * 2 else maxOf(minBuf24 * 4, AudioConfig.CAPTURE_BUFFER_BYTES_24BIT)
                     val candidateRecord = AudioRecord.Builder()
                         .setAudioPlaybackCaptureConfig(captureConfig)
                         .setAudioFormat(audioFormat24)
@@ -399,7 +404,7 @@ class AudioCaptureService : Service() {
                         record = candidateRecord
                         is24BitActive = true
                         activePayloadSize = packetSize24
-                        Log.i(TAG, "Initialized 24-bit packed PCM AudioRecord at $captureSampleRate Hz (Profile=$profile)")
+                        Log.i(TAG, "Initialized 24-bit packed PCM AudioRecord at $captureSampleRate Hz (Profile=$profile, Buffer=$bufSize24)")
                     } else {
                         candidateRecord.release()
                         Log.w(TAG, "24-bit AudioRecord not initialized by HAL at $captureSampleRate Hz, falling back to 16-bit")
@@ -421,8 +426,7 @@ class AudioCaptureService : Service() {
                 AudioConfig.CHANNEL_IN_MASK,
                 AudioConfig.ENCODING
             )
-            // Always provide generous 500ms buffer so Android resampler never drops frames on 44.1k/48k conversions
-            val bufSize16 = maxOf(minBuf16 * 4, AudioConfig.CAPTURE_BUFFER_BYTES_16BIT)
+            val bufSize16 = if (isLowLatency) minBuf16 * 2 else maxOf(minBuf16 * 4, AudioConfig.CAPTURE_BUFFER_BYTES_16BIT)
             val fallbackRecord = AudioRecord.Builder()
                 .setAudioPlaybackCaptureConfig(captureConfig)
                 .setAudioFormat(audioFormat16)
@@ -552,7 +556,11 @@ class AudioCaptureService : Service() {
                 val initialIsLowLat = (activeProfile == AudioConfig.PROFILE_VIDEO || activeProfile == AudioConfig.PROFILE_LOW_LATENCY)
                 val initialIsBalanced = (activeProfile == AudioConfig.PROFILE_BALANCED)
                 val rateFlag = if (captureSampleRate == AudioConfig.SAMPLE_RATE_44100) AudioConfig.FLAG_SAMPLE_RATE_44100.toInt() else 0
-                val prof = if (initialIsLowLat || initialIsBalanced) AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt() else AudioConfig.FLAG_PROFILE_MUSIC.toInt()
+                val prof = when {
+                    initialIsLowLat -> AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt()
+                    initialIsBalanced -> AudioConfig.FLAG_PROFILE_BALANCED.toInt()
+                    else -> AudioConfig.FLAG_PROFILE_MUSIC.toInt()
+                }
                 var flag = prof or rateFlag
                 if (is24BitActive) {
                     flag = flag or AudioConfig.FLAG_24BIT.toInt()
@@ -726,10 +734,15 @@ class AudioCaptureService : Service() {
                     } else {
                     val bytesRead = record.read(sendBuffer, AudioConfig.HEADER_SIZE, activePayloadSize, AudioRecord.READ_BLOCKING)
                     if (bytesRead > 0) {
+                        val currentIsLowLat = (activeProfile == AudioConfig.PROFILE_VIDEO || activeProfile == AudioConfig.PROFILE_LOW_LATENCY)
                         val currentIsBalanced = (activeProfile == AudioConfig.PROFILE_BALANCED)
                         val effectivePayloadLen = bytesRead
                         val isEffective24 = is24BitActive
-                        val baseProfileFlag = if (currentIsBalanced) AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt() else AudioConfig.FLAG_PROFILE_MUSIC.toInt()
+                        val baseProfileFlag = when {
+                            currentIsLowLat -> AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt()
+                            currentIsBalanced -> AudioConfig.FLAG_PROFILE_BALANCED.toInt()
+                            else -> AudioConfig.FLAG_PROFILE_MUSIC.toInt()
+                        }
                         var flag = baseProfileFlag or rateFlag
                         if (isEffective24) {
                             flag = flag or AudioConfig.FLAG_24BIT.toInt()
@@ -775,6 +788,12 @@ class AudioCaptureService : Service() {
                                 isSilenceSuppressed = true
                             }
                         } else {
+                            if (isSilenceSuppressed && currentIsLowLat) {
+                                val drainBuf = ByteArray(activePayloadSize)
+                                while (record.read(drainBuf, 0, drainBuf.size, AudioRecord.READ_NON_BLOCKING) > 0) {
+                                    // Drain stale backlog frames
+                                }
+                            }
                             silentPacketsCount = 0
                             isSilenceSuppressed = false
                         }
