@@ -99,6 +99,7 @@ class JitterBuffer(
             while (availableCount > slotCount) {
                 dropOldestSlot()
             }
+            AppLogger.i("JitterBuffer", "Buffer profile updated: profile=$profile, compressed=$isCompressed, slots=$slotCount, preRoll=$preRollThreshold, timeout=${waitTimeoutMs}ms")
         }
     }
 
@@ -183,6 +184,7 @@ class JitterBuffer(
             if (isBuffering && availableCount >= preRollThreshold) {
                 isBuffering = false
                 consecutiveUnderruns = 0
+                AppLogger.d("JitterBuffer", "Pre-roll satisfied: available=$availableCount, threshold=$preRollThreshold, profile=$currentProfile")
             }
 
             notEmptyCondition.signal()

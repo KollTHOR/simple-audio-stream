@@ -382,6 +382,92 @@
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
+            <!-- Diagnostics & Logs Card -->
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="@dimen/card_spacing"
+                app:cardCornerRadius="14dp"
+                app:cardElevation="1dp"
+                app:strokeColor="@color/card_stroke"
+                app:strokeWidth="1dp"
+                app:cardBackgroundColor="@color/card_bg">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="@dimen/card_inner_padding">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="DIAGNOSTICS &amp; SYSTEM LOGS"
+                        android:textSize="11sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/text_hint"
+                        android:letterSpacing="0.05"
+                        android:layout_marginBottom="8dp" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Inspect real-time buffer telemetry, audio HAL metrics, or export complete logs for troubleshooting."
+                        android:textSize="13sp"
+                        android:textColor="@color/text_secondary"
+                        android:layout_marginBottom="12dp" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:layout_marginBottom="8dp">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_copy_logs"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="0dp"
+                            android:layout_height="@dimen/btn_height"
+                            android:layout_weight="1"
+                            android:text="Copy to Clipboard"
+                            android:textSize="13sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_primary"
+                            android:layout_marginEnd="6dp"
+                            app:strokeColor="@color/card_stroke"
+                            app:cornerRadius="8dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_share_logs"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="0dp"
+                            android:layout_height="@dimen/btn_height"
+                            android:layout_weight="1"
+                            android:text="Export / Share"
+                            android:textSize="13sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_primary"
+                            android:layout_marginStart="6dp"
+                            app:strokeColor="@color/card_stroke"
+                            app:cornerRadius="8dp" />
+                    </LinearLayout>
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btn_view_logs"
+                        android:layout_width="match_parent"
+                        android:layout_height="@dimen/btn_height"
+                        android:text="View Live Logs"
+                        android:textSize="14sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/white"
+                        app:backgroundTint="@color/card_bg"
+                        app:strokeColor="@color/card_stroke"
+                        app:strokeWidth="1dp"
+                        app:cornerRadius="8dp" />
+
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
             <!-- Updates Card -->
             <com.google.android.material.card.MaterialCardView
                 android:layout_width="match_parent"

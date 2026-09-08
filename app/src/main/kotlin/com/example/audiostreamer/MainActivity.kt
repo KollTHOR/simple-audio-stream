@@ -236,6 +236,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        findViewById<com.google.android.material.button.MaterialButton>(R.id.btn_main_view_logs)?.setOnClickListener {
+            AppLogger.showLogViewerDialog(this)
+        }
+
+        findViewById<com.google.android.material.button.MaterialButton>(R.id.btn_main_copy_logs)?.setOnClickListener {
+            AppLogger.copyToClipboard(this)
+        }
+
         fabSettings.setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }

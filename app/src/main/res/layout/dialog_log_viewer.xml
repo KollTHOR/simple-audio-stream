@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@color/bg_screen"
+    android:padding="16dp">
+
+    <!-- Header -->
+    <TextView
+        android:id="@+id/tv_log_dialog_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="SYSTEM &amp; AUDIO LOGS"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        android:textColor="@color/text_primary"
+        android:letterSpacing="0.05"
+        android:layout_marginBottom="4dp" />
+
+    <TextView
+        android:id="@+id/tv_log_dialog_subtitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Live buffer events, audio HAL parameters, and stream state."
+        android:textSize="12sp"
+        android:textColor="@color/text_hint"
+        android:layout_marginBottom="12dp" />
+
+    <!-- Action Buttons Bar -->
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:scrollbars="none"
+        android:layout_marginBottom="12dp">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_dialog_copy"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="Copy All"
+                android:textSize="12sp"
+                android:textColor="@color/pill_text"
+                android:layout_marginEnd="8dp"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                app:strokeColor="@color/pill_stroke"
+                app:cornerRadius="6dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_dialog_share"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="Share .txt"
+                android:textSize="12sp"
+                android:textColor="@color/primary"
+                android:layout_marginEnd="8dp"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                app:strokeColor="@color/primary"
+                app:cornerRadius="6dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_dialog_refresh"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="Refresh"
+                android:textSize="12sp"
+                android:textColor="@color/text_secondary"
+                android:layout_marginEnd="8dp"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                app:strokeColor="@color/card_stroke"
+                app:cornerRadius="6dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_dialog_clear"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="Clear"
+                android:textSize="12sp"
+                android:textColor="@color/status_red"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                app:strokeColor="@color/card_stroke"
+                app:cornerRadius="6dp" />
+
+        </LinearLayout>
+    </HorizontalScrollView>
+
+    <!-- Scrollable Log Box -->
+    <com.google.android.material.card.MaterialCardView
+        android:layout_width="match_parent"
+        android:layout_height="360dp"
+        app:cardCornerRadius="8dp"
+        app:strokeColor="@color/card_stroke"
+        app:strokeWidth="1dp"
+        app:cardBackgroundColor="@color/input_bg"
+        android:layout_marginBottom="12dp">
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:padding="8dp">
+
+            <HorizontalScrollView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content">
+
+                <TextView
+                    android:id="@+id/tv_log_content"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:text="Loading logs..."
+                    android:textColor="@color/text_secondary"
+                    android:textSize="11sp"
+                    android:textIsSelectable="true"
+                    android:lineSpacingExtra="2dp" />
+
+            </HorizontalScrollView>
+        </ScrollView>
+    </com.google.android.material.card.MaterialCardView>
+
+    <!-- Bottom Actions -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btn_dialog_close"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:text="Close"
+        android:textSize="13sp"
+        android:textStyle="bold"
+        android:textColor="@color/white"
+        app:backgroundTint="@color/card_bg"
+        app:strokeColor="@color/card_stroke"
+        app:strokeWidth="1dp"
+        app:cornerRadius="8dp" />
+
+</LinearLayout>

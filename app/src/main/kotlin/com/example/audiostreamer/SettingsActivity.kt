@@ -193,6 +193,20 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
 
+        val btnCopyLogs = findViewById<com.google.android.material.button.MaterialButton>(R.id.btn_copy_logs)
+        val btnShareLogs = findViewById<com.google.android.material.button.MaterialButton>(R.id.btn_share_logs)
+        val btnViewLogs = findViewById<com.google.android.material.button.MaterialButton>(R.id.btn_view_logs)
+
+        btnCopyLogs?.setOnClickListener {
+            AppLogger.copyToClipboard(this)
+        }
+        btnShareLogs?.setOnClickListener {
+            AppLogger.shareLogs(this)
+        }
+        btnViewLogs?.setOnClickListener {
+            AppLogger.showLogViewerDialog(this)
+        }
+
         btnCheckUpdate.text = "Check for Updates"
         updateState = UpdateState.CHECK
 

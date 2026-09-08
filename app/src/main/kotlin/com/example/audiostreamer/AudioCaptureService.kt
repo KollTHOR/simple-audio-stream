@@ -29,7 +29,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.os.Process
 import android.os.SystemClock
-import android.util.Log
+import com.example.audiostreamer.AppLogger as Log
 import android.view.KeyEvent
 import androidx.core.app.NotificationCompat
 import java.net.DatagramPacket
