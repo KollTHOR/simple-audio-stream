@@ -8,6 +8,8 @@ local.properties
 
 # Log files
 *.log
+*_logs.txt
+*logs.txt
 
 # Android Studio / IntelliJ IDEA
 .idea/

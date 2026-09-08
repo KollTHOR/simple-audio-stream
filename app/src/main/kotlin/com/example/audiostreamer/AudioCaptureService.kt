@@ -37,6 +37,7 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.SocketException
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -629,6 +630,9 @@ class AudioCaptureService : Service() {
                 var lastHeartbeatTime = 0L
                 var smoothPps = 0f
                 var smoothBps = 0f
+                var lastLatencyLogTime = 0L
+                var lastReadDurationNs = 0L
+                var lastEncodeDurationNs = 0L
 
                 val initialBitDepth = if (isCompressedActive) 16 else if (is24BitActive) 24 else 16
                 val initialBitrate = when {
@@ -675,7 +679,9 @@ class AudioCaptureService : Service() {
                         } else {
                             activePayloadSize
                         }
+                        val tRead0 = SystemClock.elapsedRealtimeNanos()
                         val pcmBytesRead = record.read(pcmReadBuffer, 0, targetReadBytes, AudioRecord.READ_BLOCKING)
+                        lastReadDurationNs = SystemClock.elapsedRealtimeNanos() - tRead0
                         if (pcmBytesRead > 0) {
                             var chunkPeak = 0
                             var pi = 0
@@ -702,11 +708,13 @@ class AudioCaptureService : Service() {
                             val codecFlag = if (isOpusActive) AudioConfig.FLAG_CODEC_OPUS else AudioConfig.FLAG_CODEC_AAC
 
                             if (!isSilenceSuppressed) {
+                                val tEnc0 = SystemClock.elapsedRealtimeNanos()
                                 val encodedFrames = if (isOpusActive) {
                                     opusEnc?.encode(pcmReadBuffer, 0, pcmBytesRead) ?: emptyList()
                                 } else {
                                     aacEnc?.encode(pcmReadBuffer, 0, pcmBytesRead) ?: emptyList()
                                 }
+                                lastEncodeDurationNs = SystemClock.elapsedRealtimeNanos() - tEnc0
                                 for (frame in encodedFrames) {
                                     val frameLen = frame.size
                                     if (frameLen > 0 && frameLen <= AudioConfig.MAX_PACKET_SIZE) {
@@ -983,6 +991,13 @@ class AudioCaptureService : Service() {
                                     isSilenceSuppressed = isSilenceSuppressed,
                                     activeReceiversCount = targetAddresses.size
                                 )
+                            }
+
+                            if (now - lastLatencyLogTime >= 1000L) {
+                                lastLatencyLogTime = now
+                                val readMsStr = String.format(Locale.US, "%.1f", lastReadDurationNs / 1_000_000.0)
+                                val encMsStr = String.format(Locale.US, "%.1f", lastEncodeDurationNs / 1_000_000.0)
+                                Log.i("LATENCY-TX", "Record: ${readMsStr}ms | Encode: ${encMsStr}ms | Sent: $pps pps ($bps B/s)")
                             }
 
                             intervalPackets = 0

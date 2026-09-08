@@ -90,6 +90,22 @@
                 app:cornerRadius="6dp" />
 
             <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_dialog_live"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="Live: OFF"
+                android:textSize="12sp"
+                android:textColor="@color/text_secondary"
+                android:layout_marginEnd="8dp"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                app:strokeColor="@color/card_stroke"
+                app:cornerRadius="6dp" />
+
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/btn_dialog_clear"
                 style="?attr/materialButtonOutlinedStyle"
                 android:layout_width="wrap_content"
@@ -118,6 +134,7 @@
         android:layout_marginBottom="12dp">
 
         <ScrollView
+            android:id="@+id/scroll_log_vertical"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:padding="8dp">

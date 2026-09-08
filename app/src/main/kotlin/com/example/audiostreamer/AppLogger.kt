@@ -112,7 +112,7 @@ object AppLogger {
         return lines
     }
 
-    fun buildDiagnosticReport(context: Context): String {
+    fun buildDiagnosticReport(context: Context, includeSystemLogcat: Boolean = true): String {
         val sb = StringBuilder()
         val appVersionName = BuildConfig.VERSION_NAME
         val appVersionCode = BuildConfig.VERSION_CODE
@@ -181,12 +181,14 @@ object AppLogger {
                 sb.appendLine(Log.getStackTraceString(tr))
             }
         }
-        sb.appendLine()
-        sb.appendLine("[SYSTEM LOGCAT (Process ${Process.myPid()})]")
-        sb.appendLine("--------------------------------------------------")
-        val sysLogs = captureSystemLogcat(200)
-        for (line in sysLogs) {
-            sb.appendLine(line)
+        if (includeSystemLogcat) {
+            sb.appendLine()
+            sb.appendLine("[SYSTEM LOGCAT (Process ${Process.myPid()})]")
+            sb.appendLine("--------------------------------------------------")
+            val sysLogs = captureSystemLogcat(200)
+            for (line in sysLogs) {
+                sb.appendLine(line)
+            }
         }
         sb.appendLine("==================================================")
         sb.appendLine("END OF DIAGNOSTIC REPORT")
@@ -197,13 +199,13 @@ object AppLogger {
 
     fun exportLogsToFile(context: Context): File {
         val file = File(context.cacheDir, "simple_audio_stream_logs.txt")
-        val report = buildDiagnosticReport(context)
+        val report = buildDiagnosticReport(context, includeSystemLogcat = true)
         file.writeText(report, Charsets.UTF_8)
         return file
     }
 
     fun copyToClipboard(context: Context) {
-        val report = buildDiagnosticReport(context)
+        val report = buildDiagnosticReport(context, includeSystemLogcat = true)
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         val clip = ClipData.newPlainText("Simple Audio Stream Diagnostics", report)
         clipboard?.setPrimaryClip(clip)
@@ -230,9 +232,11 @@ object AppLogger {
     fun showLogViewerDialog(activity: Activity) {
         val view = LayoutInflater.from(activity).inflate(R.layout.dialog_log_viewer, null)
         val tvContent = view.findViewById<TextView>(R.id.tv_log_content)
+        val scrollVertical = view.findViewById<android.widget.ScrollView>(R.id.scroll_log_vertical)
         val btnCopy = view.findViewById<MaterialButton>(R.id.btn_dialog_copy)
         val btnShare = view.findViewById<MaterialButton>(R.id.btn_dialog_share)
         val btnRefresh = view.findViewById<MaterialButton>(R.id.btn_dialog_refresh)
+        val btnLive = view.findViewById<MaterialButton>(R.id.btn_dialog_live)
         val btnClear = view.findViewById<MaterialButton>(R.id.btn_dialog_clear)
         val btnClose = view.findViewById<MaterialButton>(R.id.btn_dialog_close)
 
@@ -241,14 +245,57 @@ object AppLogger {
             .setCancelable(true)
             .create()
 
-        fun refreshContent() {
-            tvContent.text = "Compiling diagnostic report..."
+        var isLive = false
+        val liveHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        var liveRunnable: Runnable? = null
+
+        fun refreshContent(includeSystemLogcat: Boolean = true, autoScroll: Boolean = false) {
+            if (!isLive && includeSystemLogcat) {
+                tvContent.text = "Compiling diagnostic report..."
+            }
             Thread {
-                val report = buildDiagnosticReport(activity)
+                val report = buildDiagnosticReport(activity, includeSystemLogcat = includeSystemLogcat)
                 activity.runOnUiThread {
                     tvContent.text = report
+                    if (autoScroll) {
+                        scrollVertical?.post {
+                            scrollVertical.fullScroll(android.view.View.FOCUS_DOWN)
+                        }
+                    }
                 }
             }.start()
+        }
+
+        fun stopLiveFeed() {
+            isLive = false
+            liveRunnable?.let { liveHandler.removeCallbacks(it) }
+            liveRunnable = null
+            btnLive?.text = "Live: OFF"
+            btnLive?.setTextColor(activity.getColor(R.color.text_secondary))
+            btnLive?.strokeColor = android.content.res.ColorStateList.valueOf(activity.getColor(R.color.card_stroke))
+        }
+
+        fun startLiveFeed() {
+            isLive = true
+            btnLive?.text = "Live: ON"
+            btnLive?.setTextColor(activity.getColor(R.color.status_green))
+            btnLive?.strokeColor = android.content.res.ColorStateList.valueOf(activity.getColor(R.color.status_green))
+            liveRunnable = object : Runnable {
+                override fun run() {
+                    if (!isLive || !dialog.isShowing) return
+                    refreshContent(includeSystemLogcat = false, autoScroll = true)
+                    liveHandler.postDelayed(this, 750L)
+                }
+            }
+            liveHandler.post(liveRunnable!!)
+        }
+
+        btnLive?.setOnClickListener {
+            if (isLive) {
+                stopLiveFeed()
+            } else {
+                startLiveFeed()
+            }
         }
 
         btnCopy.setOnClickListener {
@@ -260,21 +307,26 @@ object AppLogger {
         }
 
         btnRefresh.setOnClickListener {
-            refreshContent()
+            refreshContent(includeSystemLogcat = true, autoScroll = false)
         }
 
         btnClear.setOnClickListener {
             clear()
-            refreshContent()
+            refreshContent(includeSystemLogcat = false, autoScroll = false)
             Toast.makeText(activity, "Log buffer cleared", Toast.LENGTH_SHORT).show()
         }
 
         btnClose.setOnClickListener {
+            stopLiveFeed()
             dialog.dismiss()
+        }
+
+        dialog.setOnDismissListener {
+            stopLiveFeed()
         }
 
         dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
         dialog.show()
-        refreshContent()
+        refreshContent(includeSystemLogcat = true, autoScroll = true)
     }
 }

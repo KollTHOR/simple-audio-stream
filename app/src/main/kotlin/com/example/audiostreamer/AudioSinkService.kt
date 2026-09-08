@@ -30,6 +30,7 @@ import java.net.InetSocketAddress
 import java.net.SocketException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 class AudioSinkService : Service() {
@@ -70,6 +71,9 @@ class AudioSinkService : Service() {
     @Volatile private var opusDecoderSampleRate: Int = AudioConfig.SAMPLE_RATE_48000
     @Volatile private var lastConfiguredCodec: String? = null
     @Volatile private var sinkAudioPeakSample = 0
+    @Volatile private var currentBufferSizeInBytes = 0
+    @Volatile private var lastDecodeDurationNs: Long = 0L
+    @Volatile private var lastLatencyLogTime: Long = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -138,7 +142,7 @@ class AudioSinkService : Service() {
             if (is24) AudioConfig.PACKET_SIZE_24BIT_48K else AudioConfig.PACKET_SIZE_16BIT_48K
         }
         val bufferSize = when (profile) {
-            AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> maxOf(minBufferSize * 2, 8192)
+            AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> minBufferSize
             AudioConfig.PROFILE_BALANCED -> maxOf(minBufferSize, packetSize * 40) // ~200ms
             else -> maxOf(minBufferSize * 4, packetSize * 100) // Deep buffer ~500ms
         }
@@ -159,7 +163,7 @@ class AudioSinkService : Service() {
 
         // Prime AudioTrack with pre-roll silence so DAC ring buffer is never at 0 frames on startup
         val primeBytes = when (profile) {
-            AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> packetSize * 2 // 10ms prime
+            AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> packetSize // 5ms prime (1 packet)
             AudioConfig.PROFILE_BALANCED -> packetSize * 4 // 20ms prime
             else -> packetSize * 8 // 40ms prime
         }
@@ -174,6 +178,7 @@ class AudioSinkService : Service() {
         currentSampleRate = sampleRate
         currentEncoding = encoding
         currentPerformanceMode = perfMode
+        currentBufferSizeInBytes = bufferSize
 
         Log.i(TAG, "Configured AudioTrack: sampleRate=$sampleRate, encoding=$encoding, perfMode=$perfMode, bufferSize=$bufferSize")
         return track
@@ -297,9 +302,17 @@ class AudioSinkService : Service() {
                                 val isIncomingOpus = !isControlOnly && payloadLen > 0 && ((flags.toInt() and AudioConfig.FLAG_CODEC_OPUS.toInt()) != 0)
                                 currentIsAac = isIncomingAac
                                 currentIsOpus = isIncomingOpus
-                                val isIncoming44k = (flags.toInt() and AudioConfig.FLAG_SAMPLE_RATE_44100.toInt()) != 0 ||
+                                val isIncoming44k = !isIncomingOpus && !isIncomingAac && (
+                                    (flags.toInt() and AudioConfig.FLAG_SAMPLE_RATE_44100.toInt()) != 0 ||
                                     payloadLen == AudioConfig.PACKET_SIZE_16BIT_44K || payloadLen == AudioConfig.PACKET_SIZE_24BIT_44K
-                                val targetSampleRate = if (isIncoming44k) AudioConfig.SAMPLE_RATE_44100 else AudioConfig.SAMPLE_RATE_48000
+                                )
+                                val targetSampleRate = if (isIncomingOpus) {
+                                    AudioConfig.SAMPLE_RATE_48000
+                                } else if (isIncoming44k) {
+                                    AudioConfig.SAMPLE_RATE_44100
+                                } else {
+                                    AudioConfig.SAMPLE_RATE_48000
+                                }
 
                                 if (isIncomingOpus) {
                                     if (opusDecoder == null || opusDecoderSampleRate != targetSampleRate) {
@@ -494,6 +507,22 @@ class AudioSinkService : Service() {
                                 )
                             }
 
+                            if (now - lastLatencyLogTime >= 1000L) {
+                                lastLatencyLogTime = now
+                                val jbMs = usedSlots * 10
+                                val track = audioTrack
+                                val atFrames = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && track != null) {
+                                    track.bufferSizeInFrames
+                                } else {
+                                    currentBufferSizeInBytes / (2 * (if (bitDepth == 24) 3 else 2))
+                                }
+                                val atMs = (atFrames / (currentSampleRate / 1000.0)).toInt()
+                                val underruns = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && track != null) track.underrunCount else 0
+                                val decodeMsStr = String.format(Locale.US, "%.1f", lastDecodeDurationNs / 1_000_000.0)
+                                val estTotalMs = jbMs + atMs + (lastDecodeDurationNs / 1_000_000).toInt() + 5
+                                Log.i("LATENCY-RX", "JitterBuf: ${jbMs}ms ($usedSlots/$totalSlots slots) | AudioTrack: ${atMs}ms (${atFrames} frames, underruns: $underruns) | Decode: ${decodeMsStr}ms | Est. Total: ~${estTotalMs}ms | $pps pps ($bps B/s)")
+                            }
+
                             intervalPackets = 0
                             intervalBytes = 0
                             maxSampleInInterval = 0
@@ -526,30 +555,34 @@ class AudioSinkService : Service() {
                             val track = audioTrack
                             if (track != null && track.playState == AudioTrack.PLAYSTATE_PLAYING) {
                                 if (currentIsOpus) {
-                                    val isSilenceFill = (bytesToPlay < 8) || (chunk[0] == 0.toByte() && chunk[1] == 0.toByte() && chunk[2] == 0.toByte())
-                                    if (!isSilenceFill) {
-                                        val pcmList = opusDecoder?.decode(chunk, 0, bytesToPlay) ?: emptyList()
-                                        for (pcm in pcmList) {
-                                            if (pcm.isNotEmpty()) {
-                                                track.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
-                                                var p = 0
-                                                while (p < pcm.size - 1) {
-                                                    val sample = (pcm[p].toInt() and 0xFF) or (pcm[p + 1].toInt() shl 8)
-                                                    val abs = kotlin.math.abs(sample.toShort().toInt())
-                                                    if (abs > sinkAudioPeakSample) sinkAudioPeakSample = abs
-                                                    p += 2
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        val silenceBytes = if (currentSampleRate == AudioConfig.SAMPLE_RATE_44100) 3528 else 3840
-                                        val silence = ByteArray(silenceBytes)
-                                        track.write(silence, 0, silence.size, AudioTrack.WRITE_BLOCKING)
-                                    }
-                                } else if (currentIsAac) {
-                                    val isAdts = (bytesToPlay >= 7 && (chunk[0].toInt() and 0xFF) == 0xFF && (chunk[1].toInt() and 0xF0) == 0xF0)
-                                    if (isAdts) {
-                                        val pcmList = aacDecoder?.decode(chunk, 0, bytesToPlay) ?: emptyList()
+                                     val isSilenceFill = (bytesToPlay < 8) || (chunk[0] == 0.toByte() && chunk[1] == 0.toByte() && chunk[2] == 0.toByte())
+                                     if (!isSilenceFill) {
+                                         val t0 = SystemClock.elapsedRealtimeNanos()
+                                         val pcmList = opusDecoder?.decode(chunk, 0, bytesToPlay) ?: emptyList()
+                                         lastDecodeDurationNs = SystemClock.elapsedRealtimeNanos() - t0
+                                         for (pcm in pcmList) {
+                                             if (pcm.isNotEmpty()) {
+                                                 track.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
+                                                 var p = 0
+                                                 while (p < pcm.size - 1) {
+                                                     val sample = (pcm[p].toInt() and 0xFF) or (pcm[p + 1].toInt() shl 8)
+                                                     val abs = kotlin.math.abs(sample.toShort().toInt())
+                                                     if (abs > sinkAudioPeakSample) sinkAudioPeakSample = abs
+                                                     p += 2
+                                                 }
+                                             }
+                                         }
+                                     } else {
+                                         val silenceBytes = if (currentSampleRate == AudioConfig.SAMPLE_RATE_44100) 3528 else 3840
+                                         val silence = ByteArray(silenceBytes)
+                                         track.write(silence, 0, silence.size, AudioTrack.WRITE_BLOCKING)
+                                     }
+                                 } else if (currentIsAac) {
+                                     val isAdts = (bytesToPlay >= 7 && (chunk[0].toInt() and 0xFF) == 0xFF && (chunk[1].toInt() and 0xF0) == 0xF0)
+                                     if (isAdts) {
+                                         val t0 = SystemClock.elapsedRealtimeNanos()
+                                         val pcmList = aacDecoder?.decode(chunk, 0, bytesToPlay) ?: emptyList()
+                                         lastDecodeDurationNs = SystemClock.elapsedRealtimeNanos() - t0
                                         for (pcm in pcmList) {
                                             if (pcm.isNotEmpty()) {
                                                 track.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
