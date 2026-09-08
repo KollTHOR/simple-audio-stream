@@ -83,6 +83,7 @@ object AudioConfig {
     const val FLAG_NORMAL: Byte = 0x00
     const val FLAG_CONTROL_ONLY: Byte = 0x02 // In control packets (payloadLen == 0)
     const val FLAG_DISCONNECT: Byte = 0x04   // In control packets (payloadLen == 0)
+    const val FLAG_VOL_SYNC: Byte = 0x08     // In control packets (payloadLen == 0) reverse volume sync
     const val FLAG_PROFILE_LOW_LATENCY: Byte = 0x08 // Compressed Opus / AAC stream
     const val FLAG_PROFILE_MUSIC: Byte = 0x00
     const val FLAG_PROFILE_AUTO: Byte = 0x80.toByte() // When FLAG_PROFILE_LOW_LATENCY is 0: 0x80 = Auto Adaptive, 0x00 = Music

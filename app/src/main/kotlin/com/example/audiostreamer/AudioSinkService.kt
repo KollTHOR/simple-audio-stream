@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.database.ContentObserver
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -17,10 +18,13 @@ import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.os.Process
 import android.os.SystemClock
+import android.provider.Settings
 import com.example.audiostreamer.AppLogger as Log
 import androidx.core.app.NotificationCompat
 import java.net.DatagramPacket
@@ -59,6 +63,9 @@ class AudioSinkService : Service() {
     private var jitterBuffer = JitterBuffer()
     private val fecDecoder by lazy { FecDecoder(jitterBuffer) }
     private var currentRemoteVolume = 100
+    private var localVolumeObserver: ContentObserver? = null
+    private var lastSentLocalVolume: Int = -1
+    @Volatile private var ignoreLocalVolumeUntil: Long = 0L
     private var lastSenderAddress: java.net.InetAddress? = null
     private var lastSenderPort: Int? = null
     private var lastSenderHost: String = "Transmitter"
@@ -231,6 +238,7 @@ class AudioSinkService : Service() {
 
             configureAudioTrack(AudioConfig.SAMPLE_RATE_48000, AudioConfig.ENCODING, currentProfile, currentRemoteVolume)
             jitterBuffer.reset()
+            registerLocalVolumeObserver()
 
             // Bind UDP socket
             val socket = DatagramSocket(null).apply {
@@ -394,6 +402,7 @@ class AudioSinkService : Service() {
                                 // Apply remote volume control if changed — 0ms software scaling, zero IPC, zero cutouts!
                                 if (volume != currentRemoteVolume) {
                                     currentRemoteVolume = volume
+                                    lastSentLocalVolume = volume
                                     val floatVol = (volume / 100.0f).coerceIn(0.0f, 1.0f)
                                     activeTrack.setVolume(floatVol)
 
@@ -405,6 +414,7 @@ class AudioSinkService : Service() {
                                             } else 0
                                             val targetStep = minVol + ((maxVol - minVol) * (volume / 100.0f)).roundToInt().coerceIn(minVol, maxVol)
                                             if (audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) != targetStep) {
+                                                ignoreLocalVolumeUntil = SystemClock.elapsedRealtime() + 500L
                                                 audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetStep, 0)
                                             }
                                         } catch (e: Exception) {
@@ -906,6 +916,7 @@ class AudioSinkService : Service() {
             return
         }
         Log.i(TAG, "Stopping audio sink")
+        unregisterLocalVolumeObserver()
 
         heartbeatThread?.interrupt()
         receiverThread?.interrupt()
@@ -991,6 +1002,114 @@ class AudioSinkService : Service() {
         stopSink()
         super.onDestroy()
         Log.d(TAG, "AudioSinkService destroyed")
+    }
+
+    private fun registerLocalVolumeObserver() {
+        unregisterLocalVolumeObserver()
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            if (audioManager != null) {
+                val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                val minVol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    audioManager.getStreamMinVolume(AudioManager.STREAM_MUSIC)
+                } else 0
+                val curVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                val range = maxVol - minVol
+                if (range > 0) {
+                    lastSentLocalVolume = (((curVol - minVol).toFloat() / range) * 100).roundToInt().coerceIn(0, 100)
+                }
+            }
+
+            val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+                override fun onChange(selfChange: Boolean) {
+                    super.onChange(selfChange)
+                    checkAndSendLocalVolumeSync()
+                }
+            }
+            contentResolver.registerContentObserver(Settings.System.CONTENT_URI, true, observer)
+            localVolumeObserver = observer
+            Log.d(TAG, "Receiver local volume ContentObserver registered (initial volume: $lastSentLocalVolume%)")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register receiver local volume ContentObserver: ${e.message}")
+        }
+    }
+
+    private fun unregisterLocalVolumeObserver() {
+        localVolumeObserver?.let {
+            try {
+                contentResolver.unregisterContentObserver(it)
+                Log.d(TAG, "Receiver local volume ContentObserver unregistered")
+            } catch (e: Exception) {
+                Log.w(TAG, "Error unregistering receiver local volume ContentObserver: ${e.message}")
+            }
+        }
+        localVolumeObserver = null
+    }
+
+    private fun checkAndSendLocalVolumeSync() {
+        if (!isRunning.get()) return
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+            val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            val minVol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                audioManager.getStreamMinVolume(AudioManager.STREAM_MUSIC)
+            } else 0
+            val curVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            val range = maxVol - minVol
+            val percent = if (range > 0) {
+                (((curVol - minVol).toFloat() / range) * 100).roundToInt().coerceIn(0, 100)
+            } else 100
+
+            if (SystemClock.elapsedRealtime() < ignoreLocalVolumeUntil) {
+                lastSentLocalVolume = percent
+                return
+            }
+
+            if (percent != currentRemoteVolume && percent != lastSentLocalVolume) {
+                Log.i(TAG, "Local receiver hardware volume changed to $curVol ($percent%), syncing to transmitter")
+                lastSentLocalVolume = percent
+                currentRemoteVolume = percent
+                val floatVol = (percent / 100.0f).coerceIn(0.0f, 1.0f)
+                audioTrack?.setVolume(floatVol)
+                sendVolumeSyncDatagram(percent)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error checking receiver local volume: ${e.message}")
+        }
+    }
+
+    private fun sendVolumeSyncDatagram(volume: Int) {
+        val addr = lastSenderAddress ?: return
+        val port = lastSenderPort ?: AudioConfig.DEFAULT_PORT
+        val sock = datagramSocket ?: return
+        if (sock.isClosed) return
+
+        try {
+            val syncBuf = ByteArray(AudioConfig.HEADER_SIZE)
+            syncBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
+            syncBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
+            syncBuf[2] = 0.toByte()
+            syncBuf[3] = 0.toByte()
+            syncBuf[4] = volume.coerceIn(0, 100).toByte()
+            syncBuf[5] = AudioConfig.FLAG_VOL_SYNC
+            syncBuf[6] = 0.toByte()
+            syncBuf[7] = 0.toByte()
+
+            val packet = DatagramPacket(syncBuf, syncBuf.size, addr, port)
+            Thread({
+                try {
+                    sock.send(packet)
+                    Log.d(TAG, "Sent reverse volume sync to transmitter $addr:$port: $volume%")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed sending reverse volume sync: ${e.message}")
+                }
+            }, "VolumeSyncThread").apply {
+                isDaemon = true
+                start()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error preparing reverse volume sync packet: ${e.message}")
+        }
     }
 
     private class AacDecoder(private val sampleRate: Int, private val channelCount: Int = 2) {

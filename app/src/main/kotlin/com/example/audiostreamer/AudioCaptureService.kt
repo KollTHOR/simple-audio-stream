@@ -376,6 +376,7 @@ class AudioCaptureService : Service() {
         }
 
         acquireLocks()
+        registerVolumeClampGuard()
 
         val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val projection = projectionManager.getMediaProjection(resultCode, resultData)
@@ -644,11 +645,21 @@ class AudioCaptureService : Service() {
                                 if (magic == AudioConfig.MAGIC_HEADER.toInt()) {
                                     val flags = recvBuf[5]
                                     val endpoint = ClientEndpoint(recvPacket.address, recvPacket.port)
-                                    val rxCaps = recvBuf[4].toInt() and 0xFF
-                                    if (rxCaps != 0) {
-                                        clientCapabilities[endpoint] = rxCaps
-                                        prefs.edit().putInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, rxCaps).apply()
+                                    val byte4 = recvBuf[4].toInt() and 0xFF
+
+                                    if ((flags.toInt() and AudioConfig.FLAG_VOL_SYNC.toInt()) != 0) {
+                                        val incomingVol = byte4.coerceIn(0, 100)
+                                        Log.i(TAG, "Received reverse volume sync: $incomingVol% from $endpoint")
+                                        remoteVolumePercent.set(incomingVol)
+                                        volumeProvider?.currentVolume = incomingVol
+                                        StreamState.update { it.copy() }
+                                        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                                        notificationManager.notify(NOTIFICATION_ID, buildNotification("Streaming @ Receiver Vol: $incomingVol%"))
+                                    } else if (byte4 != 0) {
+                                        clientCapabilities[endpoint] = byte4
+                                        prefs.edit().putInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, byte4).apply()
                                     }
+
                                     if (flags == AudioConfig.FLAG_DISCONNECT) {
                                         Log.i(TAG, "Received client disconnect signal from $endpoint. Pausing media.")
                                         clientRegistry.remove(endpoint)
@@ -660,7 +671,7 @@ class AudioCaptureService : Service() {
                                         val isNew = !clientRegistry.containsKey(endpoint)
                                         clientRegistry[endpoint] = SystemClock.elapsedRealtime()
                                         if (isNew) {
-                                            val capsDesc = if (rxCaps != 0) AudioCapabilities.describeCapabilitiesMask(rxCaps) else "default"
+                                            val capsDesc = if (byte4 != 0) AudioCapabilities.describeCapabilitiesMask(byte4) else "default"
                                             Log.i(TAG, "Registered new multi-unicast receiver: $endpoint (Caps: $capsDesc)")
                                         }
                                     }
@@ -1227,7 +1238,7 @@ class AudioCaptureService : Service() {
         try {
             val session = MediaSession(this, "AudioStreamTransmitter")
             val vol = remoteVolumePercent.get()
-            val provider = object : VolumeProvider(VOLUME_CONTROL_ABSOLUTE, 100, vol) {
+            val provider = object : VolumeProvider(VOLUME_CONTROL_RELATIVE, 100, vol) {
                 override fun onAdjustVolume(direction: Int) {
                     val delta = when {
                         direction > 0 -> 5
@@ -1253,7 +1264,7 @@ class AudioCaptureService : Service() {
             session.setPlaybackState(state)
             session.isActive = true
             this.mediaSession = session
-            Log.i(TAG, "MediaSession initialized with absolute remote volume provider (initial vol: $vol%)")
+            Log.i(TAG, "MediaSession initialized with relative remote volume provider (initial vol: $vol%)")
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing MediaSession", e)
         }
@@ -1265,7 +1276,7 @@ class AudioCaptureService : Service() {
             val currentVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
             if (currentVol > 0) {
                 previousPhoneVolume = currentVol
-                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 0, AudioManager.FLAG_REMOVE_SOUND_AND_VIBRATE)
                 Log.i(TAG, "Automatically silenced transmitter phone media volume (saved previous: $currentVol)")
             }
         } catch (e: Exception) {
@@ -1307,21 +1318,22 @@ class AudioCaptureService : Service() {
     }
 
     private fun checkAndClampTransmitterVolume() {
+        if (!isRunning.get()) return
         try {
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
             val currentVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
             if (currentVol > 0) {
-                // Hardware volume key raised phone volume while an external app was focused.
-                // Translate the hardware step to remote volume and immediately silence transmitter phone speakers.
-                val delta = currentVol * 5
-                val newVol = (remoteVolumePercent.get() + delta).coerceIn(0, 100)
+                audioManager.setStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    0,
+                    AudioManager.FLAG_REMOVE_SOUND_AND_VIBRATE
+                )
+                val newVol = (remoteVolumePercent.get() + 5).coerceIn(0, 100)
                 updateRemoteVolume(newVol)
-
-                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
-                Log.d(TAG, "Transmitter hardware volume key caught: receiver vol -> $newVol%, re-clamped speaker to 0")
+                Log.d(TAG, "Speaker bleed watchdog: forced STREAM_MUSIC to 0, incremented remote volume to $newVol%")
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Error in checkAndClampTransmitterVolume: ${e.message}")
+            Log.w(TAG, "Error in speaker bleed watchdog: ${e.message}")
         }
     }
 
