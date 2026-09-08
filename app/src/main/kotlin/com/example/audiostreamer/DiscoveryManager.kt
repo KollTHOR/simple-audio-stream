@@ -22,6 +22,7 @@ data class DiscoveredDevice(
     val name: String,
     val ip: String,
     val port: Int,
+    val capabilitiesMask: Int = 0,
     val lastSeenMs: Long = SystemClock.elapsedRealtime()
 )
 
@@ -29,6 +30,10 @@ object DiscoveryManager {
     private const val TAG = "DiscoveryManager"
     private val _discoveredDevices = MutableStateFlow<List<DiscoveredDevice>>(emptyList())
     val discoveredDevices: StateFlow<List<DiscoveredDevice>> = _discoveredDevices.asStateFlow()
+
+    @Volatile
+    var lastDiscoveredReceiverCapabilities: Int = 0
+        private set
 
     private var discoveryJob: Job? = null
     @Volatile
@@ -89,6 +94,10 @@ object DiscoveryManager {
                             if (magic == AudioConfig.MAGIC_HEADER.toInt() &&
                                 (flags.toInt() and AudioConfig.FLAG_DISCOVERY_ANNOUNCE.toInt()) != 0
                             ) {
+                                val rxCaps = data[4].toInt() and 0xFF
+                                if (rxCaps != 0) {
+                                    lastDiscoveredReceiverCapabilities = rxCaps
+                                }
                                 val payloadLen = ((data[6].toInt() and 0xFF) shl 8) or (data[7].toInt() and 0xFF)
                                 val nameBytesLen = minOf(payloadLen, packet.length - AudioConfig.HEADER_SIZE)
                                 val deviceName = if (nameBytesLen > 0) {
@@ -99,7 +108,7 @@ object DiscoveryManager {
 
                                 val senderIp = packet.address.hostAddress
                                 if (senderIp != null) {
-                                    addDiscoveredDevice(DiscoveredDevice(deviceName, senderIp, AudioConfig.DEFAULT_PORT))
+                                    addDiscoveredDevice(DiscoveredDevice(deviceName, senderIp, AudioConfig.DEFAULT_PORT, rxCaps))
                                 }
                             }
                         }
@@ -193,7 +202,7 @@ object DiscoveryManager {
                                 val replyBuf = ByteArray(AudioConfig.HEADER_SIZE + nameBytes.size)
                                 replyBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
                                 replyBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
-                                replyBuf[4] = 100
+                                replyBuf[4] = AudioCapabilities.getLocalPlaybackCapabilitiesMask().toByte()
                                 replyBuf[5] = AudioConfig.FLAG_DISCOVERY_ANNOUNCE
                                 replyBuf[6] = (nameBytes.size shr 8).toByte()
                                 replyBuf[7] = (nameBytes.size and 0xFF).toByte()
@@ -246,7 +255,7 @@ object DiscoveryManager {
             val announceBuf = ByteArray(AudioConfig.HEADER_SIZE + nameBytes.size)
             announceBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
             announceBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
-            announceBuf[4] = 100
+            announceBuf[4] = AudioCapabilities.getLocalPlaybackCapabilitiesMask().toByte()
             announceBuf[5] = AudioConfig.FLAG_DISCOVERY_ANNOUNCE
             announceBuf[6] = (nameBytes.size shr 8).toByte()
             announceBuf[7] = (nameBytes.size and 0xFF).toByte()

@@ -12,6 +12,7 @@ object AudioConfig {
     const val DEFAULT_SAMPLE_RATE = SAMPLE_RATE_48000
     const val SAMPLE_RATE = SAMPLE_RATE_48000
     const val PREF_KEY_SAMPLE_RATE = "pref_sample_rate"
+    const val PREF_KEY_RECEIVER_CAPS = "last_known_receiver_caps"
     const val SAMPLE_RATE_AUTO = "AUTO"
     const val SAMPLE_RATE_44K = "44100"
     const val SAMPLE_RATE_48K = "48000"

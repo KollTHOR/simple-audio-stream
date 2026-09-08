@@ -57,10 +57,12 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var btnProfileVideo: MaterialButton
     private lateinit var btnProfileMusic: MaterialButton
     private lateinit var tvProfileDescription: TextView
+    private lateinit var cardSampleRate: com.google.android.material.card.MaterialCardView
     private lateinit var toggleRateGroup: MaterialButtonToggleGroup
-    private lateinit var btnRateAuto: MaterialButton
     private lateinit var btnRate44k: MaterialButton
     private lateinit var btnRate48k: MaterialButton
+    private lateinit var btnRate96k: MaterialButton
+    private lateinit var btnRate192k: MaterialButton
     private lateinit var tvRateDescription: TextView
 
     enum class UpdateState {
@@ -113,10 +115,12 @@ class SettingsActivity : AppCompatActivity() {
         btnProfileVideo = findViewById(R.id.btn_profile_video)
         btnProfileMusic = findViewById(R.id.btn_profile_music)
         tvProfileDescription = findViewById(R.id.tv_profile_description)
+        cardSampleRate = findViewById(R.id.card_sample_rate)
         toggleRateGroup = findViewById(R.id.toggle_rate_group)
-        btnRateAuto = findViewById(R.id.btn_rate_auto)
         btnRate44k = findViewById(R.id.btn_rate_44k)
         btnRate48k = findViewById(R.id.btn_rate_48k)
+        btnRate96k = findViewById(R.id.btn_rate_96k)
+        btnRate192k = findViewById(R.id.btn_rate_192k)
         tvRateDescription = findViewById(R.id.tv_rate_description)
 
         val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
@@ -141,11 +145,16 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
 
-        val currentRate = prefs.getString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_AUTO) ?: AudioConfig.SAMPLE_RATE_AUTO
+        var currentRate = prefs.getString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_48K) ?: AudioConfig.SAMPLE_RATE_48K
+        if (currentRate == AudioConfig.SAMPLE_RATE_AUTO) {
+            currentRate = AudioConfig.SAMPLE_RATE_48K
+            prefs.edit().putString(AudioConfig.PREF_KEY_SAMPLE_RATE, currentRate).apply()
+        }
         when (currentRate) {
             AudioConfig.SAMPLE_RATE_44K -> toggleRateGroup.check(R.id.btn_rate_44k)
-            AudioConfig.SAMPLE_RATE_48K -> toggleRateGroup.check(R.id.btn_rate_48k)
-            else -> toggleRateGroup.check(R.id.btn_rate_auto)
+            AudioConfig.SAMPLE_RATE_96K -> toggleRateGroup.check(R.id.btn_rate_96k)
+            AudioConfig.SAMPLE_RATE_192K -> toggleRateGroup.check(R.id.btn_rate_192k)
+            else -> toggleRateGroup.check(R.id.btn_rate_48k)
         }
         updateRateUi(currentRate)
 
@@ -153,8 +162,9 @@ class SettingsActivity : AppCompatActivity() {
             if (isChecked) {
                 val selected = when (checkedId) {
                     R.id.btn_rate_44k -> AudioConfig.SAMPLE_RATE_44K
-                    R.id.btn_rate_48k -> AudioConfig.SAMPLE_RATE_48000.toString()
-                    else -> AudioConfig.SAMPLE_RATE_AUTO
+                    R.id.btn_rate_96k -> AudioConfig.SAMPLE_RATE_96K
+                    R.id.btn_rate_192k -> AudioConfig.SAMPLE_RATE_192K
+                    else -> AudioConfig.SAMPLE_RATE_48K
                 }
                 prefs.edit().putString(AudioConfig.PREF_KEY_SAMPLE_RATE, selected).apply()
                 updateRateUi(selected)
@@ -248,6 +258,8 @@ class SettingsActivity : AppCompatActivity() {
         btnProfileMusic.backgroundTintList = ColorStateList.valueOf(if (isMusic) colorPrimary else colorCard)
         btnProfileMusic.setTextColor(if (isMusic) Color.WHITE else colorTextSecondary)
 
+        cardSampleRate.visibility = if (isMusic) View.VISIBLE else View.GONE
+
         tvProfileDescription.text = when {
             isVideo -> "Low Latency (Opus/AAC): Pure compressed audio (Opus 320 kbps VBR or AAC 192 kbps) with 40ms cushion. Instantaneous response, 80-85% less Wi-Fi airtime, and zero FastMixer filtering for video lip-sync and gaming across rooms."
             isMusic -> "Uncapped Music Mode: Lossless 24-bit Studio Master PCM (up to 192 kHz) with deep 500ms buffer and 2.56s headroom. Maximum jitter protection for uninterrupted hi-fi listening."
@@ -260,19 +272,37 @@ class SettingsActivity : AppCompatActivity() {
         val colorCard = ContextCompat.getColor(this, R.color.card_bg)
         val colorTextSecondary = ContextCompat.getColor(this, R.color.text_secondary)
 
-        btnRateAuto.backgroundTintList = ColorStateList.valueOf(if (rate == AudioConfig.SAMPLE_RATE_AUTO) colorPrimary else colorCard)
-        btnRateAuto.setTextColor(if (rate == AudioConfig.SAMPLE_RATE_AUTO) Color.WHITE else colorTextSecondary)
+        val txCaps = AudioCapabilities.getLocalCaptureCapabilitiesMask()
+        val is96kSupported = (txCaps and AudioCapabilities.CAP_FLAG_96000) != 0
+        val is192kSupported = (txCaps and AudioCapabilities.CAP_FLAG_192000) != 0
 
-        btnRate44k.backgroundTintList = ColorStateList.valueOf(if (rate == AudioConfig.SAMPLE_RATE_44K) colorPrimary else colorCard)
-        btnRate44k.setTextColor(if (rate == AudioConfig.SAMPLE_RATE_44K) Color.WHITE else colorTextSecondary)
+        btnRate96k.isEnabled = is96kSupported
+        btnRate96k.alpha = if (is96kSupported) 1.0f else 0.4f
+        btnRate192k.isEnabled = is192kSupported
+        btnRate192k.alpha = if (is192kSupported) 1.0f else 0.4f
 
-        btnRate48k.backgroundTintList = ColorStateList.valueOf(if (rate == AudioConfig.SAMPLE_RATE_48K) colorPrimary else colorCard)
-        btnRate48k.setTextColor(if (rate == AudioConfig.SAMPLE_RATE_48K) Color.WHITE else colorTextSecondary)
+        val is44Selected = (rate == AudioConfig.SAMPLE_RATE_44K)
+        val is48Selected = (rate == AudioConfig.SAMPLE_RATE_48K || rate == AudioConfig.SAMPLE_RATE_AUTO)
+        val is96Selected = (rate == AudioConfig.SAMPLE_RATE_96K)
+        val is192Selected = (rate == AudioConfig.SAMPLE_RATE_192K)
+
+        btnRate44k.backgroundTintList = ColorStateList.valueOf(if (is44Selected) colorPrimary else colorCard)
+        btnRate44k.setTextColor(if (is44Selected) Color.WHITE else colorTextSecondary)
+
+        btnRate48k.backgroundTintList = ColorStateList.valueOf(if (is48Selected) colorPrimary else colorCard)
+        btnRate48k.setTextColor(if (is48Selected) Color.WHITE else colorTextSecondary)
+
+        btnRate96k.backgroundTintList = ColorStateList.valueOf(if (is96Selected) colorPrimary else colorCard)
+        btnRate96k.setTextColor(if (is96Selected) Color.WHITE else colorTextSecondary)
+
+        btnRate192k.backgroundTintList = ColorStateList.valueOf(if (is192Selected) colorPrimary else colorCard)
+        btnRate192k.setTextColor(if (is192Selected) Color.WHITE else colorTextSecondary)
 
         tvRateDescription.text = when (rate) {
-            AudioConfig.SAMPLE_RATE_44K -> "44.1 kHz: Native CD-quality streaming (880 bytes / chunk). Receiver adapts automatically without resampling."
-            AudioConfig.SAMPLE_RATE_48K -> "48.0 kHz: Native studio & video rate (960 bytes / chunk). Receiver adapts automatically without resampling."
-            else -> "Auto: Automatically follows device hardware output sample rate. Client adapts without resampling."
+            AudioConfig.SAMPLE_RATE_44K -> "44.1 kHz: Native CD-quality streaming (880 bytes / chunk). Direct uncompressed PCM."
+            AudioConfig.SAMPLE_RATE_96K -> if (is96kSupported) "96.0 kHz: High-resolution studio master (1920 bytes / chunk). Requires 96k DAC support." else "96.0 kHz: Not supported by local transmitter hardware."
+            AudioConfig.SAMPLE_RATE_192K -> if (is192kSupported) "192.0 kHz: Ultra high-resolution studio master (3840 bytes / chunk). Pure audiophile tier." else "192.0 kHz: Not supported by local transmitter hardware."
+            else -> "48.0 kHz: Native studio & video rate (960 bytes / chunk). Default master streaming rate."
         }
     }
 

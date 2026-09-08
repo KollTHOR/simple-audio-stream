@@ -732,6 +732,7 @@ class AudioSinkService : Service() {
                 val heartbeatBuf = ByteArray(AudioConfig.HEADER_SIZE)
                 heartbeatBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
                 heartbeatBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
+                heartbeatBuf[4] = AudioCapabilities.getLocalPlaybackCapabilitiesMask().toByte()
                 heartbeatBuf[5] = AudioConfig.FLAG_CONTROL_ONLY
 
                 val packet = DatagramPacket(heartbeatBuf, heartbeatBuf.size)

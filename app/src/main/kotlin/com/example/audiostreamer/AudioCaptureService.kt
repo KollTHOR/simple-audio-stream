@@ -91,6 +91,7 @@ class AudioCaptureService : Service() {
     private var currentTargetIp = "192.168.43.255"
     private var currentTargetPort = AudioConfig.DEFAULT_PORT
     private val clientRegistry = ConcurrentHashMap<ClientEndpoint, Long>()
+    private val clientCapabilities = ConcurrentHashMap<ClientEndpoint, Int>()
     private var lastClientPruneTime = 0L
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -416,6 +417,7 @@ class AudioCaptureService : Service() {
         var captureSampleRate = AudioConfig.SAMPLE_RATE_48000
         var is24BitActive = false
         var activePayloadSize = AudioConfig.PACKET_SIZE_16BIT_48K
+        var preferredRate = AudioConfig.SAMPLE_RATE_48000
 
         if (isCompressedActive) {
             captureSampleRate = AudioConfig.SAMPLE_RATE_48000
@@ -439,9 +441,41 @@ class AudioCaptureService : Service() {
             }
         } else {
             // In Auto mode, stream at native device sample rate (adapting to network quality, not device probing).
-            // In Uncapped Music mode, respect user preference (or fallback gracefully).
+            // In Uncapped Music mode, respect user preference clamped to mutually supported hardware rates.
+            val rawRatePref = prefs.getString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_48K) ?: AudioConfig.SAMPLE_RATE_48K
+            val sampleRatePref = if (rawRatePref == AudioConfig.SAMPLE_RATE_AUTO) AudioConfig.SAMPLE_RATE_48K else rawRatePref
+            preferredRate = sampleRatePref.toIntOrNull() ?: AudioConfig.SAMPLE_RATE_48000
+
+            val txCaps = AudioCapabilities.getLocalCaptureCapabilitiesMask()
+            val rxCapsFromClients = clientCapabilities.values.firstOrNull { it != 0 } ?: 0
+            val rxCapsFromDiscovery = DiscoveryManager.lastDiscoveredReceiverCapabilities
+            val rxCapsFromPref = prefs.getInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, 0)
+            val rxCaps = when {
+                rxCapsFromClients != 0 -> rxCapsFromClients
+                rxCapsFromDiscovery != 0 -> rxCapsFromDiscovery
+                rxCapsFromPref != 0 -> rxCapsFromPref
+                else -> 0
+            }
+
+            val negotiatedRate = if (rxCaps != 0) {
+                AudioCapabilities.getHighestMutuallySupportedRate(txCaps, rxCaps, preferredRate)
+            } else {
+                AudioCapabilities.getHighestMutuallySupportedRate(txCaps, txCaps, preferredRate)
+            }
+
+            if (profile == AudioConfig.PROFILE_MUSIC && negotiatedRate != preferredRate) {
+                Log.i(TAG, "Uncapped Music: requested $preferredRate Hz clamped to mutually supported $negotiatedRate Hz (TX: ${AudioCapabilities.describeCapabilitiesMask(txCaps)}, RX: ${AudioCapabilities.describeCapabilitiesMask(rxCaps)})")
+            }
+
             val candidateRates = when {
                 profile == AudioConfig.PROFILE_AUTO -> listOf(nativeSampleRate, if (nativeSampleRate == 48000) 44100 else 48000)
+                profile == AudioConfig.PROFILE_MUSIC -> {
+                    val list = mutableListOf(negotiatedRate)
+                    listOf(192000, 96000, 48000, 44100).forEach { r ->
+                        if (r < negotiatedRate && !list.contains(r)) list.add(r)
+                    }
+                    list
+                }
                 sampleRatePref == AudioConfig.SAMPLE_RATE_44K -> listOf(44100)
                 sampleRatePref == AudioConfig.SAMPLE_RATE_48K -> listOf(48000)
                 sampleRatePref == AudioConfig.SAMPLE_RATE_96K -> listOf(96000, 48000)
@@ -586,8 +620,14 @@ class AudioCaptureService : Service() {
             try {
                 val targetAddresses = parseTargetAddresses(targetIp)
                 clientRegistry.clear()
+                clientCapabilities.clear()
                 for (addr in targetAddresses) {
-                    clientRegistry[ClientEndpoint(addr, targetPort)] = Long.MAX_VALUE
+                    val ep = ClientEndpoint(addr, targetPort)
+                    clientRegistry[ep] = Long.MAX_VALUE
+                    val knownCaps = DiscoveryManager.lastDiscoveredReceiverCapabilities
+                    if (knownCaps != 0) {
+                        clientCapabilities[ep] = knownCaps
+                    }
                 }
                 val firstTargetIp = targetAddresses.firstOrNull()?.hostAddress ?: targetIp
                 val matchingLocalIp = NetworkUtils.findMatchingLocalIp(firstTargetIp)
@@ -625,9 +665,15 @@ class AudioCaptureService : Service() {
                                 if (magic == AudioConfig.MAGIC_HEADER.toInt()) {
                                     val flags = recvBuf[5]
                                     val endpoint = ClientEndpoint(recvPacket.address, recvPacket.port)
+                                    val rxCaps = recvBuf[4].toInt() and 0xFF
+                                    if (rxCaps != 0) {
+                                        clientCapabilities[endpoint] = rxCaps
+                                        prefs.edit().putInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, rxCaps).apply()
+                                    }
                                     if (flags == AudioConfig.FLAG_DISCONNECT) {
                                         Log.i(TAG, "Received client disconnect signal from $endpoint. Pausing media.")
                                         clientRegistry.remove(endpoint)
+                                        clientCapabilities.remove(endpoint)
                                         if (clientRegistry.isEmpty()) {
                                             pauseSystemMediaPlayback()
                                         }
@@ -635,7 +681,8 @@ class AudioCaptureService : Service() {
                                         val isNew = !clientRegistry.containsKey(endpoint)
                                         clientRegistry[endpoint] = SystemClock.elapsedRealtime()
                                         if (isNew) {
-                                            Log.i(TAG, "Registered new multi-unicast receiver: $endpoint")
+                                            val capsDesc = if (rxCaps != 0) AudioCapabilities.describeCapabilitiesMask(rxCaps) else "default"
+                                            Log.i(TAG, "Registered new multi-unicast receiver: $endpoint (Caps: $capsDesc)")
                                         }
                                     }
                                 }
@@ -675,8 +722,8 @@ class AudioCaptureService : Service() {
                     isOpusActive -> "Low Latency (Opus 320k)"
                     isAacActive -> "Low Latency (AAC 192k)"
                     activeProfile == AudioConfig.PROFILE_AUTO -> if (is24BitActive) "Auto Adaptive (24-bit, ${captureSampleRate / 1000}kHz)" else "Auto Adaptive (${captureSampleRate / 1000}kHz)"
-                    is24BitActive -> "Studio 24-bit Music (${captureSampleRate / 1000}kHz)"
-                    else -> "Music (${captureSampleRate / 1000}kHz)"
+                    is24BitActive -> if (activeProfile == AudioConfig.PROFILE_MUSIC && captureSampleRate < preferredRate) "Studio 24-bit (Clamped ${captureSampleRate / 1000}kHz)" else "Studio 24-bit Music (${captureSampleRate / 1000}kHz)"
+                    else -> if (activeProfile == AudioConfig.PROFILE_MUSIC && captureSampleRate < preferredRate) "Music (Clamped ${captureSampleRate / 1000}kHz)" else "Music (${captureSampleRate / 1000}kHz)"
                 }
 
                 val initialPayload = activePayloadSize
@@ -1015,8 +1062,8 @@ class AudioCaptureService : Service() {
                                 isOpusActive -> "Low Latency (Opus 320k)"
                                 isAacActive -> "Low Latency (AAC 192k)"
                                 activeProfile == AudioConfig.PROFILE_AUTO -> if (is24Now) "Auto Adaptive (24-bit, ${captureSampleRate / 1000}kHz)" else "Auto Adaptive (${captureSampleRate / 1000}kHz)"
-                                is24BitActive -> "Studio 24-bit Music (${captureSampleRate / 1000}kHz)"
-                                else -> "Music (${captureSampleRate / 1000}kHz)"
+                                is24BitActive -> if (activeProfile == AudioConfig.PROFILE_MUSIC && captureSampleRate < preferredRate) "Studio 24-bit (Clamped ${captureSampleRate / 1000}kHz)" else "Studio 24-bit Music (${captureSampleRate / 1000}kHz)"
+                                else -> if (activeProfile == AudioConfig.PROFILE_MUSIC && captureSampleRate < preferredRate) "Music (Clamped ${captureSampleRate / 1000}kHz)" else "Music (${captureSampleRate / 1000}kHz)"
                             }
 
                             val receiverCount = clientRegistry.size
@@ -1168,6 +1215,8 @@ class AudioCaptureService : Service() {
                 Log.w(TAG, "Could not restore phone volume: ${e.message}")
             }
             previousPhoneVolume = null
+            clientRegistry.clear()
+            clientCapabilities.clear()
 
             StreamState.update {
                 it.copy(
