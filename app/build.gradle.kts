@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.audiostreamer"
         minSdk = 29
         targetSdk = 35
-        versionCode = 43
-        versionName = "1.7.0"
+        versionCode = 44
+        versionName = "1.7.1"
     }
 
     signingConfigs {
