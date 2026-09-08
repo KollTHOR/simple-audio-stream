@@ -297,7 +297,7 @@ object DiscoveryManager {
                 put("name", deviceName)
                 put("p2p", true)
                 put("ssid", p2pSsid)
-                put("pass", p2pPass ?: "")
+                put("pass", if (!p2pPass.isNullOrEmpty()) p2pPass else WifiDirectManager.P2P_DEFAULT_PASSPHRASE)
                 put("goIp", p2pGoIp)
             }
             json.toString()

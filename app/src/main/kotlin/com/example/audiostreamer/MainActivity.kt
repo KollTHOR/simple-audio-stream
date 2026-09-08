@@ -215,18 +215,39 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun isLocationServiceEnabled(): Boolean {
+        val lm = getSystemService(Context.LOCATION_SERVICE) as? android.location.LocationManager
+        return lm != null && (lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) ||
+                lm.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER))
+    }
+
     private fun checkAndRequestP2pPermissions(): Boolean {
+        if (!isLocationServiceEnabled()) {
+            AppLogger.w("MainActivity", "Location Service (GPS) is DISABLED. Android requires Location to be ON for Wi-Fi Direct peer discovery.")
+            Toast.makeText(this, "Please turn ON Location (GPS) in phone settings for Wi-Fi Direct", Toast.LENGTH_LONG).show()
+        }
+
         val permissions = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
                 permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
             }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            }
         } else {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
                 permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
             }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            }
         }
         return if (permissions.isNotEmpty()) {
+            AppLogger.i("MainActivity", "Requesting permissions for Wi-Fi Direct: $permissions")
             p2pPermissionLauncher.launch(permissions.toTypedArray())
             false
         } else {
@@ -238,20 +259,23 @@ class MainActivity : AppCompatActivity() {
         if (!checkAndRequestP2pPermissions()) return
         layoutReceiverP2pInfo.visibility = View.VISIBLE
         tvReceiverP2pStatus.text = "Initializing Autonomous Wi-Fi Direct Group..."
+        AppLogger.i("MainActivity", "Starting Autonomous Wi-Fi Direct Group...")
         WifiDirectManager.createAutonomousGroup(this) { success, ssid, goIp ->
             runOnUiThread {
                 if (success) {
                     layoutReceiverP2pInfo.visibility = View.VISIBLE
-                    tvP2pSsid.text = "Group SSID: ${ssid ?: "DIRECT-SimpleAudioStream"}"
-                    val pass = WifiDirectManager.networkPassphrase.value
-                    tvP2pPassphrase.text = if (!pass.isNullOrEmpty()) "Passphrase: $pass" else "Passphrase: (Auto)"
+                    tvP2pSsid.text = "Group SSID: ${ssid ?: WifiDirectManager.P2P_DEFAULT_SSID}"
+                    val pass = WifiDirectManager.networkPassphrase.value ?: WifiDirectManager.P2P_DEFAULT_PASSPHRASE
+                    tvP2pPassphrase.text = "Passphrase: $pass"
                     tvP2pIp.text = "Direct IP: $goIp (Port 50005)"
                     tvReceiverP2pStatus.text = "Broadcasting & Listening for Transmitter Connections"
+                    AppLogger.i("MainActivity", "Autonomous Wi-Fi Direct Active: SSID=$ssid, Passphrase=$pass, IP=$goIp")
                     Toast.makeText(this, "Wi-Fi Direct Active: $ssid", Toast.LENGTH_SHORT).show()
                 } else {
                     switchReceiverP2p.isChecked = false
                     layoutReceiverP2pInfo.visibility = View.GONE
                     tvReceiverP2pStatus.text = "Failed starting Wi-Fi Direct group"
+                    AppLogger.w("MainActivity", "Failed starting Wi-Fi Direct group")
                     Toast.makeText(this, "Failed to start Wi-Fi Direct group", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -899,14 +923,19 @@ class MainActivity : AppCompatActivity() {
             it.ip == etTargetIp.text?.toString()?.trim() && it.isP2pActive
         }
 
-        if (targetDev != null && !targetDev.p2pSsid.isNullOrEmpty() && !targetDev.p2pPassphrase.isNullOrEmpty()) {
+        val ssid = targetDev?.p2pSsid
+        val pass = targetDev?.p2pPassphrase ?: WifiDirectManager.P2P_DEFAULT_PASSPHRASE
+
+        if (targetDev != null && !ssid.isNullOrEmpty()) {
+            AppLogger.i("MainActivity", "Direct-linking to '${targetDev.name}' SSID=$ssid...")
             Toast.makeText(this, "Direct-linking to ${targetDev.name}...", Toast.LENGTH_SHORT).show()
             WifiDirectManager.connectWithCredentials(
                 this,
-                targetDev.p2pSsid!!,
-                targetDev.p2pPassphrase!!
+                ssid,
+                pass
             ) { goIp ->
                 runOnUiThread {
+                    etTargetIp.setText(goIp)
                     val p2pProfile = ConnectionProfile(
                         id = "p2p_${targetDev.ip}",
                         name = "${targetDev.name} (Direct)",
@@ -915,15 +944,17 @@ class MainActivity : AppCompatActivity() {
                         connectionType = ConnectionType.WIFI_DIRECT,
                         preferredStreamingProfile = AudioConfig.PROFILE_MUSIC,
                         capabilitiesMask = targetDev.capabilitiesMask,
-                        p2pSsid = targetDev.p2pSsid,
-                        p2pPassphrase = targetDev.p2pPassphrase
+                        p2pSsid = ssid,
+                        p2pPassphrase = pass
                     )
                     ConnectionProfileManager.saveProfile(this, p2pProfile)
                     applyProfile(p2pProfile)
+                    AppLogger.i("MainActivity", "Direct Link Established! Target IP set to $goIp")
                     Toast.makeText(this, "Direct Link Established ($goIp)", Toast.LENGTH_SHORT).show()
                 }
             }
         } else {
+            AppLogger.i("MainActivity", "No targeted P2P device credentials. Starting Wi-Fi Direct peer scan...")
             WifiDirectManager.discoverPeers(this)
             Toast.makeText(this, "Scanning for Wi-Fi Direct receivers...", Toast.LENGTH_SHORT).show()
         }
