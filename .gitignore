@@ -24,6 +24,7 @@ captures/
 # Keystore
 *.jks
 *.keystore
+!keystore/release.keystore
 
 # OS files
 .DS_Store

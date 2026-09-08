@@ -11,8 +11,17 @@ android {
         applicationId = "com.example.audiostreamer"
         minSdk = 29
         targetSdk = 35
-        versionCode = 35
-        versionName = "1.6.2"
+        versionCode = 36
+        versionName = "1.6.3"
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file("${rootDir}/keystore/release.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
@@ -22,7 +31,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 

@@ -442,10 +442,19 @@ class SettingsActivity : AppCompatActivity() {
 
                     if (finalApkUrl != null) {
                         latestApkUrl = finalApkUrl
-                        val targetDir = externalCacheDir ?: cacheDir
+                        val targetDir = cacheDir
                         val versionedApk = File(targetDir, "simple-audio-stream-$finalTag.apk")
 
                         if (isNewerVersion(finalTag, BuildConfig.VERSION_NAME)) {
+                            // Clean any stale cached APKs from earlier versions or external storage
+                            try {
+                                listOfNotNull(cacheDir, externalCacheDir).forEach { dir ->
+                                    dir.listFiles { _, name ->
+                                        name.startsWith("simple-audio-stream") && name.endsWith(".apk") && !name.contains(finalTag)
+                                    }?.forEach { it.delete() }
+                                }
+                            } catch (ignored: Exception) {}
+
                             if (versionedApk.exists() && versionedApk.length() > 500_000) {
                                 downloadedApkFile = versionedApk
                                 updateState = UpdateState.INSTALL
@@ -465,9 +474,11 @@ class SettingsActivity : AppCompatActivity() {
 
                             // Clean up old cached update APKs to free storage
                             try {
-                                targetDir.listFiles { _, name ->
-                                    name.startsWith("simple-audio-stream") && name.endsWith(".apk")
-                                }?.forEach { it.delete() }
+                                listOfNotNull(cacheDir, externalCacheDir).forEach { dir ->
+                                    dir.listFiles { _, name ->
+                                        name.startsWith("simple-audio-stream") && name.endsWith(".apk")
+                                    }?.forEach { it.delete() }
+                                }
                             } catch (ignored: Exception) {}
                         }
                     } else {
@@ -498,9 +509,12 @@ class SettingsActivity : AppCompatActivity() {
 
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val targetDir = externalCacheDir ?: cacheDir
+                val targetDir = cacheDir
                 val apkFile = File(targetDir, "simple-audio-stream-$tagName.apk")
-                if (apkFile.exists()) apkFile.delete()
+                listOfNotNull(cacheDir, externalCacheDir).forEach { dir ->
+                    val f = File(dir, "simple-audio-stream-$tagName.apk")
+                    if (f.exists()) f.delete()
+                }
 
                 var currentUrl = apkUrl
                 var redirectCount = 0
