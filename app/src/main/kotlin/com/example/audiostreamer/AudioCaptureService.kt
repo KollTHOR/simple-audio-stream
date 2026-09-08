@@ -38,10 +38,15 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.SocketException
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 class AudioCaptureService : Service() {
+
+    data class ClientEndpoint(val address: InetAddress, val port: Int) {
+        override fun toString(): String = "${address.hostAddress}:$port"
+    }
 
     companion object {
         private const val TAG = "AudioCaptureService"
@@ -85,6 +90,8 @@ class AudioCaptureService : Service() {
     private var previousPhoneVolume: Int? = null
     private var currentTargetIp = "192.168.43.255"
     private var currentTargetPort = AudioConfig.DEFAULT_PORT
+    private val clientRegistry = ConcurrentHashMap<ClientEndpoint, Long>()
+    private var lastClientPruneTime = 0L
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var aacEncoder: AacEncoder? = null
@@ -194,11 +201,35 @@ class AudioCaptureService : Service() {
         }
     }
 
+    private fun broadcastDatagram(socket: DatagramSocket, packet: DatagramPacket) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastClientPruneTime > 2500L) {
+            lastClientPruneTime = now
+            val iter = clientRegistry.entries.iterator()
+            while (iter.hasNext()) {
+                val entry = iter.next()
+                if (entry.value != Long.MAX_VALUE && (now - entry.value > 10_000L)) {
+                    Log.i(TAG, "Pruning inactive multi-unicast client: ${entry.key}")
+                    iter.remove()
+                }
+            }
+        }
+
+        for (client in clientRegistry.keys) {
+            packet.address = client.address
+            packet.port = client.port
+            try {
+                socket.send(packet)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed sending datagram to $client: ${e.message}")
+            }
+        }
+    }
+
     private fun sendControlPacket(volume: Int) {
         val socket = udpSocket ?: return
         Thread({
             try {
-                val targetAddresses = parseTargetAddresses(currentTargetIp)
                 val buffer = ByteArray(AudioConfig.HEADER_SIZE)
                 val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
                 val profile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
@@ -222,11 +253,7 @@ class AudioCaptureService : Service() {
                 buffer[7] = 0
 
                 val packet = DatagramPacket(buffer, buffer.size)
-                for (targetAddr in targetAddresses) {
-                    packet.address = targetAddr
-                    packet.port = currentTargetPort
-                    socket.send(packet)
-                }
+                broadcastDatagram(socket, packet)
             } catch (e: Exception) {
                 Log.e(TAG, "Error sending volume control packet", e)
             }
@@ -551,6 +578,10 @@ class AudioCaptureService : Service() {
             var socketToClose: DatagramSocket? = null
             try {
                 val targetAddresses = parseTargetAddresses(targetIp)
+                clientRegistry.clear()
+                for (addr in targetAddresses) {
+                    clientRegistry[ClientEndpoint(addr, targetPort)] = Long.MAX_VALUE
+                }
                 val firstTargetIp = targetAddresses.firstOrNull()?.hostAddress ?: targetIp
                 val matchingLocalIp = NetworkUtils.findMatchingLocalIp(firstTargetIp)
                 val socket: DatagramSocket = try {
@@ -586,9 +617,19 @@ class AudioCaptureService : Service() {
                                 val magic = ((recvBuf[0].toInt() and 0xFF) shl 8) or (recvBuf[1].toInt() and 0xFF)
                                 if (magic == AudioConfig.MAGIC_HEADER.toInt()) {
                                     val flags = recvBuf[5]
+                                    val endpoint = ClientEndpoint(recvPacket.address, recvPacket.port)
                                     if (flags == AudioConfig.FLAG_DISCONNECT) {
-                                        Log.i(TAG, "Received client disconnect signal from ${recvPacket.address?.hostAddress}. Pausing media.")
-                                        pauseSystemMediaPlayback()
+                                        Log.i(TAG, "Received client disconnect signal from $endpoint. Pausing media.")
+                                        clientRegistry.remove(endpoint)
+                                        if (clientRegistry.isEmpty()) {
+                                            pauseSystemMediaPlayback()
+                                        }
+                                    } else {
+                                        val isNew = !clientRegistry.containsKey(endpoint)
+                                        clientRegistry[endpoint] = SystemClock.elapsedRealtime()
+                                        if (isNew) {
+                                            Log.i(TAG, "Registered new multi-unicast receiver: $endpoint")
+                                        }
                                     }
                                 }
                             }
@@ -644,15 +685,11 @@ class AudioCaptureService : Service() {
 
                 // XOR Forward Error Correction (FEC) setup
                 val isFecEnabled = prefs.getBoolean(AudioConfig.PREF_KEY_FEC_ENABLED, true)
-                val fecParityBuffer = ByteArray(AudioConfig.MAX_PACKET_SIZE)
-                val fecPacketBuffer = ByteArray(AudioConfig.HEADER_SIZE + AudioConfig.MAX_PACKET_SIZE)
-                val fecDatagramPacket = DatagramPacket(fecPacketBuffer, fecPacketBuffer.size)
-                var fecBlockCount = 0
-                var fecBaseSeq = 0
-                var fecMaxPayloadLen = 0
+                val fecEncoder = FecEncoder(AudioConfig.FEC_BLOCK_SIZE)
+                val fecDatagramPacket = DatagramPacket(ByteArray(AudioConfig.HEADER_SIZE + AudioConfig.MAX_PACKET_SIZE), 0)
 
                 record.startRecording()
-                Log.i(TAG, "AudioRecord recording started. Streaming at $captureSampleRate Hz to ${targetAddresses.size} target(s) (Profile: $initialProfileDisplayName, Payload: $initialPayload bytes, FEC: $isFecEnabled)")
+                Log.i(TAG, "AudioRecord recording started. Streaming at $captureSampleRate Hz to ${clientRegistry.size} target(s) (Profile: $initialProfileDisplayName, Payload: $initialPayload bytes, FEC: $isFecEnabled)")
 
                 var sequence = 0
                 var totalPackets = 0L
@@ -678,15 +715,19 @@ class AudioCaptureService : Service() {
                     else -> if (initialBitDepth == 24) 2304 else 1536
                 }
 
-                val initialEndpointLabel = if (targetAddresses.size > 1) {
-                    "${targetAddresses.size} receivers"
+                val initialEndpointCount = clientRegistry.size
+                val initialEndpointLabel = if (initialEndpointCount > 1) {
+                    "$initialEndpointCount receivers"
+                } else if (initialEndpointCount == 1) {
+                    val single = clientRegistry.keys.first()
+                    "${single.address.hostAddress}:${single.port}"
                 } else {
                     "$targetIp:$targetPort"
                 }
-                val initialStatus = if (targetAddresses.size > 1) {
-                    "Multi-Unicast (${targetAddresses.size} receivers)"
+                val initialStatus = if (initialEndpointCount > 1) {
+                    "Multi-Unicast ($initialEndpointCount receivers)"
                 } else {
-                    "Transmitting to $targetIp:$targetPort"
+                    "Transmitting to $initialEndpointLabel"
                 }
 
                 StreamState.update {
@@ -700,7 +741,7 @@ class AudioCaptureService : Service() {
                         bitDepth = initialBitDepth,
                         bitrateKbps = initialBitrate,
                         isSilenceSuppressed = false,
-                        activeReceiversCount = targetAddresses.size
+                        activeReceiversCount = initialEndpointCount
                     )
                 }
 
@@ -767,12 +808,7 @@ class AudioCaptureService : Service() {
                                         System.arraycopy(frame, 0, sendBuffer, AudioConfig.HEADER_SIZE, frameLen)
                                         packet.length = AudioConfig.HEADER_SIZE + frameLen
 
-                                        for (targetAddr in targetAddresses) {
-                                            packet.address = targetAddr
-                                            packet.port = targetPort
-                                            socket.send(packet)
-                                        }
-
+                                        broadcastDatagram(socket, packet)
                                         totalPackets++
                                         totalBytes += packet.length
                                         intervalPackets++
@@ -780,54 +816,24 @@ class AudioCaptureService : Service() {
 
                                         // Forward Error Correction (XOR FEC) for compressed stream
                                         if (isFecEnabled) {
-                                            if (fecBlockCount == 0) {
-                                                fecBaseSeq = currentSeq
-                                                fecMaxPayloadLen = frameLen
-                                                System.arraycopy(sendBuffer, AudioConfig.HEADER_SIZE, fecParityBuffer, 0, frameLen)
-                                                fecBlockCount = 1
-                                            } else {
-                                                if (frameLen > fecMaxPayloadLen) {
-                                                    fecParityBuffer.fill(0, fecMaxPayloadLen, frameLen)
-                                                    fecMaxPayloadLen = frameLen
-                                                }
-                                                for (b in 0 until frameLen) {
-                                                    fecParityBuffer[b] = (fecParityBuffer[b].toInt() xor sendBuffer[AudioConfig.HEADER_SIZE + b].toInt()).toByte()
-                                                }
-                                                fecBlockCount++
-
-                                                if (fecBlockCount == AudioConfig.FEC_BLOCK_SIZE) {
-                                                    fecPacketBuffer[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
-                                                    fecPacketBuffer[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
-                                                    fecPacketBuffer[2] = (fecBaseSeq shr 8).toByte()
-                                                    fecPacketBuffer[3] = (fecBaseSeq and 0xFF).toByte()
-                                                    fecPacketBuffer[4] = AudioConfig.FEC_BLOCK_SIZE.toByte()
-                                                    fecPacketBuffer[5] = (profileFlag.toInt() or codecFlag.toInt() or AudioConfig.FLAG_FEC_PARITY.toInt()).toByte()
-                                                    fecPacketBuffer[6] = (fecMaxPayloadLen shr 8).toByte()
-                                                    fecPacketBuffer[7] = (fecMaxPayloadLen and 0xFF).toByte()
-                                                    System.arraycopy(fecParityBuffer, 0, fecPacketBuffer, AudioConfig.HEADER_SIZE, fecMaxPayloadLen)
-                                                    fecDatagramPacket.length = AudioConfig.HEADER_SIZE + fecMaxPayloadLen
-
-                                                    for (targetAddr in targetAddresses) {
-                                                        fecDatagramPacket.address = targetAddr
-                                                        fecDatagramPacket.port = targetPort
-                                                        socket.send(fecDatagramPacket)
-                                                    }
-
-                                                    totalPackets++
-                                                    totalBytes += fecDatagramPacket.length
-                                                    intervalPackets++
-                                                    intervalBytes += fecDatagramPacket.length
-
-                                                    fecBlockCount = 0
-                                                    fecMaxPayloadLen = 0
-                                                }
+                                            val parityBytes = fecEncoder.encode(
+                                                currentSeq,
+                                                sendBuffer,
+                                                AudioConfig.HEADER_SIZE,
+                                                frameLen,
+                                                (profileFlag.toInt() or codecFlag.toInt()).toByte()
+                                            )
+                                            if (parityBytes != null) {
+                                                fecDatagramPacket.setData(parityBytes, 0, parityBytes.size)
+                                                broadcastDatagram(socket, fecDatagramPacket)
+                                                totalBytes += parityBytes.size
+                                                intervalBytes += parityBytes.size
                                             }
                                         }
                                     }
                                 }
                             } else if (shouldSendHeartbeat) {
-                                fecBlockCount = 0
-                                fecMaxPayloadLen = 0
+                                fecEncoder.reset()
                                 sendBuffer[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
                                 sendBuffer[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
                                 sendBuffer[2] = (sequence shr 8).toByte()
@@ -839,11 +845,7 @@ class AudioCaptureService : Service() {
                                 sendBuffer[7] = 0
                                 packet.length = AudioConfig.HEADER_SIZE
                                 lastHeartbeatTime = now
-                                for (targetAddr in targetAddresses) {
-                                    packet.address = targetAddr
-                                    packet.port = targetPort
-                                    socket.send(packet)
-                                }
+                                broadcastDatagram(socket, packet)
                                 totalPackets++
                                 totalBytes += packet.length
                                 intervalPackets++
@@ -950,12 +952,7 @@ class AudioCaptureService : Service() {
                                 packet.length = AudioConfig.HEADER_SIZE + effectivePayloadLen
                             }
 
-                            for (targetAddr in targetAddresses) {
-                                packet.address = targetAddr
-                                packet.port = targetPort
-                                socket.send(packet)
-                            }
-
+                            broadcastDatagram(socket, packet)
                             totalPackets++
                             totalBytes += packet.length
                             intervalPackets++
@@ -963,50 +960,20 @@ class AudioCaptureService : Service() {
 
                             // Forward Error Correction (XOR FEC) Accumulation & Parity Dispatch
                             if (isSilenceSuppressed) {
-                                fecBlockCount = 0
-                                fecMaxPayloadLen = 0
+                                fecEncoder.reset()
                             } else if (isFecEnabled && effectivePayloadLen > 0) {
-                                if (fecBlockCount == 0) {
-                                    fecBaseSeq = currentSeq
-                                    fecMaxPayloadLen = effectivePayloadLen
-                                    System.arraycopy(sendBuffer, AudioConfig.HEADER_SIZE, fecParityBuffer, 0, effectivePayloadLen)
-                                    fecBlockCount = 1
-                                } else {
-                                    if (effectivePayloadLen > fecMaxPayloadLen) {
-                                        fecParityBuffer.fill(0, fecMaxPayloadLen, effectivePayloadLen)
-                                        fecMaxPayloadLen = effectivePayloadLen
-                                    }
-                                    for (b in 0 until effectivePayloadLen) {
-                                        fecParityBuffer[b] = (fecParityBuffer[b].toInt() xor sendBuffer[AudioConfig.HEADER_SIZE + b].toInt()).toByte()
-                                    }
-                                    fecBlockCount++
-
-                                    if (fecBlockCount == AudioConfig.FEC_BLOCK_SIZE) {
-                                        fecPacketBuffer[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
-                                        fecPacketBuffer[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
-                                        fecPacketBuffer[2] = (fecBaseSeq shr 8).toByte()
-                                        fecPacketBuffer[3] = (fecBaseSeq and 0xFF).toByte()
-                                        fecPacketBuffer[4] = AudioConfig.FEC_BLOCK_SIZE.toByte()
-                                        fecPacketBuffer[5] = (profileFlag.toInt() or AudioConfig.FLAG_FEC_PARITY.toInt()).toByte()
-                                        fecPacketBuffer[6] = (fecMaxPayloadLen shr 8).toByte()
-                                        fecPacketBuffer[7] = (fecMaxPayloadLen and 0xFF).toByte()
-                                        System.arraycopy(fecParityBuffer, 0, fecPacketBuffer, AudioConfig.HEADER_SIZE, fecMaxPayloadLen)
-                                        fecDatagramPacket.length = AudioConfig.HEADER_SIZE + fecMaxPayloadLen
-
-                                        for (targetAddr in targetAddresses) {
-                                            fecDatagramPacket.address = targetAddr
-                                            fecDatagramPacket.port = targetPort
-                                            socket.send(fecDatagramPacket)
-                                        }
-
-                                        totalPackets++
-                                        totalBytes += fecDatagramPacket.length
-                                        intervalPackets++
-                                        intervalBytes += fecDatagramPacket.length
-
-                                        fecBlockCount = 0
-                                        fecMaxPayloadLen = 0
-                                    }
+                                val parityBytes = fecEncoder.encode(
+                                    currentSeq,
+                                    sendBuffer,
+                                    AudioConfig.HEADER_SIZE,
+                                    effectivePayloadLen,
+                                    sendFlags
+                                )
+                                if (parityBytes != null) {
+                                    fecDatagramPacket.setData(parityBytes, 0, parityBytes.size)
+                                    broadcastDatagram(socket, fecDatagramPacket)
+                                    totalBytes += parityBytes.size
+                                    intervalBytes += parityBytes.size
                                 }
                             }
                         }
@@ -1043,18 +1010,22 @@ class AudioCaptureService : Service() {
                                 else -> "Music (${captureSampleRate / 1000}kHz)"
                             }
 
+                            val receiverCount = clientRegistry.size
                             val statusDetailText = if (isSilenceSuppressed) {
                                 "Silence Suppressed (Standby)"
-                            } else if (targetAddresses.size > 1) {
-                                "Multi-Unicast (${targetAddresses.size} receivers)"
+                            } else if (receiverCount > 1) {
+                                "Multi-Unicast ($receiverCount receivers)"
                             } else if (peakPercent > 1) {
                                 "Active Audio ($bitDepth-bit)"
                             } else {
                                 "Silent Stream"
                             }
 
-                            val endpointLabel = if (targetAddresses.size > 1) {
-                                "${targetAddresses.size} receivers (DAP Vol: ${remoteVolumePercent.get()}%)"
+                            val endpointLabel = if (receiverCount > 1) {
+                                "$receiverCount receivers (DAP Vol: ${remoteVolumePercent.get()}%)"
+                            } else if (receiverCount == 1) {
+                                val single = clientRegistry.keys.first()
+                                "${single.address.hostAddress}:${single.port} (DAP Vol: ${remoteVolumePercent.get()}%)"
                             } else {
                                 "$targetIp:$targetPort (DAP Vol: ${remoteVolumePercent.get()}%)"
                             }
@@ -1074,7 +1045,7 @@ class AudioCaptureService : Service() {
                                     bitDepth = bitDepth,
                                     bitrateKbps = bitrate,
                                     isSilenceSuppressed = isSilenceSuppressed,
-                                    activeReceiversCount = targetAddresses.size
+                                    activeReceiversCount = receiverCount
                                 )
                             }
 

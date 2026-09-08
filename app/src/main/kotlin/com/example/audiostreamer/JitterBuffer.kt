@@ -235,6 +235,73 @@ class JitterBuffer(
         write(s, data, offset, length)
     }
 
+    private val internalFecDecoder by lazy { FecDecoder(this) }
+
+    fun hasPacket(seq: Int): Boolean = lock.withLock {
+        val slot = seq and (maxSlots - 1)
+        val hSlot = seq and (historySize - 1)
+        (isSlotFilled[slot] && slotSeq[slot] == seq) || (historySeq[hSlot] == seq)
+    }
+
+    fun getPacketLength(seq: Int): Int = lock.withLock {
+        val slot = seq and (maxSlots - 1)
+        val hSlot = seq and (historySize - 1)
+        if (isSlotFilled[slot] && slotSeq[slot] == seq) {
+            packetLengths[slot]
+        } else if (historySeq[hSlot] == seq) {
+            historyLengths[hSlot]
+        } else {
+            0
+        }
+    }
+
+    fun copyPacketData(seq: Int, dest: ByteArray): Int = lock.withLock {
+        val slot = seq and (maxSlots - 1)
+        val hSlot = seq and (historySize - 1)
+        if (isSlotFilled[slot] && slotSeq[slot] == seq) {
+            val len = packetLengths[slot]
+            System.arraycopy(buffer[slot], 0, dest, 0, len)
+            len
+        } else if (historySeq[hSlot] == seq) {
+            val len = historyLengths[hSlot]
+            System.arraycopy(historyBuffer[hSlot], 0, dest, 0, len)
+            len
+        } else {
+            0
+        }
+    }
+
+    fun isPacketPastPlayback(seq: Int): Boolean = lock.withLock {
+        if (expectedReadSeq == -1) return false
+        seqDiff(seq, expectedReadSeq) < 0
+    }
+
+    fun putRecoveredPacket(sequence: Int, data: ByteArray, offset: Int, length: Int): Boolean = lock.withLock {
+        if (expectedReadSeq == -1 || seqDiff(sequence, expectedReadSeq) < 0) {
+            return false
+        }
+        val slot = sequence and (maxSlots - 1)
+        if (isSlotFilled[slot] && slotSeq[slot] == sequence) {
+            return false
+        }
+
+        System.arraycopy(data, offset, buffer[slot], 0, length)
+        packetLengths[slot] = length
+        slotSeq[slot] = sequence
+        if (!isSlotFilled[slot]) {
+            isSlotFilled[slot] = true
+            availableCount++
+        }
+
+        val hSlot = sequence and (historySize - 1)
+        System.arraycopy(data, offset, historyBuffer[hSlot], 0, length)
+        historyLengths[hSlot] = length
+        historySeq[hSlot] = sequence
+
+        notEmptyCondition.signal()
+        return true
+    }
+
     fun recoverFecPacket(
         baseSeq: Int,
         blockSize: Int,
@@ -242,95 +309,7 @@ class JitterBuffer(
         parityOffset: Int,
         parityLen: Int
     ): Boolean {
-        if (blockSize !in 2..16 || parityLen <= 0 || parityLen > AudioConfig.MAX_PACKET_SIZE) {
-            return false
-        }
-
-        lock.withLock {
-            if (expectedReadSeq == -1) return false
-
-            var missingSeq = -1
-            var missingCount = 0
-            var maxLen = parityLen
-
-            for (i in 0 until blockSize) {
-                val seq = (baseSeq + i) and 0xFFFF
-                val slot = seq and (maxSlots - 1)
-                val hSlot = seq and (historySize - 1)
-
-                val inBuffer = isSlotFilled[slot] && slotSeq[slot] == seq
-                val inHistory = historySeq[hSlot] == seq
-
-                if (inBuffer) {
-                    val len = packetLengths[slot]
-                    if (len > maxLen) maxLen = len
-                } else if (inHistory) {
-                    val len = historyLengths[hSlot]
-                    if (len > maxLen) maxLen = len
-                } else {
-                    missingSeq = seq
-                    missingCount++
-                }
-            }
-
-            // Exactly 1 dropped packet can be reconstructed losslessly
-            if (missingCount == 1 && missingSeq != -1) {
-                // If missing packet has already passed playback point, no need to reconstruct
-                if (seqDiff(missingSeq, expectedReadSeq) < 0) {
-                    return false
-                }
-
-                val slot = missingSeq and (maxSlots - 1)
-                val recovered = buffer[slot]
-                System.arraycopy(parityPayload, parityOffset, recovered, 0, parityLen)
-                if (maxLen > parityLen) {
-                    recovered.fill(0, parityLen, maxLen)
-                }
-
-                for (i in 0 until blockSize) {
-                    val seq = (baseSeq + i) and 0xFFFF
-                    if (seq == missingSeq) continue
-                    val slotIdx = seq and (maxSlots - 1)
-                    val hIdx = seq and (historySize - 1)
-
-                    val pData: ByteArray
-                    val pLen: Int
-                    if (isSlotFilled[slotIdx] && slotSeq[slotIdx] == seq) {
-                        pData = buffer[slotIdx]
-                        pLen = packetLengths[slotIdx]
-                    } else if (historySeq[hIdx] == seq) {
-                        pData = historyBuffer[hIdx]
-                        pLen = historyLengths[hIdx]
-                    } else {
-                        // Data missing from both buffer and history: cannot recover safely
-                        return false
-                    }
-
-                    val xorLen = minOf(pLen, maxLen)
-                    for (b in 0 until xorLen) {
-                        recovered[b] = (recovered[b].toInt() xor pData[b].toInt()).toByte()
-                    }
-                }
-
-                packetLengths[slot] = maxLen
-                slotSeq[slot] = missingSeq
-                if (!isSlotFilled[slot]) {
-                    isSlotFilled[slot] = true
-                    availableCount++
-                }
-
-                // Also save recovered packet into history
-                val hSlot = missingSeq and (historySize - 1)
-                System.arraycopy(recovered, 0, historyBuffer[hSlot], 0, maxLen)
-                historyLengths[hSlot] = maxLen
-                historySeq[hSlot] = missingSeq
-
-                notEmptyCondition.signal()
-                return true
-            }
-
-            return false
-        }
+        return internalFecDecoder.decode(baseSeq, blockSize, parityPayload, parityOffset, parityLen)
     }
 
     /**

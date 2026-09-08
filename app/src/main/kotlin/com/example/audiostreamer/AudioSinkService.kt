@@ -54,7 +54,9 @@ class AudioSinkService : Service() {
     private var datagramSocket: DatagramSocket? = null
     private var receiverThread: Thread? = null
     private var playbackThread: Thread? = null
+    private var heartbeatThread: Thread? = null
     private var jitterBuffer = JitterBuffer()
+    private val fecDecoder by lazy { FecDecoder(jitterBuffer) }
     private var currentRemoteVolume = 100
     private var lastSenderAddress: java.net.InetAddress? = null
     private var lastSenderPort: Int? = null
@@ -251,7 +253,7 @@ class AudioSinkService : Service() {
             receiverThread = Thread({
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
 
-                val rawBuffer = ByteArray(2048)
+                val rawBuffer = ByteArray(AudioConfig.HEADER_SIZE + AudioConfig.MAX_PACKET_SIZE)
                 val packet = DatagramPacket(rawBuffer, rawBuffer.size)
 
                 var totalPackets = 0L
@@ -291,7 +293,7 @@ class AudioSinkService : Service() {
                                     val blockSize = if (volume in 2..16) volume else AudioConfig.FEC_BLOCK_SIZE
                                     val parityLen = payloadLen
                                     if (parityLen > 0 && length >= AudioConfig.HEADER_SIZE + parityLen) {
-                                        val recovered = jitterBuffer.recoverFecPacket(
+                                        val recovered = fecDecoder.decode(
                                             baseSeq = baseSeq,
                                             blockSize = blockSize,
                                             parityPayload = data,
@@ -727,6 +729,37 @@ class AudioSinkService : Service() {
                 start()
             }
 
+            // 3. Receiver Keep-Alive Heartbeat Thread (every 2.5s)
+            heartbeatThread = Thread({
+                val heartbeatBuf = ByteArray(AudioConfig.HEADER_SIZE)
+                heartbeatBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
+                heartbeatBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
+                heartbeatBuf[5] = AudioConfig.FLAG_CONTROL_ONLY
+
+                val packet = DatagramPacket(heartbeatBuf, heartbeatBuf.size)
+                while (isRunning.get() && !Thread.currentThread().isInterrupted) {
+                    try {
+                        Thread.sleep(2500L)
+                        val addr = lastSenderAddress
+                        val port = lastSenderPort ?: AudioConfig.DEFAULT_PORT
+                        val sock = datagramSocket
+                        if (addr != null && sock != null && !sock.isClosed) {
+                            packet.address = addr
+                            packet.port = port
+                            sock.send(packet)
+                        }
+                    } catch (e: InterruptedException) {
+                        break
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error in receiver keep-alive heartbeat: ${e.message}")
+                    }
+                }
+                Log.d(TAG, "Receiver heartbeat thread finished")
+            }, "AudioSinkHeartbeat").apply {
+                isDaemon = true
+                start()
+            }
+
         } catch (e: Exception) {
             Log.e(TAG, "Failed initializing AudioSinkService", e)
             StreamState.update { it.copy(statusDetail = "Error: ${e.message}") }
@@ -858,8 +891,10 @@ class AudioSinkService : Service() {
         }
         Log.i(TAG, "Stopping audio sink")
 
+        heartbeatThread?.interrupt()
         receiverThread?.interrupt()
         playbackThread?.interrupt()
+        heartbeatThread = null
         receiverThread = null
         playbackThread = null
 
