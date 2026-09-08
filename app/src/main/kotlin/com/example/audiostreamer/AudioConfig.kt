@@ -120,6 +120,7 @@ object AudioConfig {
     // Forward Error Correction (XOR FEC)
     const val FEC_BLOCK_SIZE = 4 // 1 parity packet per 4 audio packets (25% overhead)
     const val PREF_KEY_FEC_ENABLED = "pref_fec_enabled"
+    const val PREF_KEY_SYNC_DEVICE_VOLUME = "pref_sync_device_volume"
 
     // Silence Suppression (Battery Saver)
     const val SILENCE_PACKETS_THRESHOLD = 100 // 500ms of sustained silence enters suppression

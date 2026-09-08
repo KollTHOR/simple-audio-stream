@@ -172,6 +172,13 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
 
+        val switchSyncDeviceVolume = findViewById<com.google.android.material.switchmaterial.SwitchMaterial>(R.id.switch_sync_device_volume)
+        val initialSyncVol = prefs.getBoolean(AudioConfig.PREF_KEY_SYNC_DEVICE_VOLUME, true)
+        switchSyncDeviceVolume?.isChecked = initialSyncVol
+        switchSyncDeviceVolume?.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(AudioConfig.PREF_KEY_SYNC_DEVICE_VOLUME, isChecked).apply()
+        }
+
         btnBack.setOnClickListener { finish() }
 
         val currentVersion = BuildConfig.VERSION_NAME

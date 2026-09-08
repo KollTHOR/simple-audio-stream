@@ -6,9 +6,15 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.database.ContentObserver
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -97,6 +103,8 @@ class AudioCaptureService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     private var aacEncoder: AacEncoder? = null
     private var opusEncoder: OpusEncoder? = null
+    private var volumeReceiver: BroadcastReceiver? = null
+    private var volumeObserver: ContentObserver? = null
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -111,6 +119,7 @@ class AudioCaptureService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        setupMediaSession()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -152,6 +161,9 @@ class AudioCaptureService : Service() {
                 currentTargetIp = targetIp
                 currentTargetPort = targetPort
 
+                setupMediaSession()
+                silenceTransmitterSpeakers()
+                registerVolumeClampGuard()
                 startServiceForeground()
                 startStreaming(resultCode, resultData, targetIp, targetPort)
             }
@@ -177,7 +189,7 @@ class AudioCaptureService : Service() {
 
         // Update notification
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.notify(NOTIFICATION_ID, buildNotification("Streaming @ DAP Vol: $clamped%"))
+        notificationManager.notify(NOTIFICATION_ID, buildNotification("Streaming @ Receiver Vol: $clamped%"))
     }
 
     private fun parseTargetAddresses(targetIpString: String): List<InetAddress> {
@@ -266,7 +278,7 @@ class AudioCaptureService : Service() {
     }
 
     private fun startServiceForeground() {
-        val notification = buildNotification("Streaming @ DAP Vol: ${remoteVolumePercent.get()}%")
+        val notification = buildNotification("Streaming @ Receiver Vol: ${remoteVolumePercent.get()}%")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 NOTIFICATION_ID,
@@ -318,17 +330,23 @@ class AudioCaptureService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("Audio Transmitter Active")
             .setContentText(statusText)
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setSmallIcon(R.drawable.ic_transmitter)
             .setContentIntent(pendingActivityIntent)
-            .addAction(android.R.drawable.ic_media_previous, "-5%", pVolDown)
-            .addAction(android.R.drawable.ic_media_next, "+5%", pVolUp)
-            .addAction(android.R.drawable.ic_media_pause, "Stop", pendingStopIntent)
+            .addAction(Notification.Action.Builder(null, "-5%", pVolDown).build())
+            .addAction(Notification.Action.Builder(null, "+5%", pVolUp).build())
+            .addAction(Notification.Action.Builder(null, "Stop", pendingStopIntent).build())
             .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .build()
+
+        mediaSession?.sessionToken?.let { token ->
+            builder.style = Notification.MediaStyle()
+                .setMediaSession(token)
+                .setShowActionsInCompactView(0, 1, 2)
+        }
+
+        return builder.build()
     }
 
     private fun createNotificationChannel() {
@@ -571,47 +589,8 @@ class AudioCaptureService : Service() {
         }
         this.audioRecord = record
 
-        try {
-            val session = MediaSession(this, "AudioStreamTransmitter")
-            val vol = remoteVolumePercent.get()
-            val provider = object : VolumeProvider(VOLUME_CONTROL_RELATIVE, 100, vol) {
-                override fun onAdjustVolume(direction: Int) {
-                    val delta = when {
-                        direction > 0 -> 5
-                        direction < 0 -> -5
-                        else -> 0
-                    }
-                    if (delta != 0) {
-                        val newVol = (remoteVolumePercent.get() + delta).coerceIn(0, 100)
-                        updateRemoteVolume(newVol)
-                    }
-                }
-            }
-            volumeProvider = provider
-            session.setPlaybackToRemote(provider)
-            val state = PlaybackState.Builder()
-                .setActions(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_STOP)
-                .setState(PlaybackState.STATE_PLAYING, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1.0f)
-                .build()
-            session.setPlaybackState(state)
-            session.isActive = true
-            this.mediaSession = session
-        } catch (e: Exception) {
-            Log.e(TAG, "Error initializing MediaSession", e)
-        }
-
-        // Automatically silence phone speakers while preserving previous volume
-        try {
-            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            val currentVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-            if (currentVol > 0) {
-                previousPhoneVolume = currentVol
-                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
-                Log.i(TAG, "Automatically silenced phone media volume (saved previous: $currentVol)")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not automatically silence phone volume: ${e.message}")
-        }
+        setupMediaSession()
+        silenceTransmitterSpeakers()
 
         streamThread = Thread({
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
@@ -1195,6 +1174,8 @@ class AudioCaptureService : Service() {
             }
             mediaProjection = null
 
+            unregisterVolumeClampGuard()
+
             try {
                 mediaSession?.isActive = false
                 mediaSession?.release()
@@ -1239,6 +1220,125 @@ class AudioCaptureService : Service() {
 
             releaseLocks()
         }
+    }
+
+    private fun setupMediaSession() {
+        if (mediaSession != null) return
+        try {
+            val session = MediaSession(this, "AudioStreamTransmitter")
+            val vol = remoteVolumePercent.get()
+            val provider = object : VolumeProvider(VOLUME_CONTROL_ABSOLUTE, 100, vol) {
+                override fun onAdjustVolume(direction: Int) {
+                    val delta = when {
+                        direction > 0 -> 5
+                        direction < 0 -> -5
+                        else -> 0
+                    }
+                    if (delta != 0) {
+                        val newVol = (remoteVolumePercent.get() + delta).coerceIn(0, 100)
+                        updateRemoteVolume(newVol)
+                    }
+                }
+
+                override fun onSetVolumeTo(volume: Int) {
+                    updateRemoteVolume(volume.coerceIn(0, 100))
+                }
+            }
+            volumeProvider = provider
+            session.setPlaybackToRemote(provider)
+            val state = PlaybackState.Builder()
+                .setActions(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_STOP)
+                .setState(PlaybackState.STATE_PLAYING, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1.0f)
+                .build()
+            session.setPlaybackState(state)
+            session.isActive = true
+            this.mediaSession = session
+            Log.i(TAG, "MediaSession initialized with absolute remote volume provider (initial vol: $vol%)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error initializing MediaSession", e)
+        }
+    }
+
+    private fun silenceTransmitterSpeakers() {
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val currentVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            if (currentVol > 0) {
+                previousPhoneVolume = currentVol
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
+                Log.i(TAG, "Automatically silenced transmitter phone media volume (saved previous: $currentVol)")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not silence transmitter volume: ${e.message}")
+        }
+    }
+
+    private fun registerVolumeClampGuard() {
+        if (volumeReceiver != null || volumeObserver != null) return
+        try {
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) {
+                    if (intent?.action == "android.media.VOLUME_CHANGED_ACTION") {
+                        val streamType = intent.getIntExtra("android.media.EXTRA_VOLUME_STREAM_TYPE", -1)
+                        if (streamType == AudioManager.STREAM_MUSIC) {
+                            checkAndClampTransmitterVolume()
+                        }
+                    }
+                }
+            }
+            volumeReceiver = receiver
+            registerReceiver(receiver, IntentFilter("android.media.VOLUME_CHANGED_ACTION"))
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not register VOLUME_CHANGED_ACTION receiver: ${e.message}")
+        }
+
+        try {
+            val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+                override fun onChange(selfChange: Boolean) {
+                    super.onChange(selfChange)
+                    checkAndClampTransmitterVolume()
+                }
+            }
+            volumeObserver = observer
+            contentResolver.registerContentObserver(Settings.System.CONTENT_URI, true, observer)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not register volume ContentObserver: ${e.message}")
+        }
+    }
+
+    private fun checkAndClampTransmitterVolume() {
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val currentVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            if (currentVol > 0) {
+                // Hardware volume key raised phone volume while an external app was focused.
+                // Translate the hardware step to remote volume and immediately silence transmitter phone speakers.
+                val delta = currentVol * 5
+                val newVol = (remoteVolumePercent.get() + delta).coerceIn(0, 100)
+                updateRemoteVolume(newVol)
+
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
+                Log.d(TAG, "Transmitter hardware volume key caught: receiver vol -> $newVol%, re-clamped speaker to 0")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error in checkAndClampTransmitterVolume: ${e.message}")
+        }
+    }
+
+    private fun unregisterVolumeClampGuard() {
+        try {
+            volumeReceiver?.let {
+                unregisterReceiver(it)
+                volumeReceiver = null
+            }
+        } catch (ignored: Exception) {}
+
+        try {
+            volumeObserver?.let {
+                contentResolver.unregisterContentObserver(it)
+                volumeObserver = null
+            }
+        } catch (ignored: Exception) {}
     }
 
     private fun acquireLocks() {

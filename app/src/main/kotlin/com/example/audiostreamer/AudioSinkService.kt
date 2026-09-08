@@ -32,6 +32,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.roundToInt
 
 class AudioSinkService : Service() {
 
@@ -224,6 +225,7 @@ class AudioSinkService : Service() {
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
             val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+            val syncDeviceVolume = prefs.getBoolean(AudioConfig.PREF_KEY_SYNC_DEVICE_VOLUME, true)
             currentProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
             jitterBuffer = JitterBuffer(currentProfile)
 
@@ -394,6 +396,21 @@ class AudioSinkService : Service() {
                                     currentRemoteVolume = volume
                                     val floatVol = (volume / 100.0f).coerceIn(0.0f, 1.0f)
                                     activeTrack.setVolume(floatVol)
+
+                                    if (syncDeviceVolume) {
+                                        try {
+                                            val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                                            val minVol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                                audioManager.getStreamMinVolume(AudioManager.STREAM_MUSIC)
+                                            } else 0
+                                            val targetStep = minVol + ((maxVol - minVol) * (volume / 100.0f)).roundToInt().coerceIn(minVol, maxVol)
+                                            if (audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) != targetStep) {
+                                                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetStep, 0)
+                                            }
+                                        } catch (e: Exception) {
+                                            Log.w(TAG, "Failed syncing receiver hardware volume: ${e.message}")
+                                        }
+                                    }
                                     Log.d(TAG, "Applied remote volume: $volume%")
                                 }
 
