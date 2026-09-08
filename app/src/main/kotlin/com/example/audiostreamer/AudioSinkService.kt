@@ -331,10 +331,11 @@ class AudioSinkService : Service() {
                                         isIncomingAac -> "AAC"
                                         else -> "PCM"
                                     }
+                                    val isCompressed = isIncomingOpus || isIncomingAac
                                     if (serverProfile != currentProfile || currentCodec != lastConfiguredCodec) {
                                         currentProfile = serverProfile
                                         lastConfiguredCodec = currentCodec
-                                        jitterBuffer.setProfile(serverProfile, isIncomingAac)
+                                        jitterBuffer.setProfile(serverProfile, isCompressed)
                                         Log.i(TAG, "Adapted client buffer to server profile: $serverProfile, codec=$currentCodec")
                                     }
 
@@ -525,18 +526,25 @@ class AudioSinkService : Service() {
                             val track = audioTrack
                             if (track != null && track.playState == AudioTrack.PLAYSTATE_PLAYING) {
                                 if (currentIsOpus) {
-                                    val pcmList = opusDecoder?.decode(chunk, 0, bytesToPlay) ?: emptyList()
-                                    for (pcm in pcmList) {
-                                        if (pcm.isNotEmpty()) {
-                                            track.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
-                                            var p = 0
-                                            while (p < pcm.size - 1) {
-                                                val sample = (pcm[p].toInt() and 0xFF) or (pcm[p + 1].toInt() shl 8)
-                                                val abs = kotlin.math.abs(sample.toShort().toInt())
-                                                if (abs > sinkAudioPeakSample) sinkAudioPeakSample = abs
-                                                p += 2
+                                    val isSilenceFill = (bytesToPlay < 8) || (chunk[0] == 0.toByte() && chunk[1] == 0.toByte() && chunk[2] == 0.toByte())
+                                    if (!isSilenceFill) {
+                                        val pcmList = opusDecoder?.decode(chunk, 0, bytesToPlay) ?: emptyList()
+                                        for (pcm in pcmList) {
+                                            if (pcm.isNotEmpty()) {
+                                                track.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
+                                                var p = 0
+                                                while (p < pcm.size - 1) {
+                                                    val sample = (pcm[p].toInt() and 0xFF) or (pcm[p + 1].toInt() shl 8)
+                                                    val abs = kotlin.math.abs(sample.toShort().toInt())
+                                                    if (abs > sinkAudioPeakSample) sinkAudioPeakSample = abs
+                                                    p += 2
+                                                }
                                             }
                                         }
+                                    } else {
+                                        val silenceBytes = if (currentSampleRate == AudioConfig.SAMPLE_RATE_44100) 3528 else 3840
+                                        val silence = ByteArray(silenceBytes)
+                                        track.write(silence, 0, silence.size, AudioTrack.WRITE_BLOCKING)
                                     }
                                 } else if (currentIsAac) {
                                     val isAdts = (bytesToPlay >= 7 && (chunk[0].toInt() and 0xFF) == 0xFF && (chunk[1].toInt() and 0xF0) == 0xF0)
@@ -791,8 +799,13 @@ class AudioSinkService : Service() {
     private class AacDecoder(private val sampleRate: Int, private val channelCount: Int = 2) {
         private var codec: MediaCodec? = null
         private val bufferInfo = MediaCodec.BufferInfo()
+        private var presentationTimeUs = 0L
 
         init {
+            initCodec()
+        }
+
+        private fun initCodec() {
             try {
                 val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channelCount).apply {
                     setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
@@ -827,7 +840,9 @@ class AudioSinkService : Service() {
                     val inBuf = decoder.getInputBuffer(inIndex)
                     inBuf?.clear()
                     inBuf?.put(adtsData, offset, length)
-                    decoder.queueInputBuffer(inIndex, 0, length, 0L, 0)
+                    val pts = presentationTimeUs
+                    presentationTimeUs += 21_333L // ~1024 samples @ 48kHz
+                    decoder.queueInputBuffer(inIndex, 0, length, pts, 0)
                 }
 
                 var outIndex = decoder.dequeueOutputBuffer(bufferInfo, 2000L)
@@ -848,7 +863,13 @@ class AudioSinkService : Service() {
                     outIndex = decoder.dequeueOutputBuffer(bufferInfo, 0L)
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "AAC decode error: ${e.message}")
+                Log.w(TAG, "AAC decode error: ${e.message}, re-initializing")
+                try {
+                    decoder.stop()
+                    decoder.release()
+                } catch (ignored: Exception) {}
+                codec = null
+                initCodec()
             }
             return results
         }
@@ -865,8 +886,13 @@ class AudioSinkService : Service() {
     private class OpusDecoder(private val sampleRate: Int, private val channelCount: Int = 2) {
         private var codec: MediaCodec? = null
         private val bufferInfo = MediaCodec.BufferInfo()
+        private var presentationTimeUs = 0L
 
         init {
+            initCodec()
+        }
+
+        private fun initCodec() {
             try {
                 val format = MediaFormat.createAudioFormat(AudioConfig.OPUS_MIME_TYPE, sampleRate, channelCount).apply {
                     setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
@@ -878,10 +904,9 @@ class AudioSinkService : Service() {
                 System.arraycopy(magic, 0, header, 0, 8)
                 header[8] = 1 // Version
                 header[9] = channelCount.toByte()
-                // Pre-skip (312 samples)
-                val preSkipSamples = 312
-                header[10] = (preSkipSamples and 0xFF).toByte()
-                header[11] = ((preSkipSamples shr 8) and 0xFF).toByte()
+                // Pre-skip = 0 for live streaming (no encoder delay discard)
+                header[10] = 0
+                header[11] = 0
                 // Sample rate (little endian)
                 header[12] = (sampleRate and 0xFF).toByte()
                 header[13] = ((sampleRate shr 8) and 0xFF).toByte()
@@ -896,16 +921,12 @@ class AudioSinkService : Service() {
                 val csd0 = ByteBuffer.wrap(header)
                 format.setByteBuffer("csd-0", csd0)
 
-                // csd-1: Pre-skip in nanoseconds (Long, little-endian)
-                val preSkipNs = (preSkipSamples.toLong() * 1_000_000_000L) / sampleRate.toLong()
-                val csd1 = ByteBuffer.allocate(8).order(ByteOrder.nativeOrder()).putLong(preSkipNs)
-                csd1.flip()
+                // csd-1: Pre-skip in nanoseconds (Long, little-endian) = 0 ns
+                val csd1 = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(0L).apply { flip() }
                 format.setByteBuffer("csd-1", csd1)
 
-                // csd-2: Seek pre-roll in nanoseconds (Long, little-endian) (80ms standard)
-                val seekPreRollNs = 80_000_000L
-                val csd2 = ByteBuffer.allocate(8).order(ByteOrder.nativeOrder()).putLong(seekPreRollNs)
-                csd2.flip()
+                // csd-2: Seek pre-roll in nanoseconds (Long, little-endian) = 0 ns
+                val csd2 = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(0L).apply { flip() }
                 format.setByteBuffer("csd-2", csd2)
 
                 val decoder = MediaCodec.createDecoderByType(AudioConfig.OPUS_MIME_TYPE)
@@ -929,7 +950,9 @@ class AudioSinkService : Service() {
                     val inBuf = decoder.getInputBuffer(inIndex)
                     inBuf?.clear()
                     inBuf?.put(opusData, offset, length)
-                    decoder.queueInputBuffer(inIndex, 0, length, 0L, 0)
+                    val pts = presentationTimeUs
+                    presentationTimeUs += 20_000L // 20ms frame
+                    decoder.queueInputBuffer(inIndex, 0, length, pts, 0)
                 }
 
                 var outIndex = decoder.dequeueOutputBuffer(bufferInfo, 2000L)
@@ -950,7 +973,13 @@ class AudioSinkService : Service() {
                     outIndex = decoder.dequeueOutputBuffer(bufferInfo, 0L)
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Opus decode error: ${e.message}")
+                Log.w(TAG, "Opus decode error: ${e.message}, re-initializing")
+                try {
+                    decoder.stop()
+                    decoder.release()
+                } catch (ignored: Exception) {}
+                codec = null
+                initCodec()
             }
             return results
         }

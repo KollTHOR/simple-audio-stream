@@ -31,7 +31,7 @@ class JitterBuffer(
     private var smoothBufferFill: Float = preRollThreshold.toFloat()
     private var isTransmitterSilent = false
     private var wasConcealed = false
-    private var lastWasAac = false
+    private var isCompressedStream = false
 
     // History buffer for robust FEC recovery even if preceding packets were already read
     private val historySize = 32
@@ -76,17 +76,17 @@ class JitterBuffer(
         }
     }
 
-    fun setProfile(profile: String, isAac: Boolean = false) {
+    fun setProfile(profile: String, isCompressed: Boolean = false) {
         lock.withLock {
-            if (currentProfile == profile && (isAac == lastWasAac)) return
+            if (currentProfile == profile && (isCompressed == isCompressedStream)) return
             currentProfile = profile
-            lastWasAac = isAac
-            if (isAac) {
-                slotCount = AudioConfig.LOW_LATENCY_AAC_JITTER_BUFFER_SLOTS
-                preRollThreshold = AudioConfig.LOW_LATENCY_AAC_PRE_ROLL_PACKETS
-                maxUnderrunFrames = AudioConfig.LOW_LATENCY_AAC_MAX_UNDERRUN_FRAMES
-                waitTimeoutMs = AudioConfig.LOW_LATENCY_AAC_WAIT_TIMEOUT_MS
-                targetWatermarkSlots = AudioConfig.LOW_LATENCY_AAC_TARGET_WATERMARK_SLOTS
+            isCompressedStream = isCompressed
+            if (isCompressed) {
+                slotCount = AudioConfig.LOW_LATENCY_JITTER_BUFFER_SLOTS
+                preRollThreshold = AudioConfig.LOW_LATENCY_PRE_ROLL_PACKETS
+                maxUnderrunFrames = AudioConfig.LOW_LATENCY_MAX_UNDERRUN_FRAMES
+                waitTimeoutMs = AudioConfig.LOW_LATENCY_WAIT_TIMEOUT_MS
+                targetWatermarkSlots = AudioConfig.LOW_LATENCY_TARGET_WATERMARK_SLOTS
             } else {
                 slotCount = AudioConfig.getJitterBufferSlots(profile)
                 preRollThreshold = AudioConfig.getPreRollPackets(profile)
@@ -352,11 +352,9 @@ class JitterBuffer(
                 lastPacketSize = len
 
                 val isAdts = (len >= 7 && (output[0].toInt() and 0xFF) == 0xFF && (output[1].toInt() and 0xF0) == 0xF0)
-                lastWasAac = isAdts
-
-                if (isAdts) {
+                if (isCompressedStream || isAdts) {
                     wasConcealed = false
-                    // Never perform PCM micro-resampling or sample crossfade on compressed ADTS bitstreams
+                    // Never perform PCM micro-resampling or sample crossfade on compressed bitstreams
                     return len
                 }
 
@@ -441,8 +439,8 @@ class JitterBuffer(
                 expectedReadSeq = (expectedReadSeq + 1) and 0xFFFF
                 consecutiveUnderruns++
                 val len = minOf(output.size, lastPacketSize)
-                if (consecutiveUnderruns >= maxUnderrunFrames || lastWasAac) {
-                    // Sustained drop: enter buffering
+                if (consecutiveUnderruns >= maxUnderrunFrames || isCompressedStream) {
+                    // Sustained drop or compressed stream: enter buffering
                     if (consecutiveUnderruns >= maxUnderrunFrames) {
                         isBuffering = true
                     }
@@ -514,7 +512,7 @@ class JitterBuffer(
             lastSampleRight24 = 0
             packetsSinceCatchUp = 0
             packetsSinceDriftAdjust = 0
-            lastWasAac = false
+            isCompressedStream = false
             notEmptyCondition.signalAll()
         }
     }

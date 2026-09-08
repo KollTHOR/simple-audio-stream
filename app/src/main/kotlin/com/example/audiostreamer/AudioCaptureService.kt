@@ -379,7 +379,9 @@ class AudioCaptureService : Service() {
         val isCompressedActive = isLowLatency
 
         val sampleRatePref = prefs.getString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_AUTO) ?: AudioConfig.SAMPLE_RATE_AUTO
-        val captureSampleRate: Int = when (sampleRatePref) {
+        val captureSampleRate: Int = if (isLowLatency) {
+            AudioConfig.SAMPLE_RATE_48000
+        } else when (sampleRatePref) {
             AudioConfig.SAMPLE_RATE_44K -> AudioConfig.SAMPLE_RATE_44100
             AudioConfig.SAMPLE_RATE_48K -> AudioConfig.SAMPLE_RATE_48000
             else -> {
@@ -667,9 +669,11 @@ class AudioCaptureService : Service() {
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                     if (isCompressedActive && (opusEnc != null || aacEnc != null)) {
                         val targetReadBytes = if (isOpusActive) {
-                            if (captureSampleRate == AudioConfig.SAMPLE_RATE_44100) 3528 else 3840 // 20ms Opus frame
-                        } else {
+                            3840 // 20ms Opus frame @ 48kHz (960 stereo samples)
+                        } else if (isAacActive) {
                             4096 // ~21.3ms AAC-LC frame (1024 samples)
+                        } else {
+                            activePayloadSize
                         }
                         val pcmBytesRead = record.read(pcmReadBuffer, 0, targetReadBytes, AudioRecord.READ_BLOCKING)
                         if (pcmBytesRead > 0) {
@@ -1197,6 +1201,8 @@ class AudioCaptureService : Service() {
             }
         }
 
+        private var presentationTimeUs = 0L
+
         fun encode(pcmData: ByteArray, offset: Int, length: Int): List<ByteArray> {
             val encoder = codec ?: return emptyList()
             val results = mutableListOf<ByteArray>()
@@ -1207,7 +1213,10 @@ class AudioCaptureService : Service() {
                     val inBuf = encoder.getInputBuffer(inIndex)
                     inBuf?.clear()
                     inBuf?.put(pcmData, offset, length)
-                    encoder.queueInputBuffer(inIndex, 0, length, 0L, 0)
+                    val pts = presentationTimeUs
+                    val durationUs = (length.toLong() * 1_000_000L) / (sampleRate * channelCount * 2)
+                    presentationTimeUs += durationUs
+                    encoder.queueInputBuffer(inIndex, 0, length, pts, 0)
                 }
 
                 var outIndex = encoder.dequeueOutputBuffer(bufferInfo, 1000L)
@@ -1259,17 +1268,20 @@ class AudioCaptureService : Service() {
                 codec?.release()
             } catch (ignored: Exception) {}
             codec = null
+            presentationTimeUs = 0L
         }
     }
 
     private class OpusEncoder(val sampleRate: Int, val channelCount: Int = 2, val bitRate: Int = AudioConfig.OPUS_BIT_RATE_HIGH) {
         private var codec: MediaCodec? = null
         private val bufferInfo = MediaCodec.BufferInfo()
+        private var presentationTimeUs = 0L
 
         init {
             try {
                 val format = MediaFormat.createAudioFormat(AudioConfig.OPUS_MIME_TYPE, sampleRate, channelCount).apply {
                     setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
+                    setInteger(MediaFormat.KEY_COMPLEXITY, 5)
                     setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
                 }
                 val encoder = MediaCodec.createEncoderByType(AudioConfig.OPUS_MIME_TYPE)
@@ -1292,7 +1304,10 @@ class AudioCaptureService : Service() {
                     val inBuf = encoder.getInputBuffer(inIndex)
                     inBuf?.clear()
                     inBuf?.put(pcmData, offset, length)
-                    encoder.queueInputBuffer(inIndex, 0, length, 0L, 0)
+                    val pts = presentationTimeUs
+                    val durationUs = (length.toLong() * 1_000_000L) / (sampleRate * channelCount * 2)
+                    presentationTimeUs += durationUs
+                    encoder.queueInputBuffer(inIndex, 0, length, pts, 0)
                 }
 
                 var outIndex = encoder.dequeueOutputBuffer(bufferInfo, 1000L)
@@ -1325,6 +1340,7 @@ class AudioCaptureService : Service() {
                 codec?.release()
             } catch (ignored: Exception) {}
             codec = null
+            presentationTimeUs = 0L
         }
     }
 }
