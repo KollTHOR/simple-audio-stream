@@ -508,7 +508,7 @@ class AudioCaptureService : Service() {
         }
 
         streamThread = Thread({
-            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+            Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
 
             var socketToClose: DatagramSocket? = null
             try {
@@ -689,7 +689,7 @@ class AudioCaptureService : Service() {
                                 val sample = (pcmReadBuffer[pi].toInt() and 0xFF) or (pcmReadBuffer[pi + 1].toInt() shl 8)
                                 val abs = kotlin.math.abs(sample.toShort().toInt())
                                 if (abs > chunkPeak) chunkPeak = abs
-                                pi += 2
+                                pi += 16
                             }
                             if (chunkPeak > maxSampleInInterval) maxSampleInInterval = chunkPeak
 
@@ -813,6 +813,8 @@ class AudioCaptureService : Service() {
                                 intervalPackets++
                                 intervalBytes += packet.length
                             }
+                        } else if (pcmBytesRead == 0) {
+                            Thread.sleep(2)
                         } else if (pcmBytesRead < 0) {
                             Log.e(TAG, "AudioRecord read error (compressed): $pcmBytesRead")
                             break
@@ -847,7 +849,7 @@ class AudioCaptureService : Service() {
                                 val sample = if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw
                                 val abs = kotlin.math.abs(sample)
                                 if (abs > chunkPeak) chunkPeak = abs
-                                i += 3
+                                i += 24
                             }
                         } else {
                             var i = AudioConfig.HEADER_SIZE
@@ -856,7 +858,7 @@ class AudioCaptureService : Service() {
                                 val sample = (sendBuffer[i].toInt() and 0xFF) or (sendBuffer[i + 1].toInt() shl 8)
                                 val abs = kotlin.math.abs(sample.toShort().toInt())
                                 if (abs > chunkPeak) chunkPeak = abs
-                                i += 2
+                                i += 16
                             }
                         }
                         if (chunkPeak > maxSampleInInterval) maxSampleInInterval = chunkPeak
@@ -1056,6 +1058,8 @@ class AudioCaptureService : Service() {
                             maxSampleInInterval = 0
                             lastStatsTime = now
                         }
+                    } else if (bytesRead == 0) {
+                        Thread.sleep(2)
                     } else if (bytesRead < 0) {
                         Log.e(TAG, "AudioRecord read error: $bytesRead")
                         break
@@ -1192,12 +1196,8 @@ class AudioCaptureService : Service() {
 
         try {
             val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            val wifiLockMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-            } else {
-                @Suppress("DEPRECATION")
-                WifiManager.WIFI_MODE_FULL_HIGH_PERF
-            }
+            @Suppress("DEPRECATION")
+            val wifiLockMode = WifiManager.WIFI_MODE_FULL_HIGH_PERF
             wifiLock = wifiManager.createWifiLock(wifiLockMode, "AudioStreamer:CaptureWifiLock").apply {
                 setReferenceCounted(false)
                 acquire()

@@ -49,8 +49,6 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var btnBack: ImageView
     private lateinit var tvAppVersion: TextView
     private lateinit var btnGithubRepo: MaterialButton
-    private lateinit var btnAppInfo: MaterialButton
-    private lateinit var btnAccessibilitySettings: MaterialButton
     private lateinit var tvUpdateStatus: TextView
     private lateinit var pbDownload: ProgressBar
     private lateinit var btnCheckUpdate: MaterialButton
@@ -107,7 +105,6 @@ class SettingsActivity : AppCompatActivity() {
         btnBack = findViewById(R.id.btn_back)
         tvAppVersion = findViewById(R.id.tv_app_version)
         btnGithubRepo = findViewById(R.id.btn_github_repo)
-        btnAccessibilitySettings = findViewById(R.id.btn_accessibility_settings)
         tvUpdateStatus = findViewById(R.id.tv_update_status)
         pbDownload = findViewById(R.id.pb_download)
         btnCheckUpdate = findViewById(R.id.btn_check_update)
@@ -175,24 +172,6 @@ class SettingsActivity : AppCompatActivity() {
             startActivity(intent)
         }
 
-        btnAppInfo = findViewById(R.id.btn_app_info)
-        btnAppInfo.setOnClickListener {
-            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                data = Uri.fromParts("package", packageName, null)
-            }
-            startActivity(intent)
-            Toast.makeText(this, "Tap the 3 dots at top-right -> Allow restricted settings", Toast.LENGTH_LONG).show()
-        }
-
-        btnAccessibilitySettings.setOnClickListener {
-            if (VolumeKeyInterceptorService.isRunning.get()) {
-                Toast.makeText(this, "Background volume key interception is active", Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(this, "Turn on Audio Streamer in Accessibility settings", Toast.LENGTH_LONG).show()
-                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            }
-        }
-
         val btnCopyLogs = findViewById<com.google.android.material.button.MaterialButton>(R.id.btn_copy_logs)
         val btnShareLogs = findViewById<com.google.android.material.button.MaterialButton>(R.id.btn_share_logs)
         val btnViewLogs = findViewById<com.google.android.material.button.MaterialButton>(R.id.btn_view_logs)
@@ -236,7 +215,6 @@ class SettingsActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        updateAccessibilityButton()
         checkInstallPermissionOnResume()
     }
 
@@ -305,28 +283,6 @@ class SettingsActivity : AppCompatActivity() {
             }
             startService(restartIntent)
             Log.i(TAG, "Sent ACTION_RESTART_CAPTURE to apply setting change live")
-        }
-    }
-
-    private fun updateAccessibilityButton() {
-        val isServiceActive = VolumeKeyInterceptorService.isRunning.get()
-        if (isServiceActive) {
-            btnAccessibilitySettings.text = "Step 2: Accessibility (Active)"
-            val colorGreen = ContextCompat.getColor(this, R.color.status_green)
-            btnAccessibilitySettings.setTextColor(colorGreen)
-            btnAccessibilitySettings.strokeColor = ColorStateList.valueOf(colorGreen)
-            btnAppInfo.text = "Step 1: App Info (Completed)"
-            btnAppInfo.setTextColor(colorGreen)
-            btnAppInfo.strokeColor = ColorStateList.valueOf(colorGreen)
-        } else {
-            btnAccessibilitySettings.text = "Step 2: Enable in Accessibility Settings"
-            val colorPrimary = ContextCompat.getColor(this, R.color.primary)
-            btnAccessibilitySettings.setTextColor(colorPrimary)
-            btnAccessibilitySettings.strokeColor = ColorStateList.valueOf(colorPrimary)
-            btnAppInfo.text = "Step 1: Open App Info (Allow Restricted Settings)"
-            val colorSecondary = ContextCompat.getColor(this, R.color.text_primary)
-            btnAppInfo.setTextColor(colorSecondary)
-            btnAppInfo.strokeColor = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.card_stroke))
         }
     }
 

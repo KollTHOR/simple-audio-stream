@@ -125,7 +125,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (recordAudioGranted && notificationGranted) {
-            checkAccessibilityAndProceed()
+            launchMediaProjectionConsent()
         } else {
             Toast.makeText(this, "Permissions required for audio transmission", Toast.LENGTH_SHORT).show()
         }
@@ -575,80 +575,8 @@ class MainActivity : AppCompatActivity() {
         if (neededPermissions.isNotEmpty()) {
             transmitterPermissionLauncher.launch(neededPermissions.toTypedArray())
         } else {
-            checkAccessibilityAndProceed()
-        }
-    }
-
-    private fun checkAccessibilityAndProceed() {
-        if (VolumeKeyInterceptorService.isRunning.get()) {
             launchMediaProjectionConsent()
-            return
         }
-
-        val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
-        val hasPrompted = prefs.getBoolean("has_prompted_accessibility", false)
-        if (hasPrompted) {
-            launchMediaProjectionConsent()
-            return
-        }
-
-        prefs.edit().putBoolean("has_prompted_accessibility", true).apply()
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            MaterialAlertDialogBuilder(this)
-                .setTitle("Background Volume Setup")
-                .setMessage(
-                    "Android restricts accessibility on sideloaded APKs by default with 'Restricted setting'.\n\n" +
-                    "To enable background volume buttons in 2 steps:\n" +
-                    "1. Tap 'Step 1: App Info' -> tap 3 dots at top-right -> 'Allow restricted settings'.\n" +
-                    "2. Tap 'Step 2: Accessibility' -> turn on Audio Streamer.\n\n" +
-                    "(You can also skip; in-app slider and notification volume buttons work without permissions)."
-                )
-                .setPositiveButton("Step 1: App Info") { _, _ ->
-                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                        data = Uri.fromParts("package", packageName, null)
-                    }
-                    startActivity(intent)
-                    showAccessibilityStepTwoDialog()
-                }
-                .setNeutralButton("Step 2: Accessibility") { _, _ ->
-                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                    launchMediaProjectionConsent()
-                }
-                .setNegativeButton("Skip") { _, _ ->
-                    launchMediaProjectionConsent()
-                }
-                .setCancelable(false)
-                .show()
-        } else {
-            MaterialAlertDialogBuilder(this)
-                .setTitle("Background Volume Control")
-                .setMessage("To adjust DAP volume using your phone's hardware volume buttons when the screen is locked or in other apps, enable Audio Streamer in Accessibility settings.")
-                .setPositiveButton("Enable") { _, _ ->
-                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                    launchMediaProjectionConsent()
-                }
-                .setNegativeButton("Not Now") { _, _ ->
-                    launchMediaProjectionConsent()
-                }
-                .setCancelable(false)
-                .show()
-        }
-    }
-
-    private fun showAccessibilityStepTwoDialog() {
-        MaterialAlertDialogBuilder(this)
-            .setTitle("Step 2: Enable Accessibility")
-            .setMessage("After selecting 'Allow restricted settings' in App Info, tap 'Open Accessibility' to turn on Audio Streamer.")
-            .setPositiveButton("Open Accessibility") { _, _ ->
-                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                launchMediaProjectionConsent()
-            }
-            .setNegativeButton("Skip") { _, _ ->
-                launchMediaProjectionConsent()
-            }
-            .setCancelable(false)
-            .show()
     }
 
     private fun launchMediaProjectionConsent() {
