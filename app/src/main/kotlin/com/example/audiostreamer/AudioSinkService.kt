@@ -161,6 +161,28 @@ class AudioSinkService : Service() {
             return configureAudioTrack(sampleRate, AudioConfig.ENCODING, profile, currentVolume)
         }
 
+        // Clamp AudioTrack active buffer depth via setBufferSizeInFrames
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val targetFrames = when (profile) {
+                AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> {
+                    // Clamp to ~40ms (1,920 frames @ 48kHz) to eliminate AudioFlinger's default 160ms (7,688 frames) FIFO bloat
+                    // while remaining strictly in PERFORMANCE_MODE_NONE with pure USAGE_MEDIA music fidelity
+                    (sampleRate * 40) / 1000
+                }
+                AudioConfig.PROFILE_BALANCED -> {
+                    // Clamp to ~100ms (4,800 frames @ 48kHz)
+                    (sampleRate * 100) / 1000
+                }
+                else -> {
+                    // Music mode: allow full capacity (~500ms)
+                    track.bufferCapacityInFrames
+                }
+            }
+            val clampedFrames = track.setBufferSizeInFrames(targetFrames)
+            val clampedMs = (clampedFrames * 1000L) / sampleRate
+            Log.i(TAG, "AudioTrack setBufferSizeInFrames: requested=$targetFrames, actual=$clampedFrames (~${clampedMs}ms), capacity=${track.bufferCapacityInFrames} frames")
+        }
+
         // Prime AudioTrack with pre-roll silence so DAC ring buffer is never at 0 frames on startup
         val primeBytes = when (profile) {
             AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> packetSize // 5ms prime (1 packet)
@@ -239,6 +261,7 @@ class AudioSinkService : Service() {
                 var fecRecoveredTotal = 0L
                 var smoothPps = 0f
                 var smoothBps = 0f
+                var lastTrackUnderrunCount = 0
 
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                     try {
@@ -518,6 +541,22 @@ class AudioSinkService : Service() {
                                 }
                                 val atMs = (atFrames / (currentSampleRate / 1000.0)).toInt()
                                 val underruns = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && track != null) track.underrunCount else 0
+                                if (underruns > lastTrackUnderrunCount && track != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                                    val delta = underruns - lastTrackUnderrunCount
+                                    lastTrackUnderrunCount = underruns
+                                    if (currentProfile == AudioConfig.PROFILE_LOW_LATENCY || currentProfile == AudioConfig.PROFILE_VIDEO) {
+                                        val curFrames = track.bufferSizeInFrames
+                                        val maxFrames = (currentSampleRate * 80) / 1000 // 80ms max safety cap
+                                        if (curFrames < maxFrames) {
+                                            val step = (currentSampleRate * 10) / 1000 // +10ms step
+                                            val newFrames = minOf(curFrames + step, maxFrames)
+                                            val res = track.setBufferSizeInFrames(newFrames)
+                                            Log.w(TAG, "AudioTrack underrun detected (+$delta). Dynamically expanded buffer to $res frames (~${(res * 1000L) / currentSampleRate}ms)")
+                                        }
+                                    }
+                                } else if (underruns < lastTrackUnderrunCount) {
+                                    lastTrackUnderrunCount = underruns
+                                }
                                 val decodeMsStr = String.format(Locale.US, "%.1f", lastDecodeDurationNs / 1_000_000.0)
                                 val estTotalMs = jbMs + atMs + (lastDecodeDurationNs / 1_000_000).toInt() + 5
                                 Log.i("LATENCY-RX", "JitterBuf: ${jbMs}ms ($usedSlots/$totalSlots slots) | AudioTrack: ${atMs}ms (${atFrames} frames, underruns: $underruns) | Decode: ${decodeMsStr}ms | Est. Total: ~${estTotalMs}ms | $pps pps ($bps B/s)")
