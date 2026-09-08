@@ -232,9 +232,10 @@ class AudioCaptureService : Service() {
             try {
                 val buffer = ByteArray(AudioConfig.HEADER_SIZE)
                 val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
-                val profile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
+                val profile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_AUTO) ?: AudioConfig.PROFILE_AUTO
                 val profileFlag = when (profile) {
                     AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> AudioConfig.FLAG_PROFILE_LOW_LATENCY
+                    AudioConfig.PROFILE_AUTO -> AudioConfig.FLAG_PROFILE_AUTO
                     else -> AudioConfig.FLAG_PROFILE_MUSIC
                 }
 
@@ -406,6 +407,10 @@ class AudioCaptureService : Service() {
         val isCompressedActive = isLowLatency
 
         val sampleRatePref = prefs.getString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_AUTO) ?: AudioConfig.SAMPLE_RATE_AUTO
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        val nativeProp = audioManager?.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)
+        val parsedRate = nativeProp?.toIntOrNull()
+        val nativeSampleRate = if (parsedRate == 44100) 44100 else 48000
 
         var record: AudioRecord? = null
         var captureSampleRate = AudioConfig.SAMPLE_RATE_48000
@@ -433,16 +438,18 @@ class AudioCaptureService : Service() {
                 Log.i(TAG, "Initialized compressed capture AudioRecord at $captureSampleRate Hz")
             }
         } else {
-            // Dynamic Sample-Rate Probing: 192 kHz -> 96 kHz -> 48 kHz -> 44.1 kHz at 24-bit packed PCM
-            val candidateRates = when (sampleRatePref) {
-                AudioConfig.SAMPLE_RATE_44K -> listOf(44100)
-                AudioConfig.SAMPLE_RATE_48K -> listOf(48000)
-                AudioConfig.SAMPLE_RATE_96K -> listOf(96000, 48000)
-                AudioConfig.SAMPLE_RATE_192K -> listOf(192000, 96000, 48000)
-                else -> listOf(192000, 96000, 48000, 44100)
+            // In Auto mode, stream at native device sample rate (adapting to network quality, not device probing).
+            // In Uncapped Music mode, respect user preference (or fallback gracefully).
+            val candidateRates = when {
+                profile == AudioConfig.PROFILE_AUTO -> listOf(nativeSampleRate, if (nativeSampleRate == 48000) 44100 else 48000)
+                sampleRatePref == AudioConfig.SAMPLE_RATE_44K -> listOf(44100)
+                sampleRatePref == AudioConfig.SAMPLE_RATE_48K -> listOf(48000)
+                sampleRatePref == AudioConfig.SAMPLE_RATE_96K -> listOf(96000, 48000)
+                sampleRatePref == AudioConfig.SAMPLE_RATE_192K -> listOf(192000, 96000, 48000)
+                else -> listOf(nativeSampleRate, if (nativeSampleRate == 48000) 44100 else 48000)
             }
 
-            // Phase 1: Probe 24-bit packed PCM
+            // Phase 1: Probe 24-bit packed PCM if supported on Android 12+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 for (rate in candidateRates) {
                     try {
@@ -655,6 +662,7 @@ class AudioCaptureService : Service() {
                 val rateFlag = AudioConfig.sampleRateToFlagBits(captureSampleRate).toInt()
                 val prof = when {
                     initialIsLowLat -> AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt()
+                    activeProfile == AudioConfig.PROFILE_AUTO -> AudioConfig.FLAG_PROFILE_AUTO.toInt()
                     else -> AudioConfig.FLAG_PROFILE_MUSIC.toInt()
                 }
                 var flag = prof or rateFlag
@@ -666,7 +674,7 @@ class AudioCaptureService : Service() {
                 val initialProfileDisplayName = when {
                     isOpusActive -> "Low Latency (Opus 320k)"
                     isAacActive -> "Low Latency (AAC 192k)"
-                    activeProfile == AudioConfig.PROFILE_AUTO -> if (is24BitActive) "Auto (24-bit • ${captureSampleRate / 1000}kHz)" else "Auto (${captureSampleRate / 1000}kHz)"
+                    activeProfile == AudioConfig.PROFILE_AUTO -> if (is24BitActive) "Auto Adaptive (24-bit, ${captureSampleRate / 1000}kHz)" else "Auto Adaptive (${captureSampleRate / 1000}kHz)"
                     is24BitActive -> "Studio 24-bit Music (${captureSampleRate / 1000}kHz)"
                     else -> "Music (${captureSampleRate / 1000}kHz)"
                 }
@@ -865,6 +873,7 @@ class AudioCaptureService : Service() {
                         val isEffective24 = is24BitActive
                         val baseProfileFlag = when {
                             currentIsLowLat -> AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt()
+                            activeProfile == AudioConfig.PROFILE_AUTO -> AudioConfig.FLAG_PROFILE_AUTO.toInt()
                             else -> AudioConfig.FLAG_PROFILE_MUSIC.toInt()
                         }
                         var flag = baseProfileFlag or rateFlag
@@ -1005,7 +1014,7 @@ class AudioCaptureService : Service() {
                             val profileDisplayName = when {
                                 isOpusActive -> "Low Latency (Opus 320k)"
                                 isAacActive -> "Low Latency (AAC 192k)"
-                                activeProfile == AudioConfig.PROFILE_AUTO -> if (is24Now) "Auto (24-bit • ${captureSampleRate / 1000}kHz)" else "Auto (${captureSampleRate / 1000}kHz)"
+                                activeProfile == AudioConfig.PROFILE_AUTO -> if (is24Now) "Auto Adaptive (24-bit, ${captureSampleRate / 1000}kHz)" else "Auto Adaptive (${captureSampleRate / 1000}kHz)"
                                 is24BitActive -> "Studio 24-bit Music (${captureSampleRate / 1000}kHz)"
                                 else -> "Music (${captureSampleRate / 1000}kHz)"
                             }

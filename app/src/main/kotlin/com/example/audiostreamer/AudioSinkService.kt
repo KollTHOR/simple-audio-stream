@@ -108,7 +108,7 @@ class AudioSinkService : Service() {
                     (sampleRate * 35) / 1000
                 }
                 AudioConfig.PROFILE_AUTO -> {
-                    val wmMs = jitterBuffer.getTargetWatermarkMs().toInt().coerceIn(35, 200)
+                    val wmMs = jitterBuffer.getTargetWatermarkMs().toInt().coerceIn(35, 400)
                     (sampleRate * wmMs) / 1000
                 }
                 else -> {
@@ -353,10 +353,8 @@ class AudioSinkService : Service() {
                                 // Only adapt profile and reconfigure AudioTrack on audio packets (never on control-only packets)
                                 if (!isControlOnly && !isDisconnect && !isSilence) {
                                     val isServer24Bit = !isIncomingAac && !isIncomingOpus && ((flags.toInt() and AudioConfig.FLAG_24BIT.toInt()) != 0)
-                                    val serverProfile = when {
-                                        isIncomingOpus || isIncomingAac || isServerLowLatency -> AudioConfig.PROFILE_LOW_LATENCY
-                                        else -> AudioConfig.PROFILE_AUTO
-                                    }
+                                    val serverProfile = AudioConfig.getProfileFromFlags(flags)
+                                    jitterBuffer.set24Bit(isServer24Bit)
                                     val currentCodec = when {
                                         isIncomingOpus -> "OPUS"
                                         isIncomingAac -> "AAC"
@@ -488,7 +486,7 @@ class AudioSinkService : Service() {
                                 if (is24) "Low Latency 20ms 24-bit (Server)" else "Low Latency 20ms PCM (Server)"
                             } else if (currentProfile == AudioConfig.PROFILE_AUTO) {
                                 val targetWatermark = jitterBuffer.getTargetWatermarkMs()
-                                "Auto Adaptive (${targetWatermark}ms / $srStr)"
+                                "Auto Adaptive (${targetWatermark.toInt()}ms / $srStr)"
                             } else if (is24) {
                                 "Uncapped Music 24-bit $srStr (Server)"
                             } else {

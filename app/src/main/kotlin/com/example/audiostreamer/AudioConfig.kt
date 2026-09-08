@@ -30,15 +30,16 @@ object AudioConfig {
     const val PACKET_SIZE_24BIT_48K = FRAMES_PER_PACKET_48K * CHANNELS * 3 // 1440
     const val PACKET_SIZE_16BIT = PACKET_SIZE_16BIT_48K
     const val PACKET_SIZE_24BIT = PACKET_SIZE_24BIT_48K
-    const val MAX_PACKET_SIZE = 8192 // Accommodates up to 192 kHz 24-bit 5ms chunk (5,760 bytes)
+    const val MAX_PACKET_SIZE = 8192 // Buffer headroom
     const val PACKET_SIZE = PACKET_SIZE_16BIT
 
-    fun getFramesPerPacket(sampleRate: Int, frameDurationMs: Int = FRAME_SIZE_MS): Int {
-        return (sampleRate * frameDurationMs) / 1000
+    fun getFramesPerPacket(sampleRate: Int): Int = when (sampleRate) {
+        SAMPLE_RATE_44100, SAMPLE_RATE_88200, SAMPLE_RATE_176400 -> FRAMES_PER_PACKET_44K
+        else -> FRAMES_PER_PACKET_48K
     }
 
-    fun getPacketPayloadSize(sampleRate: Int, is24Bit: Boolean, frameDurationMs: Int = FRAME_SIZE_MS): Int {
-        val frames = getFramesPerPacket(sampleRate, frameDurationMs)
+    fun getPacketPayloadSize(sampleRate: Int, is24Bit: Boolean): Int {
+        val frames = getFramesPerPacket(sampleRate)
         val bytesPerSample = if (is24Bit) 3 else 2
         return frames * CHANNELS * bytesPerSample
     }
@@ -83,6 +84,7 @@ object AudioConfig {
     const val FLAG_DISCONNECT: Byte = 0x04   // In control packets (payloadLen == 0)
     const val FLAG_PROFILE_LOW_LATENCY: Byte = 0x08 // Compressed Opus / AAC stream
     const val FLAG_PROFILE_MUSIC: Byte = 0x00
+    const val FLAG_PROFILE_AUTO: Byte = 0x80.toByte() // When FLAG_PROFILE_LOW_LATENCY is 0: 0x80 = Auto Adaptive, 0x00 = Music
     const val FLAG_24BIT: Byte = 0x10
     const val FLAG_SILENCE: Byte = 0x20
     const val FLAG_FEC_PARITY: Byte = 0x40
@@ -90,6 +92,15 @@ object AudioConfig {
     const val FLAG_CODEC_OPUS: Byte = 0x00
     const val FLAG_DISCOVERY_PROBE: Byte = 0x40
     const val FLAG_DISCOVERY_ANNOUNCE: Byte = 0x80.toByte()
+
+    fun getProfileFromFlags(flags: Byte): String {
+        val f = flags.toInt() and 0xFF
+        return when {
+            (f and FLAG_PROFILE_LOW_LATENCY.toInt()) != 0 -> PROFILE_LOW_LATENCY
+            (f and 0x80) != 0 -> PROFILE_AUTO
+            else -> PROFILE_MUSIC
+        }
+    }
 
     // Low Latency Codec Settings
     const val PREF_KEY_LOW_LATENCY_CODEC = "pref_low_latency_codec"

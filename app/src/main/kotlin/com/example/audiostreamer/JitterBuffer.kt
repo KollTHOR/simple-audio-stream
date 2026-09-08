@@ -33,6 +33,13 @@ class JitterBuffer(
     private var isTransmitterSilent = false
     private var wasConcealed = false
     private var isCompressedStream = false
+    private var is24BitStream = false
+
+    fun set24Bit(is24: Boolean) {
+        lock.withLock {
+            is24BitStream = is24
+        }
+    }
 
     // RFC 3550 Inter-Arrival Jitter Estimation & Floating Target Watermark
     private var lastArrivalNanos: Long = 0L
@@ -379,7 +386,7 @@ class JitterBuffer(
 
                 if (wasConcealed) {
                     wasConcealed = false
-                    val is24 = (len == AudioConfig.PACKET_SIZE_24BIT_44K || len == AudioConfig.PACKET_SIZE_24BIT_48K)
+                    val is24 = is24BitStream || (len == AudioConfig.PACKET_SIZE_24BIT_44K || len == AudioConfig.PACKET_SIZE_24BIT_48K || (len % 6 == 0 && len % 4 != 0))
                     val frameBytes = if (is24) 6 else 4
                     val totalFrames = len / frameBytes
                     val fadeFrames = minOf(20, totalFrames)
@@ -451,7 +458,7 @@ class JitterBuffer(
                 }
 
                 // Cache last samples for smooth concealment if needed
-                val is24Sample = (len % 6 == 0 && (len % 4 != 0 || len >= 1320))
+                val is24Sample = is24BitStream || (len % 6 == 0 && (len % 4 != 0 || len >= 1320))
                 if (is24Sample && len >= 6) {
                     val idxL = len - 6
                     val idxR = len - 3
@@ -492,7 +499,7 @@ class JitterBuffer(
                 }
 
                 wasConcealed = true
-                val is24Conceal = (len == AudioConfig.PACKET_SIZE_24BIT_44K || len == AudioConfig.PACKET_SIZE_24BIT_48K)
+                val is24Conceal = is24BitStream || (len == AudioConfig.PACKET_SIZE_24BIT_44K || len == AudioConfig.PACKET_SIZE_24BIT_48K || (len % 6 == 0 && len % 4 != 0))
                 if (is24Conceal) {
                     val numFrames = len / 6
                     val initL = lastSampleLeft24
@@ -568,7 +575,7 @@ class JitterBuffer(
     }
 
     private fun applyZeroCrossingFrameDrop(output: ByteArray, len: Int) {
-        val is24 = (len == AudioConfig.PACKET_SIZE_24BIT_48K || len == AudioConfig.PACKET_SIZE_24BIT_44K)
+        val is24 = is24BitStream || (len == AudioConfig.PACKET_SIZE_24BIT_48K || len == AudioConfig.PACKET_SIZE_24BIT_44K || (len % 6 == 0 && len % 4 != 0))
         val frameBytes = if (is24) 6 else 4
         val totalFrames = len / frameBytes
         val searchStart = totalFrames / 4
@@ -612,7 +619,7 @@ class JitterBuffer(
     }
 
     private fun applyZeroCrossingFrameDuplicate(output: ByteArray, len: Int) {
-        val is24 = (len == AudioConfig.PACKET_SIZE_24BIT_48K || len == AudioConfig.PACKET_SIZE_24BIT_44K)
+        val is24 = is24BitStream || (len == AudioConfig.PACKET_SIZE_24BIT_48K || len == AudioConfig.PACKET_SIZE_24BIT_44K || (len % 6 == 0 && len % 4 != 0))
         val frameBytes = if (is24) 6 else 4
         val totalFrames = len / frameBytes
         val searchStart = totalFrames / 4
