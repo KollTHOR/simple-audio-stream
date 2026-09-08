@@ -48,8 +48,14 @@ object WifiDirectManager {
     private val _networkSsid = MutableStateFlow<String?>(null)
     val networkSsid: StateFlow<String?> = _networkSsid.asStateFlow()
 
+    private val _networkPassphrase = MutableStateFlow<String?>(null)
+    val networkPassphrase: StateFlow<String?> = _networkPassphrase.asStateFlow()
+
     private val _discoveredPeers = MutableStateFlow<List<WifiP2pDevice>>(emptyList())
     val discoveredPeers: StateFlow<List<WifiP2pDevice>> = _discoveredPeers.asStateFlow()
+
+    private val _isScanningPeers = MutableStateFlow(false)
+    val isScanningPeers: StateFlow<Boolean> = _isScanningPeers.asStateFlow()
 
     private val _statusMessage = MutableStateFlow("Wi-Fi Direct Idle")
     val statusMessage: StateFlow<String> = _statusMessage.asStateFlow()
@@ -58,7 +64,9 @@ object WifiDirectManager {
 
     fun hasPermissions(context: Context): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.checkSelfPermission(context, Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
+            val hasNearby = ContextCompat.checkSelfPermission(context, Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
+            val hasFine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            hasNearby || hasFine
         } else {
             ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         }
@@ -106,6 +114,7 @@ object WifiDirectManager {
                         wifiP2pManager?.requestPeers(channel) { peerList ->
                             val peers = peerList.deviceList.toList()
                             _discoveredPeers.value = peers
+                            _isScanningPeers.value = false
                             Log.d(TAG, "Discovered ${peers.size} Wi-Fi Direct peer(s)")
                         }
                     }
@@ -116,10 +125,10 @@ object WifiDirectManager {
                         _isConnected.value = connected
                         if (connected) {
                             wifiP2pManager?.requestConnectionInfo(channel) { info ->
-                                val goIp = info.groupOwnerAddress?.hostAddress ?: DEFAULT_GO_IP
+                                val goIp = info?.groupOwnerAddress?.hostAddress ?: DEFAULT_GO_IP
                                 _groupOwnerIp.value = goIp
                                 _statusMessage.value = "Connected via Wi-Fi Direct ($goIp)"
-                                Log.i(TAG, "Wi-Fi Direct connected. Group Owner: $goIp, isGroupOwner=${info.isGroupOwner}")
+                                Log.i(TAG, "Wi-Fi Direct connected. Group Owner: $goIp, isGroupOwner=${info?.isGroupOwner}")
                                 onConnectedCallback?.invoke(goIp)
                             }
                         } else {
@@ -132,13 +141,22 @@ object WifiDirectManager {
                 }
             }
         }
-        ContextCompat.registerReceiver(
-            context.applicationContext,
-            receiver!!,
-            intentFilter,
-            ContextCompat.RECEIVER_NOT_EXPORTED
-        )
-        isReceiverRegistered = true
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.applicationContext.registerReceiver(
+                    receiver!!,
+                    intentFilter,
+                    Context.RECEIVER_EXPORTED
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                context.applicationContext.registerReceiver(receiver!!, intentFilter)
+            }
+            isReceiverRegistered = true
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed registering Wi-Fi Direct receiver: ${e.message}")
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -150,18 +168,31 @@ object WifiDirectManager {
             return
         }
 
-        val mgr = wifiP2pManager ?: return
-        val ch = channel ?: return
+        val mgr = wifiP2pManager ?: run {
+            onResult(false, null, null)
+            return
+        }
+        val ch = channel ?: run {
+            onResult(false, null, null)
+            return
+        }
 
-        // Clean any existing group first
-        mgr.removeGroup(ch, object : WifiP2pManager.ActionListener {
-            override fun onSuccess() {
+        // 1. Check if group already exists
+        mgr.requestGroupInfo(ch) { existingGroup ->
+            if (existingGroup != null && existingGroup.isGroupOwner) {
+                _isGroupCreated.value = true
+                _groupOwnerIp.value = DEFAULT_GO_IP
+                _networkSsid.value = existingGroup.networkName
+                _networkPassphrase.value = existingGroup.passphrase
+                _statusMessage.value = "Group Active: ${existingGroup.networkName} (IP: $DEFAULT_GO_IP)"
+                Log.i(TAG, "Reusing existing autonomous group: ${existingGroup.networkName}")
+                mgr.discoverPeers(ch, null) // ensure discoverable
+                onResult(true, existingGroup.networkName, DEFAULT_GO_IP)
+            } else {
+                // 2. Create new autonomous group
                 createGroupInternal(mgr, ch, onResult)
             }
-            override fun onFailure(reason: Int) {
-                createGroupInternal(mgr, ch, onResult)
-            }
-        })
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -176,9 +207,54 @@ object WifiDirectManager {
                 _groupOwnerIp.value = DEFAULT_GO_IP
                 mgr.requestGroupInfo(ch) { group ->
                     val ssid = group?.networkName ?: "DIRECT-SimpleAudioStream"
+                    val passphrase = group?.passphrase
                     _networkSsid.value = ssid
+                    _networkPassphrase.value = passphrase
                     _statusMessage.value = "Group Active: $ssid (IP: $DEFAULT_GO_IP)"
-                    Log.i(TAG, "Autonomous group created successfully. SSID: $ssid, IP: $DEFAULT_GO_IP")
+                    Log.i(TAG, "Autonomous group created. SSID: $ssid, Passphrase: $passphrase, IP: $DEFAULT_GO_IP")
+                    mgr.discoverPeers(ch, null)
+                    onResult(true, ssid, DEFAULT_GO_IP)
+                }
+            }
+
+            override fun onFailure(reason: Int) {
+                if (reason == WifiP2pManager.BUSY) {
+                    Log.w(TAG, "createGroup returned BUSY (2). Attempting clean removal before retry...")
+                    mgr.removeGroup(ch, object : WifiP2pManager.ActionListener {
+                        override fun onSuccess() {
+                            retryCreateGroup(mgr, ch, onResult)
+                        }
+                        override fun onFailure(r: Int) {
+                            retryCreateGroup(mgr, ch, onResult)
+                        }
+                    })
+                } else {
+                    _isGroupCreated.value = false
+                    _statusMessage.value = "Failed creating group (code: $reason)"
+                    Log.w(TAG, "Failed creating autonomous group: reason=$reason")
+                    onResult(false, null, null)
+                }
+            }
+        })
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun retryCreateGroup(
+        mgr: WifiP2pManager,
+        ch: WifiP2pManager.Channel,
+        onResult: (success: Boolean, ssid: String?, goIp: String?) -> Unit
+    ) {
+        mgr.createGroup(ch, object : WifiP2pManager.ActionListener {
+            override fun onSuccess() {
+                _isGroupCreated.value = true
+                _groupOwnerIp.value = DEFAULT_GO_IP
+                mgr.requestGroupInfo(ch) { group ->
+                    val ssid = group?.networkName ?: "DIRECT-SimpleAudioStream"
+                    val passphrase = group?.passphrase
+                    _networkSsid.value = ssid
+                    _networkPassphrase.value = passphrase
+                    _statusMessage.value = "Group Active: $ssid (IP: $DEFAULT_GO_IP)"
+                    mgr.discoverPeers(ch, null)
                     onResult(true, ssid, DEFAULT_GO_IP)
                 }
             }
@@ -186,7 +262,7 @@ object WifiDirectManager {
             override fun onFailure(reason: Int) {
                 _isGroupCreated.value = false
                 _statusMessage.value = "Failed creating group (code: $reason)"
-                Log.w(TAG, "Failed creating autonomous group: reason=$reason")
+                Log.w(TAG, "Retry create group failed: reason=$reason")
                 onResult(false, null, null)
             }
         })
@@ -199,6 +275,7 @@ object WifiDirectManager {
             override fun onSuccess() {
                 _isGroupCreated.value = false
                 _networkSsid.value = null
+                _networkPassphrase.value = null
                 _groupOwnerIp.value = null
                 _statusMessage.value = "Group removed"
                 Log.i(TAG, "Wi-Fi Direct group removed")
@@ -219,16 +296,60 @@ object WifiDirectManager {
         val mgr = wifiP2pManager ?: return
         val ch = channel ?: return
 
+        _isScanningPeers.value = true
+        _statusMessage.value = "Scanning Wi-Fi Direct peers..."
+
         mgr.discoverPeers(ch, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
-                _statusMessage.value = "Scanning Wi-Fi Direct peers..."
-                Log.d(TAG, "Wi-Fi Direct peer discovery started")
+                Log.d(TAG, "Wi-Fi Direct peer discovery initiated")
             }
             override fun onFailure(reason: Int) {
+                _isScanningPeers.value = false
                 _statusMessage.value = "Peer discovery failed (code: $reason)"
                 Log.w(TAG, "Peer discovery failed: reason=$reason")
             }
         })
+    }
+
+    @SuppressLint("MissingPermission")
+    fun connectWithCredentials(
+        context: Context,
+        ssid: String,
+        passphrase: String?,
+        onConnected: (goIp: String) -> Unit
+    ) {
+        init(context)
+        if (!hasPermissions(context)) {
+            _statusMessage.value = "Permissions required for Wi-Fi Direct"
+            return
+        }
+        val mgr = wifiP2pManager ?: return
+        val ch = channel ?: return
+
+        onConnectedCallback = onConnected
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !passphrase.isNullOrEmpty()) {
+            val config = WifiP2pConfig.Builder()
+                .setNetworkName(ssid)
+                .setPassphrase(passphrase)
+                .build()
+
+            _statusMessage.value = "Connecting to $ssid..."
+            Log.i(TAG, "Connecting to group '$ssid' using direct credentials")
+            mgr.connect(ch, config, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    _statusMessage.value = "Connecting to $ssid..."
+                    Log.i(TAG, "Direct credentials connect initiated for $ssid")
+                }
+
+                override fun onFailure(reason: Int) {
+                    _statusMessage.value = "Direct connect failed (code: $reason)"
+                    Log.w(TAG, "Direct connect failed for $ssid: reason=$reason")
+                }
+            })
+        } else {
+            discoverPeers(context)
+        }
     }
 
     @SuppressLint("MissingPermission")

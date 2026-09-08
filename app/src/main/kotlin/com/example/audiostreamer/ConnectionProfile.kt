@@ -17,6 +17,8 @@ data class ConnectionProfile(
     val connectionType: ConnectionType = ConnectionType.LOCAL_WIFI,
     val preferredStreamingProfile: String = AudioConfig.PROFILE_AUTO,
     val macOrP2pAddress: String? = null,
+    val p2pSsid: String? = null,
+    val p2pPassphrase: String? = null,
     val capabilitiesMask: Int = 0,
     val isFavorite: Boolean = false,
     val lastConnectedTimeMs: Long = System.currentTimeMillis()
@@ -30,6 +32,8 @@ data class ConnectionProfile(
             put("connectionType", connectionType.name)
             put("preferredStreamingProfile", preferredStreamingProfile)
             put("macOrP2pAddress", macOrP2pAddress ?: "")
+            put("p2pSsid", p2pSsid ?: "")
+            put("p2pPassphrase", p2pPassphrase ?: "")
             put("capabilitiesMask", capabilitiesMask)
             put("isFavorite", isFavorite)
             put("lastConnectedTimeMs", lastConnectedTimeMs)
@@ -52,6 +56,8 @@ data class ConnectionProfile(
                 connectionType = connType,
                 preferredStreamingProfile = json.optString("preferredStreamingProfile", AudioConfig.PROFILE_AUTO),
                 macOrP2pAddress = json.optString("macOrP2pAddress").takeIf { it.isNotEmpty() },
+                p2pSsid = json.optString("p2pSsid").takeIf { it.isNotEmpty() },
+                p2pPassphrase = json.optString("p2pPassphrase").takeIf { it.isNotEmpty() },
                 capabilitiesMask = json.optInt("capabilitiesMask", 0),
                 isFavorite = json.optBoolean("isFavorite", false),
                 lastConnectedTimeMs = json.optLong("lastConnectedTimeMs", System.currentTimeMillis())

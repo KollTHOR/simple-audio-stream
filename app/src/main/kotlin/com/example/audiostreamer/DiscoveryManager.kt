@@ -23,6 +23,10 @@ data class DiscoveredDevice(
     val ip: String,
     val port: Int,
     val capabilitiesMask: Int = 0,
+    val isP2pActive: Boolean = false,
+    val p2pSsid: String? = null,
+    val p2pPassphrase: String? = null,
+    val p2pGoIp: String? = null,
     val lastSeenMs: Long = SystemClock.elapsedRealtime()
 )
 
@@ -30,6 +34,12 @@ object DiscoveryManager {
     private const val TAG = "DiscoveryManager"
     private val _discoveredDevices = MutableStateFlow<List<DiscoveredDevice>>(emptyList())
     val discoveredDevices: StateFlow<List<DiscoveredDevice>> = _discoveredDevices.asStateFlow()
+
+    private val _isScanning = MutableStateFlow(false)
+    val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
+
+    private val _lastScanTimeMs = MutableStateFlow(0L)
+    val lastScanTimeMs: StateFlow<Long> = _lastScanTimeMs.asStateFlow()
 
     @Volatile
     var lastDiscoveredReceiverCapabilities: Int = 0
@@ -98,17 +108,46 @@ object DiscoveryManager {
                                 if (rxCaps != 0) {
                                     lastDiscoveredReceiverCapabilities = rxCaps
                                 }
+                                val isP2pFlag = (flags.toInt() and AudioConfig.FLAG_DISCOVERY_P2P_ACTIVE.toInt()) != 0
                                 val payloadLen = ((data[6].toInt() and 0xFF) shl 8) or (data[7].toInt() and 0xFF)
                                 val nameBytesLen = minOf(payloadLen, packet.length - AudioConfig.HEADER_SIZE)
-                                val deviceName = if (nameBytesLen > 0) {
+                                val rawPayload = if (nameBytesLen > 0) {
                                     String(data, AudioConfig.HEADER_SIZE, nameBytesLen, Charsets.UTF_8).trim()
                                 } else {
                                     "Audio Receiver"
                                 }
 
+                                var devName = rawPayload
+                                var isP2pActive = isP2pFlag
+                                var p2pSsid: String? = null
+                                var p2pPass: String? = null
+                                var p2pGoIp: String? = null
+
+                                if (rawPayload.startsWith("{") && rawPayload.endsWith("}")) {
+                                    try {
+                                        val json = org.json.JSONObject(rawPayload)
+                                        devName = json.optString("name", devName)
+                                        isP2pActive = json.optBoolean("p2p", isP2pFlag)
+                                        p2pSsid = json.optString("ssid").takeIf { it.isNotEmpty() }
+                                        p2pPass = json.optString("pass").takeIf { it.isNotEmpty() }
+                                        p2pGoIp = json.optString("goIp").takeIf { it.isNotEmpty() }
+                                    } catch (ignored: Exception) {}
+                                }
+
                                 val senderIp = packet.address.hostAddress
                                 if (senderIp != null) {
-                                    addDiscoveredDevice(DiscoveredDevice(deviceName, senderIp, AudioConfig.DEFAULT_PORT, rxCaps))
+                                    addDiscoveredDevice(
+                                        DiscoveredDevice(
+                                            name = devName,
+                                            ip = senderIp,
+                                            port = AudioConfig.DEFAULT_PORT,
+                                            capabilitiesMask = rxCaps,
+                                            isP2pActive = isP2pActive,
+                                            p2pSsid = p2pSsid,
+                                            p2pPassphrase = p2pPass,
+                                            p2pGoIp = p2pGoIp
+                                        )
+                                    )
                                 }
                             }
                         }
@@ -129,6 +168,7 @@ object DiscoveryManager {
             } finally {
                 activeSocket = null
                 socket?.close()
+                _isScanning.value = false
             }
         }
     }
@@ -138,9 +178,12 @@ object DiscoveryManager {
         discoveryJob = null
         activeSocket?.close()
         activeSocket = null
+        _isScanning.value = false
     }
 
     fun triggerScan(scope: CoroutineScope) {
+        _isScanning.value = true
+        _lastScanTimeMs.value = System.currentTimeMillis()
         if (discoveryJob?.isActive != true) {
             startDiscovery(scope)
         } else {
@@ -150,6 +193,10 @@ object DiscoveryManager {
                     sendProbe(sock)
                 }
             }
+        }
+        scope.launch {
+            kotlinx.coroutines.delay(2500)
+            _isScanning.value = false
         }
     }
 
@@ -197,21 +244,11 @@ object DiscoveryManager {
                                 (flags.toInt() and AudioConfig.FLAG_DISCOVERY_PROBE.toInt()) != 0
                             ) {
                                 // Reply with announce directly to probing transmitter
-                                val deviceName = getLocalDeviceName()
-                                val nameBytes = deviceName.toByteArray(Charsets.UTF_8).take(64).toByteArray()
-                                val replyBuf = ByteArray(AudioConfig.HEADER_SIZE + nameBytes.size)
-                                replyBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
-                                replyBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
-                                replyBuf[4] = AudioCapabilities.getLocalPlaybackCapabilitiesMask().toByte()
-                                replyBuf[5] = AudioConfig.FLAG_DISCOVERY_ANNOUNCE
-                                replyBuf[6] = (nameBytes.size shr 8).toByte()
-                                replyBuf[7] = (nameBytes.size and 0xFF).toByte()
-                                System.arraycopy(nameBytes, 0, replyBuf, AudioConfig.HEADER_SIZE, nameBytes.size)
-
-                                val replyPacket1 = DatagramPacket(replyBuf, replyBuf.size, packet.address, AudioConfig.DISCOVERY_PORT)
+                                val announceBuf = buildAnnouncePacket()
+                                val replyPacket1 = DatagramPacket(announceBuf, announceBuf.size, packet.address, AudioConfig.DISCOVERY_PORT)
                                 socket.send(replyPacket1)
                                 if (packet.port != AudioConfig.DISCOVERY_PORT) {
-                                    val replyPacket2 = DatagramPacket(replyBuf, replyBuf.size, packet.address, packet.port)
+                                    val replyPacket2 = DatagramPacket(announceBuf, announceBuf.size, packet.address, packet.port)
                                     try { socket.send(replyPacket2) } catch (ignored: Exception) {}
                                 }
                                 Log.d(TAG, "Sent discovery announce reply to ${packet.address}")
@@ -248,22 +285,48 @@ object DiscoveryManager {
         receiverMulticastLock = null
     }
 
+    private fun buildAnnouncePacket(): ByteArray {
+        val deviceName = getLocalDeviceName()
+        val isP2p = WifiDirectManager.isGroupCreated.value
+        val p2pSsid = WifiDirectManager.networkSsid.value
+        val p2pPass = WifiDirectManager.networkPassphrase.value
+        val p2pGoIp = WifiDirectManager.groupOwnerIp.value ?: WifiDirectManager.DEFAULT_GO_IP
+
+        val payloadString = if (isP2p && !p2pSsid.isNullOrEmpty()) {
+            val json = org.json.JSONObject().apply {
+                put("name", deviceName)
+                put("p2p", true)
+                put("ssid", p2pSsid)
+                put("pass", p2pPass ?: "")
+                put("goIp", p2pGoIp)
+            }
+            json.toString()
+        } else {
+            deviceName
+        }
+
+        val nameBytes = payloadString.toByteArray(Charsets.UTF_8).take(128).toByteArray()
+        val announceBuf = ByteArray(AudioConfig.HEADER_SIZE + nameBytes.size)
+        announceBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
+        announceBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
+        announceBuf[4] = AudioCapabilities.getLocalPlaybackCapabilitiesMask().toByte()
+        val flagByte = if (isP2p) {
+            (AudioConfig.FLAG_DISCOVERY_ANNOUNCE.toInt() or AudioConfig.FLAG_DISCOVERY_P2P_ACTIVE.toInt()).toByte()
+        } else {
+            AudioConfig.FLAG_DISCOVERY_ANNOUNCE
+        }
+        announceBuf[5] = flagByte
+        announceBuf[6] = (nameBytes.size shr 8).toByte()
+        announceBuf[7] = (nameBytes.size and 0xFF).toByte()
+        System.arraycopy(nameBytes, 0, announceBuf, AudioConfig.HEADER_SIZE, nameBytes.size)
+        return announceBuf
+    }
+
     fun sendAnnouncement(socket: DatagramSocket) {
         try {
-            val deviceName = getLocalDeviceName()
-            val nameBytes = deviceName.toByteArray(Charsets.UTF_8).take(64).toByteArray()
-            val announceBuf = ByteArray(AudioConfig.HEADER_SIZE + nameBytes.size)
-            announceBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
-            announceBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
-            announceBuf[4] = AudioCapabilities.getLocalPlaybackCapabilitiesMask().toByte()
-            announceBuf[5] = AudioConfig.FLAG_DISCOVERY_ANNOUNCE
-            announceBuf[6] = (nameBytes.size shr 8).toByte()
-            announceBuf[7] = (nameBytes.size and 0xFF).toByte()
-            System.arraycopy(nameBytes, 0, announceBuf, AudioConfig.HEADER_SIZE, nameBytes.size)
-
+            val announceBuf = buildAnnouncePacket()
             val targets = mutableSetOf<String>()
             targets.addAll(NetworkUtils.getAllBroadcastAddresses())
-            // Also send direct unicast to common gateway (.1) for every local IP (e.g. hotspot host 10.164.116.1)
             for (localIp in NetworkUtils.getAllLocalIpAddresses()) {
                 val parts = localIp.split(".")
                 if (parts.size == 4 && parts[3] != "1") {

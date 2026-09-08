@@ -93,6 +93,7 @@ object AudioConfig {
     const val FLAG_CODEC_OPUS: Byte = 0x00
     const val FLAG_DISCOVERY_PROBE: Byte = 0x40
     const val FLAG_DISCOVERY_ANNOUNCE: Byte = 0x80.toByte()
+    const val FLAG_DISCOVERY_P2P_ACTIVE: Byte = 0x08
 
     fun getProfileFromFlags(flags: Byte): String {
         val f = flags.toInt() and 0xFF

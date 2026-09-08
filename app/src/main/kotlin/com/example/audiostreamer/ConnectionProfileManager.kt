@@ -86,17 +86,51 @@ object ConnectionProfileManager {
         val updated = existing?.copy(
             name = device.name,
             capabilitiesMask = if (device.capabilitiesMask != 0) device.capabilitiesMask else existing.capabilitiesMask,
+            p2pSsid = device.p2pSsid ?: existing.p2pSsid,
+            p2pPassphrase = device.p2pPassphrase ?: existing.p2pPassphrase,
             lastConnectedTimeMs = System.currentTimeMillis()
         ) ?: ConnectionProfile(
             name = device.name,
             targetIp = device.ip,
             port = device.port,
             connectionType = type,
+            p2pSsid = device.p2pSsid,
+            p2pPassphrase = device.p2pPassphrase,
             capabilitiesMask = device.capabilitiesMask,
             lastConnectedTimeMs = System.currentTimeMillis()
         )
         saveProfile(context, updated)
         return updated
+    }
+
+    @Synchronized
+    fun updateProfilePreferences(
+        context: Context,
+        profileId: String,
+        name: String,
+        targetIp: String,
+        port: Int,
+        preferredStreamingProfile: String
+    ): ConnectionProfile? {
+        val current = loadProfiles(context).toMutableList()
+        val index = current.indexOfFirst { it.id == profileId }
+        if (index >= 0) {
+            val updated = current[index].copy(
+                name = name,
+                targetIp = targetIp,
+                port = port,
+                preferredStreamingProfile = preferredStreamingProfile,
+                lastConnectedTimeMs = System.currentTimeMillis()
+            )
+            current[index] = updated
+            persistProfiles(context, current)
+            _profilesFlow.value = current
+            if (_activeProfileFlow.value?.id == profileId) {
+                setActiveProfile(context, updated)
+            }
+            return updated
+        }
+        return null
     }
 
     private fun loadProfiles(context: Context): List<ConnectionProfile> {

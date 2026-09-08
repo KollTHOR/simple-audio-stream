@@ -173,4 +173,11 @@ object AudioCapabilities {
         }
         return 48000
     }
+
+    fun describeCapabilities(mask: Int): String {
+        if (mask == 0) return "Standard (up to 48kHz • 16-bit)"
+        val maxRate = getMaxSampleRate(mask)
+        val rateStr = if (maxRate % 1000 == 0) "${maxRate / 1000}kHz" else String.format(java.util.Locale.US, "%.1fkHz", maxRate / 1000.0)
+        return "Up to $rateStr • 24-bit PCM"
+    }
 }
