@@ -39,7 +39,11 @@ import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.google.android.material.slider.Slider
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
+import android.net.wifi.p2p.WifiP2pDevice
+import android.widget.EditText
+import com.google.android.material.switchmaterial.SwitchMaterial
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 class MainActivity : AppCompatActivity() {
 
@@ -54,15 +58,40 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnModeTransmitter: MaterialButton
     private lateinit var btnModeReceiver: MaterialButton
     private lateinit var tvModeGuide: TextView
-    private lateinit var tilTargetIp: TextInputLayout
-    private lateinit var etTargetIp: TextInputEditText
+
+    // Redesigned Connection Setup & Profiles
+    private lateinit var layoutConnType: LinearLayout
+    private lateinit var toggleConnType: MaterialButtonToggleGroup
+    private lateinit var btnConnWifi: MaterialButton
+    private lateinit var btnConnP2p: MaterialButton
+
+    private lateinit var layoutActiveDevice: LinearLayout
+    private lateinit var tvSelectedDeviceName: TextView
+    private lateinit var tvSelectedDeviceType: TextView
+    private lateinit var tvSelectedDeviceCaps: TextView
+    private lateinit var btnSaveProfile: MaterialButton
+
     private lateinit var layoutDiscovery: LinearLayout
     private lateinit var btnScanReceivers: MaterialButton
     private lateinit var chipGroupReceivers: ChipGroup
+
+    private lateinit var layoutReceiverP2p: LinearLayout
+    private lateinit var switchReceiverP2p: SwitchMaterial
+    private lateinit var tvReceiverP2pStatus: TextView
+
+    private lateinit var layoutAdvancedHeader: LinearLayout
+    private lateinit var tvAdvancedToggle: TextView
+    private lateinit var layoutAdvancedContent: LinearLayout
+
+    private lateinit var tilTargetIp: TextInputLayout
+    private lateinit var etTargetIp: TextInputEditText
     private lateinit var tilPort: TextInputLayout
     private lateinit var etPort: TextInputEditText
     private lateinit var btnAction: MaterialButton
     private lateinit var fabSettings: FloatingActionButton
+
+    private var currentConnType: ConnectionType = ConnectionType.LOCAL_WIFI
+    private var isAdvancedExpanded: Boolean = false
 
     // Volume controls
     private lateinit var layoutVolumeControl: LinearLayout
@@ -141,6 +170,64 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val p2pPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val allGranted = permissions.values.all { it }
+        if (allGranted) {
+            if (currentMode == Mode.RECEIVER && switchReceiverP2p.isChecked) {
+                startReceiverP2pGroup()
+            } else if (currentMode == Mode.TRANSMITTER && currentConnType == ConnectionType.WIFI_DIRECT) {
+                WifiDirectManager.discoverPeers(this)
+                Toast.makeText(this, "Scanning for Wi-Fi Direct receivers...", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            Toast.makeText(this, "Nearby Wi-Fi / Location permission required for Wi-Fi Direct", Toast.LENGTH_SHORT).show()
+            if (currentMode == Mode.RECEIVER) {
+                switchReceiverP2p.isChecked = false
+            }
+            if (currentMode == Mode.TRANSMITTER) {
+                toggleConnType.check(R.id.btn_conn_wifi)
+            }
+        }
+    }
+
+    private fun checkAndRequestP2pPermissions(): Boolean {
+        val permissions = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            }
+        } else {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            }
+        }
+        return if (permissions.isNotEmpty()) {
+            p2pPermissionLauncher.launch(permissions.toTypedArray())
+            false
+        } else {
+            true
+        }
+    }
+
+    private fun startReceiverP2pGroup() {
+        if (!checkAndRequestP2pPermissions()) return
+        tvReceiverP2pStatus.text = "Initializing Autonomous Wi-Fi Direct Group..."
+        WifiDirectManager.createAutonomousGroup(this) { success, ssid, goIp ->
+            runOnUiThread {
+                if (success) {
+                    tvReceiverP2pStatus.text = "Group Active: $ssid\nDirect IP: $goIp (Port 50005)"
+                    Toast.makeText(this, "Wi-Fi Direct Active: $ssid", Toast.LENGTH_SHORT).show()
+                } else {
+                    switchReceiverP2p.isChecked = false
+                    tvReceiverP2pStatus.text = "Failed starting Wi-Fi Direct group"
+                    Toast.makeText(this, "Failed to start Wi-Fi Direct group", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
         super.onCreate(savedInstanceState)
@@ -153,32 +240,143 @@ class MainActivity : AppCompatActivity() {
             insets
         }
 
+        ConnectionProfileManager.init(this)
+        WifiDirectManager.init(this)
+
         layoutIpPill = findViewById(R.id.layout_ip_pill)
         tvHeaderIp = findViewById(R.id.tv_header_ip)
         toggleModeGroup = findViewById(R.id.toggle_mode_group)
         btnModeTransmitter = findViewById(R.id.btn_mode_transmitter)
         btnModeReceiver = findViewById(R.id.btn_mode_receiver)
         tvModeGuide = findViewById(R.id.tv_mode_guide)
-        tilTargetIp = findViewById(R.id.til_target_ip)
-        etTargetIp = findViewById(R.id.et_target_ip)
+
+        layoutConnType = findViewById(R.id.layout_conn_type)
+        toggleConnType = findViewById(R.id.toggle_conn_type)
+        btnConnWifi = findViewById(R.id.btn_conn_wifi)
+        btnConnP2p = findViewById(R.id.btn_conn_p2p)
+
+        layoutActiveDevice = findViewById(R.id.layout_active_device)
+        tvSelectedDeviceName = findViewById(R.id.tv_selected_device_name)
+        tvSelectedDeviceType = findViewById(R.id.tv_selected_device_type)
+        tvSelectedDeviceCaps = findViewById(R.id.tv_selected_device_caps)
+        btnSaveProfile = findViewById(R.id.btn_save_profile)
+
         layoutDiscovery = findViewById(R.id.layout_discovery)
         btnScanReceivers = findViewById(R.id.btn_scan_receivers)
         chipGroupReceivers = findViewById(R.id.chip_group_receivers)
-        chipGroupReceivers.isSingleSelection = false
+        chipGroupReceivers.isSingleSelection = true
+
+        layoutReceiverP2p = findViewById(R.id.layout_receiver_p2p)
+        switchReceiverP2p = findViewById(R.id.switch_receiver_p2p)
+        tvReceiverP2pStatus = findViewById(R.id.tv_receiver_p2p_status)
+
+        layoutAdvancedHeader = findViewById(R.id.layout_advanced_header)
+        tvAdvancedToggle = findViewById(R.id.tv_advanced_toggle)
+        layoutAdvancedContent = findViewById(R.id.layout_advanced_content)
+
+        tilTargetIp = findViewById(R.id.til_target_ip)
+        etTargetIp = findViewById(R.id.et_target_ip)
         tilPort = findViewById(R.id.til_port)
         etPort = findViewById(R.id.et_port)
         btnAction = findViewById(R.id.btn_action)
         fabSettings = findViewById(R.id.fab_settings)
 
+        layoutAdvancedHeader.setOnClickListener {
+            isAdvancedExpanded = !isAdvancedExpanded
+            layoutAdvancedContent.visibility = if (isAdvancedExpanded) View.VISIBLE else View.GONE
+            tvAdvancedToggle.text = if (isAdvancedExpanded) {
+                "Advanced Settings (Manual IP & Port) -"
+            } else {
+                "Advanced Settings (Manual IP & Port) +"
+            }
+        }
+
+        btnSaveProfile.setOnClickListener {
+            showSaveProfileDialog()
+        }
+
+        toggleConnType.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (isChecked) {
+                currentConnType = if (checkedId == R.id.btn_conn_p2p) {
+                    ConnectionType.WIFI_DIRECT
+                } else {
+                    ConnectionType.LOCAL_WIFI
+                }
+                if (currentConnType == ConnectionType.WIFI_DIRECT) {
+                    if (checkAndRequestP2pPermissions()) {
+                        WifiDirectManager.discoverPeers(this)
+                        Toast.makeText(this, "Scanning for Wi-Fi Direct receivers...", Toast.LENGTH_SHORT).show()
+                    }
+                } else {
+                    DiscoveryManager.triggerScan(lifecycleScope)
+                }
+                updateAllDeviceChips()
+            }
+        }
+
+        switchReceiverP2p.setOnCheckedChangeListener { _, isChecked ->
+            if (isChecked) {
+                startReceiverP2pGroup()
+            } else {
+                WifiDirectManager.removeGroup(this)
+                tvReceiverP2pStatus.text = "Autonomous Wi-Fi Direct stopped"
+            }
+        }
+
         btnScanReceivers.setOnClickListener {
-            DiscoveryManager.triggerScan(lifecycleScope)
-            Toast.makeText(this, "Scanning all network interfaces...", Toast.LENGTH_SHORT).show()
+            if (currentConnType == ConnectionType.WIFI_DIRECT) {
+                if (checkAndRequestP2pPermissions()) {
+                    WifiDirectManager.discoverPeers(this)
+                    Toast.makeText(this, "Scanning for Wi-Fi Direct receivers...", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                DiscoveryManager.triggerScan(lifecycleScope)
+                Toast.makeText(this, "Scanning local Wi-Fi devices...", Toast.LENGTH_SHORT).show()
+            }
         }
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                DiscoveryManager.discoveredDevices.collect { devices ->
-                    updateDiscoveredChips(devices)
+                launch {
+                    ConnectionProfileManager.profilesFlow.collect {
+                        updateAllDeviceChips()
+                    }
+                }
+                launch {
+                    ConnectionProfileManager.activeProfileFlow.collect { profile ->
+                        updateSelectedDeviceUi(profile)
+                    }
+                }
+                launch {
+                    DiscoveryManager.discoveredDevices.collect {
+                        updateAllDeviceChips()
+                    }
+                }
+                launch {
+                    WifiDirectManager.discoveredPeers.collect {
+                        updateAllDeviceChips()
+                    }
+                }
+                launch {
+                    WifiDirectManager.groupOwnerIp.collect { goIp ->
+                        if (goIp != null && currentMode == Mode.TRANSMITTER && currentConnType == ConnectionType.WIFI_DIRECT) {
+                            val p2pProfile = ConnectionProfile(
+                                id = "p2p_active",
+                                name = "Wi-Fi Direct Receiver",
+                                targetIp = goIp,
+                                port = AudioConfig.DEFAULT_PORT,
+                                connectionType = ConnectionType.WIFI_DIRECT
+                            )
+                            applyProfile(p2pProfile)
+                        }
+                    }
+                }
+                launch {
+                    WifiDirectManager.statusMessage.collect { status ->
+                        if (currentMode == Mode.RECEIVER && switchReceiverP2p.isChecked) {
+                            tvReceiverP2pStatus.text = status
+                        }
+                    }
                 }
             }
         }
@@ -308,6 +506,7 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         DiscoveryManager.stopDiscovery()
         DiscoveryManager.stopReceiverResponder()
+        WifiDirectManager.cleanup(this)
     }
 
     private fun syncDiscoveryMode() {
@@ -327,62 +526,200 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun updateDiscoveredChips(devices: List<DiscoveredDevice>) {
+    private fun updateAllDeviceChips() {
         chipGroupReceivers.removeAllViews()
-        val currentIps = etTargetIp.text?.toString()
-            ?.split(",", ";", " ")
-            ?.map { it.trim() }
-            ?.filter { it.isNotEmpty() }
-            ?.toMutableSet() ?: mutableSetOf()
+        val activeProfile = ConnectionProfileManager.activeProfileFlow.value
+        val currentIp = etTargetIp.text?.toString()?.trim().orEmpty()
 
-        for (dev in devices) {
-            val isSelected = currentIps.contains(dev.ip)
+        val savedProfiles = ConnectionProfileManager.profilesFlow.value
+        val localDevices = DiscoveryManager.discoveredDevices.value
+        val p2pPeers = WifiDirectManager.discoveredPeers.value
+
+        // 1. Saved Profiles Chips
+        for (profile in savedProfiles) {
+            val isSelected = (activeProfile?.id == profile.id) || (currentIp == profile.targetIp)
             val chip = Chip(this).apply {
-                text = "${dev.name} (${dev.ip})"
+                val prefix = if (profile.connectionType == ConnectionType.WIFI_DIRECT) "[P2P]" else "[Saved]"
+                text = "$prefix ${profile.name}"
                 isCheckable = true
                 isChecked = isSelected
                 setOnClickListener {
-                    val ips = etTargetIp.text?.toString()
-                        ?.split(",", ";", " ")
-                        ?.map { it.trim() }
-                        ?.filter { it.isNotEmpty() }
-                        ?.toMutableSet() ?: mutableSetOf()
-
-                    val added = if (ips.contains(dev.ip)) {
-                        ips.remove(dev.ip)
-                        false
-                    } else {
-                        ips.removeAll { it.endsWith(".255") || it == "255.255.255.255" }
-                        ips.add(dev.ip)
-                        true
-                    }
-
-                    val newText = if (ips.isEmpty()) {
-                        NetworkUtils.getSuggestedBroadcastIp()
-                    } else {
-                        ips.joinToString(", ")
-                    }
-                    etTargetIp.setText(newText)
-                    val action = if (added) "Added" else "Removed"
-                    Toast.makeText(this@MainActivity, "$action ${dev.name}", Toast.LENGTH_SHORT).show()
-                    updateDiscoveredChips(DiscoveryManager.discoveredDevices.value)
+                    applyProfile(profile)
+                }
+                setOnLongClickListener {
+                    MaterialAlertDialogBuilder(this@MainActivity)
+                        .setTitle("Delete Profile")
+                        .setMessage("Remove saved profile '${profile.name}'?")
+                        .setPositiveButton("Delete") { _, _ ->
+                            ConnectionProfileManager.deleteProfile(this@MainActivity, profile.id)
+                            Toast.makeText(this@MainActivity, "Deleted '${profile.name}'", Toast.LENGTH_SHORT).show()
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                    true
                 }
             }
             chipGroupReceivers.addView(chip)
         }
 
-        // Auto-select discovered device directly via unicast (no whole subnet broadcast)
-        if (devices.isNotEmpty()) {
-            val currentTarget = etTargetIp.text?.toString()?.trim().orEmpty()
-            if (currentTarget.isEmpty() || currentTarget.endsWith(".255") || currentTarget == "255.255.255.255") {
-                val firstDev = devices.first()
-                etTargetIp.setText(firstDev.ip)
-                for (i in 0 until chipGroupReceivers.childCount) {
-                    val child = chipGroupReceivers.getChildAt(i) as? Chip
-                    child?.isChecked = (child?.text?.contains(firstDev.ip) == true)
+        // 2. Discovered Devices (Local Wi-Fi)
+        if (currentConnType == ConnectionType.LOCAL_WIFI) {
+            for (dev in localDevices) {
+                if (savedProfiles.any { it.targetIp == dev.ip }) continue
+
+                val isSelected = currentIp == dev.ip
+                val chip = Chip(this).apply {
+                    text = "${dev.name} (${dev.ip})"
+                    isCheckable = true
+                    isChecked = isSelected
+                    setOnClickListener {
+                        val profile = ConnectionProfileManager.createOrUpdateFromDiscoveredDevice(
+                            this@MainActivity,
+                            dev,
+                            ConnectionType.LOCAL_WIFI
+                        )
+                        applyProfile(profile)
+                    }
                 }
+                chipGroupReceivers.addView(chip)
+            }
+        } else if (currentConnType == ConnectionType.WIFI_DIRECT) {
+            // 3. Discovered Wi-Fi Direct Peers
+            for (peer in p2pPeers) {
+                val chip = Chip(this).apply {
+                    text = "Direct: ${peer.deviceName}"
+                    isCheckable = true
+                    isChecked = false
+                    setOnClickListener {
+                        Toast.makeText(this@MainActivity, "Connecting to ${peer.deviceName}...", Toast.LENGTH_SHORT).show()
+                        WifiDirectManager.connectToPeer(this@MainActivity, peer) { goIp ->
+                            runOnUiThread {
+                                val p2pProfile = ConnectionProfile(
+                                    id = "p2p_${peer.deviceAddress}",
+                                    name = peer.deviceName.ifEmpty { "Wi-Fi Direct Receiver" },
+                                    targetIp = goIp,
+                                    port = AudioConfig.DEFAULT_PORT,
+                                    connectionType = ConnectionType.WIFI_DIRECT
+                                )
+                                ConnectionProfileManager.saveProfile(this@MainActivity, p2pProfile)
+                                applyProfile(p2pProfile)
+                                Toast.makeText(this@MainActivity, "Connected to ${peer.deviceName} ($goIp)", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                }
+                chipGroupReceivers.addView(chip)
             }
         }
+
+        // Auto-select first profile or device if none currently targeted
+        if (currentIp.isEmpty() || currentIp.endsWith(".255") || currentIp == "255.255.255.255") {
+            if (savedProfiles.isNotEmpty()) {
+                applyProfile(savedProfiles.first())
+            } else if (localDevices.isNotEmpty() && currentConnType == ConnectionType.LOCAL_WIFI) {
+                val firstDev = localDevices.first()
+                val prof = ConnectionProfileManager.createOrUpdateFromDiscoveredDevice(
+                    this,
+                    firstDev,
+                    ConnectionType.LOCAL_WIFI
+                )
+                applyProfile(prof)
+            }
+        }
+    }
+
+    private fun applyProfile(profile: ConnectionProfile) {
+        ConnectionProfileManager.setActiveProfile(this, profile)
+        etTargetIp.setText(profile.targetIp)
+        etPort.setText(profile.port.toString())
+        currentConnType = profile.connectionType
+        if (profile.connectionType == ConnectionType.WIFI_DIRECT) {
+            toggleConnType.check(R.id.btn_conn_p2p)
+        } else {
+            toggleConnType.check(R.id.btn_conn_wifi)
+        }
+        updateSelectedDeviceUi(profile)
+
+        if (profile.preferredStreamingProfile.isNotEmpty()) {
+            val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+            prefs.edit().putString(AudioConfig.PREF_KEY_PROFILE, profile.preferredStreamingProfile).apply()
+        }
+    }
+
+    private fun updateSelectedDeviceUi(profile: ConnectionProfile?) {
+        if (profile != null) {
+            tvSelectedDeviceName.text = profile.name
+            val typeDesc = when (profile.connectionType) {
+                ConnectionType.WIFI_DIRECT -> "Direct Link (P2P)"
+                ConnectionType.MULTI_UNICAST -> "Multi-Unicast"
+                else -> "Local Wi-Fi"
+            }
+            tvSelectedDeviceType.text = "$typeDesc - ${profile.targetIp}"
+            val capsDesc = if (profile.capabilitiesMask != 0) {
+                "Hardware: Up to ${AudioCapabilities.getMaxSampleRate(profile.capabilitiesMask) / 1000}kHz, 24-bit"
+            } else {
+                "Hardware: Standard (up to 48kHz, 16-bit)"
+            }
+            tvSelectedDeviceCaps.text = capsDesc
+
+            val isSaved = ConnectionProfileManager.findMatchingProfile(this, profile.targetIp) != null
+            btnSaveProfile.visibility = if (isSaved) View.GONE else View.VISIBLE
+        } else {
+            val currentIp = etTargetIp.text?.toString()?.trim().orEmpty()
+            if (currentIp.isNotEmpty() && !currentIp.endsWith(".255") && currentIp != "255.255.255.255") {
+                tvSelectedDeviceName.text = "Custom Target"
+                tvSelectedDeviceType.text = "Target IP: $currentIp"
+                tvSelectedDeviceCaps.text = "Hardware: Unspecified"
+                btnSaveProfile.visibility = View.VISIBLE
+            } else {
+                tvSelectedDeviceName.text = "Audio Receiver"
+                tvSelectedDeviceType.text = "No device selected"
+                tvSelectedDeviceCaps.text = "Tap a device below or scan"
+                btnSaveProfile.visibility = View.GONE
+            }
+        }
+    }
+
+    private fun showSaveProfileDialog() {
+        val currentIp = etTargetIp.text?.toString()?.trim().orEmpty()
+        val currentPort = etPort.text?.toString()?.toIntOrNull() ?: AudioConfig.DEFAULT_PORT
+        if (currentIp.isEmpty()) {
+            Toast.makeText(this, "Enter or select a target IP first", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val input = EditText(this).apply {
+            hint = "Profile Name (e.g. Living Room Receiver)"
+            val defaultName = ConnectionProfileManager.activeProfileFlow.value?.name
+                ?: if (currentConnType == ConnectionType.WIFI_DIRECT) "Direct Receiver" else "Receiver (${currentIp.takeLast(4)})"
+            setText(defaultName)
+            setSingleLine()
+        }
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(50, 20, 50, 10)
+            addView(input)
+        }
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Save Connection Profile")
+            .setView(container)
+            .setPositiveButton("Save") { _, _ ->
+                val name = input.text.toString().trim().ifEmpty { "Receiver $currentIp" }
+                val profile = ConnectionProfile(
+                    id = UUID.randomUUID().toString(),
+                    name = name,
+                    targetIp = currentIp,
+                    port = currentPort,
+                    connectionType = currentConnType,
+                    capabilitiesMask = DiscoveryManager.lastDiscoveredReceiverCapabilities
+                )
+                ConnectionProfileManager.saveProfile(this, profile)
+                applyProfile(profile)
+                Toast.makeText(this, "Saved profile '$name'", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun refreshLocalIp() {
@@ -394,7 +731,12 @@ class MainActivity : AppCompatActivity() {
             if (etTargetIp.text.isNullOrEmpty() ||
                 etTargetIp.text.toString() == "192.168.1.255" ||
                 etTargetIp.text.toString() == "192.168.43.255") {
-                etTargetIp.setText(NetworkUtils.getSuggestedBroadcastIp())
+                val activeProf = ConnectionProfileManager.activeProfileFlow.value
+                if (activeProf != null) {
+                    etTargetIp.setText(activeProf.targetIp)
+                } else {
+                    etTargetIp.setText(NetworkUtils.getSuggestedBroadcastIp())
+                }
             }
         } else {
             detectedLocalIp = null
@@ -664,9 +1006,12 @@ class MainActivity : AppCompatActivity() {
                 btnModeReceiver.iconTint = ColorStateList.valueOf(colorTextSecondary)
 
                 tvModeGuide.text = "Capture & stream system audio to a receiver device"
-                tilTargetIp.visibility = View.VISIBLE
+                layoutConnType.visibility = View.VISIBLE
+                layoutActiveDevice.visibility = View.VISIBLE
                 layoutDiscovery.visibility = View.VISIBLE
+                layoutReceiverP2p.visibility = View.GONE
                 layoutVolumeControl.visibility = View.VISIBLE
+                layoutAdvancedHeader.visibility = View.VISIBLE
                 etTargetIp.isEnabled = !isSenderActive && !isStarting && !isStopping
                 etPort.isEnabled = !isSenderActive && !isStarting && !isStopping
 
@@ -707,9 +1052,12 @@ class MainActivity : AppCompatActivity() {
                 btnModeTransmitter.iconTint = ColorStateList.valueOf(colorTextSecondary)
 
                 tvModeGuide.text = "Play raw audio stream received from transmitter"
-                tilTargetIp.visibility = View.GONE
+                layoutConnType.visibility = View.GONE
+                layoutActiveDevice.visibility = View.GONE
                 layoutDiscovery.visibility = View.GONE
+                layoutReceiverP2p.visibility = View.VISIBLE
                 layoutVolumeControl.visibility = View.GONE
+                layoutAdvancedHeader.visibility = View.VISIBLE
                 etPort.isEnabled = !isSinkActive && !isStarting && !isStopping
 
                 when {

@@ -152,56 +152,148 @@
                             android:textColor="@color/text_secondary"
                             android:layout_marginBottom="12dp" />
 
-                        <!-- Target IP Input (Transmitter Only) -->
-                        <com.google.android.material.textfield.TextInputLayout
-                            android:id="@+id/til_target_ip"
+                        <!-- Connection Type Selector (Transmitter Only) -->
+                        <LinearLayout
+                            android:id="@+id/layout_conn_type"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginBottom="10dp"
-                            android:hint="@string/target_ip_hint"
-                            android:textColorHint="@color/text_hint"
-                            app:hintTextColor="@color/primary"
-                            app:boxBackgroundColor="@color/input_bg"
-                            app:boxStrokeColor="@color/primary"
-                            app:boxCornerRadiusBottomEnd="8dp"
-                            app:boxCornerRadiusBottomStart="8dp"
-                            app:boxCornerRadiusTopEnd="8dp"
-                            app:boxCornerRadiusTopStart="8dp"
-                            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+                            android:orientation="vertical"
+                            android:layout_marginBottom="12dp">
 
-                            <com.google.android.material.textfield.TextInputEditText
-                                android:id="@+id/et_target_ip"
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="CONNECTION TYPE"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_hint"
+                                android:letterSpacing="0.05"
+                                android:layout_marginBottom="6dp" />
+
+                            <com.google.android.material.button.MaterialButtonToggleGroup
+                                android:id="@+id/toggle_conn_type"
+                                android:layout_width="match_parent"
+                                android:layout_height="@dimen/toggle_height"
+                                app:singleSelection="true"
+                                app:selectionRequired="true"
+                                app:checkedButton="@+id/btn_conn_wifi">
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/btn_conn_wifi"
+                                    style="?attr/materialButtonOutlinedStyle"
+                                    android:layout_width="0dp"
+                                    android:layout_height="match_parent"
+                                    android:layout_weight="1"
+                                    android:text="Local Wi-Fi"
+                                    android:textSize="11sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_primary"
+                                    app:strokeColor="@color/card_stroke"
+                                    app:cornerRadius="8dp" />
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/btn_conn_p2p"
+                                    style="?attr/materialButtonOutlinedStyle"
+                                    android:layout_width="0dp"
+                                    android:layout_height="match_parent"
+                                    android:layout_weight="1"
+                                    android:text="Direct Link (P2P)"
+                                    android:textSize="11sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_primary"
+                                    app:strokeColor="@color/card_stroke"
+                                    app:cornerRadius="8dp" />
+                            </com.google.android.material.button.MaterialButtonToggleGroup>
+                        </LinearLayout>
+
+                        <!-- Active Target Device Card -->
+                        <LinearLayout
+                            android:id="@+id/layout_active_device"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:background="@color/input_bg"
+                            android:padding="12dp"
+                            android:layout_marginBottom="12dp">
+
+                            <LinearLayout
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:inputType="textUri"
-                                android:textSize="14sp"
-                                android:textColor="@color/text_primary"
-                                android:textColorHint="@color/text_hint"
-                                android:text="192.168.1.255" />
-                        </com.google.android.material.textfield.TextInputLayout>
+                                android:orientation="horizontal"
+                                android:gravity="center_vertical">
 
-                        <!-- Discovered Receivers Layout -->
+                                <LinearLayout
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:orientation="vertical">
+
+                                    <TextView
+                                        android:id="@+id/tv_selected_device_name"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:text="Audio Receiver"
+                                        android:textSize="15sp"
+                                        android:textStyle="bold"
+                                        android:textColor="@color/text_primary" />
+
+                                    <TextView
+                                        android:id="@+id/tv_selected_device_type"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:text="Ready (192.168.1.255)"
+                                        android:textSize="12sp"
+                                        android:textColor="@color/primary"
+                                        android:layout_marginTop="2dp" />
+                                </LinearLayout>
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/btn_save_profile"
+                                    style="@style/Widget.MaterialComponents.Button.TextButton"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:minHeight="0dp"
+                                    android:minWidth="0dp"
+                                    android:paddingLeft="8dp"
+                                    android:paddingRight="8dp"
+                                    android:paddingTop="4dp"
+                                    android:paddingBottom="4dp"
+                                    android:textSize="11sp"
+                                    android:textColor="@color/text_secondary"
+                                    android:text="Save Profile" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:id="@+id/tv_selected_device_caps"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Hardware: Up to 192kHz, 24-bit"
+                                android:textSize="11sp"
+                                android:textColor="@color/text_hint"
+                                android:layout_marginTop="4dp" />
+                        </LinearLayout>
+
+                        <!-- Discovered Receivers & Profiles -->
                         <LinearLayout
                             android:id="@+id/layout_discovery"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:orientation="vertical"
-                            android:layout_marginBottom="10dp"
-                            android:visibility="visible">
+                            android:layout_marginBottom="12dp">
 
                             <LinearLayout
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
                                 android:orientation="horizontal"
                                 android:gravity="center_vertical"
-                                android:layout_marginBottom="4dp">
+                                android:layout_marginBottom="6dp">
 
                                 <TextView
                                     android:id="@+id/tv_discovery_title"
                                     android:layout_width="0dp"
                                     android:layout_height="wrap_content"
                                     android:layout_weight="1"
-                                    android:text="Discovered Receivers"
+                                    android:text="Available Devices &amp; Profiles"
                                     android:textSize="11sp"
                                     android:textStyle="bold"
                                     android:textColor="@color/text_secondary" />
@@ -231,38 +323,140 @@
                                     android:id="@+id/chip_group_receivers"
                                     android:layout_width="wrap_content"
                                     android:layout_height="wrap_content"
-                                    app:singleSelection="false"
+                                    app:singleSelection="true"
                                     app:singleLine="true" />
                             </HorizontalScrollView>
                         </LinearLayout>
 
-                        <!-- Port Input -->
-                        <com.google.android.material.textfield.TextInputLayout
-                            android:id="@+id/til_port"
+                        <!-- Receiver Mode: Wi-Fi Direct Autonomous Group Option -->
+                        <LinearLayout
+                            android:id="@+id/layout_receiver_p2p"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:background="@color/input_bg"
+                            android:padding="12dp"
                             android:layout_marginBottom="12dp"
-                            android:hint="@string/port_hint"
-                            android:textColorHint="@color/text_hint"
-                            app:hintTextColor="@color/primary"
-                            app:boxBackgroundColor="@color/input_bg"
-                            app:boxStrokeColor="@color/primary"
-                            app:boxCornerRadiusBottomEnd="8dp"
-                            app:boxCornerRadiusBottomStart="8dp"
-                            app:boxCornerRadiusTopEnd="8dp"
-                            app:boxCornerRadiusTopStart="8dp"
-                            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+                            android:visibility="gone">
 
-                            <com.google.android.material.textfield.TextInputEditText
-                                android:id="@+id/et_port"
+                            <LinearLayout
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:inputType="number"
-                                android:textSize="14sp"
-                                android:textColor="@color/text_primary"
+                                android:orientation="horizontal"
+                                android:gravity="center_vertical">
+
+                                <TextView
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="Autonomous Wi-Fi Direct"
+                                    android:textSize="14sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_primary" />
+
+                                <com.google.android.material.switchmaterial.SwitchMaterial
+                                    android:id="@+id/switch_receiver_p2p"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:id="@+id/tv_receiver_p2p_status"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:text="Direct P2P Link without router or mobile hotspot (Receiver IP: 192.168.49.1)"
+                                android:textSize="12sp"
+                                android:textColor="@color/text_secondary"
+                                android:layout_marginTop="4dp" />
+                        </LinearLayout>
+
+                        <!-- Advanced / Manual Settings Header (Collapsible) -->
+                        <LinearLayout
+                            android:id="@+id/layout_advanced_header"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:paddingTop="6dp"
+                            android:paddingBottom="6dp"
+                            android:layout_marginBottom="6dp">
+
+                            <TextView
+                                android:id="@+id/tv_advanced_toggle"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="Advanced Settings (Manual IP &amp; Port) +"
+                                android:textSize="12sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_hint" />
+                        </LinearLayout>
+
+                        <!-- Advanced / Manual Settings Content (Hidden by Default) -->
+                        <LinearLayout
+                            android:id="@+id/layout_advanced_content"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:visibility="gone"
+                            android:layout_marginBottom="8dp">
+
+                            <com.google.android.material.textfield.TextInputLayout
+                                android:id="@+id/til_target_ip"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginBottom="8dp"
+                                android:hint="@string/target_ip_hint"
                                 android:textColorHint="@color/text_hint"
-                                android:text="50005" />
-                        </com.google.android.material.textfield.TextInputLayout>
+                                app:hintTextColor="@color/primary"
+                                app:boxBackgroundColor="@color/input_bg"
+                                app:boxStrokeColor="@color/primary"
+                                app:boxCornerRadiusBottomEnd="8dp"
+                                app:boxCornerRadiusBottomStart="8dp"
+                                app:boxCornerRadiusTopEnd="8dp"
+                                app:boxCornerRadiusTopStart="8dp"
+                                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+
+                                <com.google.android.material.textfield.TextInputEditText
+                                    android:id="@+id/et_target_ip"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:inputType="textUri"
+                                    android:textSize="14sp"
+                                    android:textColor="@color/text_primary"
+                                    android:textColorHint="@color/text_hint"
+                                    android:text="192.168.1.255" />
+                            </com.google.android.material.textfield.TextInputLayout>
+
+                            <com.google.android.material.textfield.TextInputLayout
+                                android:id="@+id/til_port"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginBottom="4dp"
+                                android:hint="@string/port_hint"
+                                android:textColorHint="@color/text_hint"
+                                app:hintTextColor="@color/primary"
+                                app:boxBackgroundColor="@color/input_bg"
+                                app:boxStrokeColor="@color/primary"
+                                app:boxCornerRadiusBottomEnd="8dp"
+                                app:boxCornerRadiusBottomStart="8dp"
+                                app:boxCornerRadiusTopEnd="8dp"
+                                app:boxCornerRadiusTopStart="8dp"
+                                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+
+                                <com.google.android.material.textfield.TextInputEditText
+                                    android:id="@+id/et_port"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:inputType="number"
+                                    android:textSize="14sp"
+                                    android:textColor="@color/text_primary"
+                                    android:textColorHint="@color/text_hint"
+                                    android:text="50005" />
+                            </com.google.android.material.textfield.TextInputLayout>
+                        </LinearLayout>
 
                         <!-- Remote Volume Section (Transmitter Only) -->
                         <LinearLayout

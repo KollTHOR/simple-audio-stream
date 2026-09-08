@@ -166,4 +166,11 @@ object AudioCapabilities {
         if ((mask and CAP_FLAG_192000) != 0) list.add("192.0kHz")
         return if (list.isEmpty()) "None" else list.joinToString(", ")
     }
+
+    fun getMaxSampleRate(mask: Int): Int {
+        for (rate in ORDERED_RATES) {
+            if ((mask and rateToCapFlag(rate)) != 0) return rate
+        }
+        return 48000
+    }
 }
