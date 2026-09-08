@@ -448,8 +448,8 @@ class MainActivity : AppCompatActivity() {
         } else {
             when (savedProfile) {
                 AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> "Low Latency (Opus/AAC)"
-                AudioConfig.PROFILE_BALANCED -> "Balanced (100ms Studio)"
-                else -> "Music Mode (500ms Studio)"
+                AudioConfig.PROFILE_AUTO -> "Auto Adaptive (35-400ms)"
+                else -> "Uncapped Music Mode"
             }
         }
         tvPipelineProfile.text = activeProfileName

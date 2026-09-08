@@ -5,23 +5,22 @@ import android.media.AudioFormat
 object AudioConfig {
     const val SAMPLE_RATE_44100 = 44100
     const val SAMPLE_RATE_48000 = 48000
+    const val SAMPLE_RATE_88200 = 88200
+    const val SAMPLE_RATE_96000 = 96000
+    const val SAMPLE_RATE_176400 = 176400
+    const val SAMPLE_RATE_192000 = 192000
     const val DEFAULT_SAMPLE_RATE = SAMPLE_RATE_48000
     const val SAMPLE_RATE = SAMPLE_RATE_48000
     const val PREF_KEY_SAMPLE_RATE = "pref_sample_rate"
     const val SAMPLE_RATE_AUTO = "AUTO"
     const val SAMPLE_RATE_44K = "44100"
     const val SAMPLE_RATE_48K = "48000"
+    const val SAMPLE_RATE_96K = "96000"
+    const val SAMPLE_RATE_192K = "192000"
 
     const val CHANNELS = 2 // Stereo
     const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
     
-    // 5ms chunk:
-    // 44.1 kHz: 220 frames (~4.99ms)
-    //   16-bit: 220 frames * 2 channels * 2 bytes = 880 bytes
-    //   24-bit: 220 frames * 2 channels * 3 bytes = 1,320 bytes
-    // 48.0 kHz: 240 frames (5.00ms)
-    //   16-bit: 240 frames * 2 channels * 2 bytes = 960 bytes
-    //   24-bit: 240 frames * 2 channels * 3 bytes = 1,440 bytes
     const val FRAME_SIZE_MS = 5
     const val FRAMES_PER_PACKET_44K = 220
     const val PACKET_SIZE_16BIT_44K = FRAMES_PER_PACKET_44K * CHANNELS * 2 // 880
@@ -31,25 +30,64 @@ object AudioConfig {
     const val PACKET_SIZE_24BIT_48K = FRAMES_PER_PACKET_48K * CHANNELS * 3 // 1440
     const val PACKET_SIZE_16BIT = PACKET_SIZE_16BIT_48K
     const val PACKET_SIZE_24BIT = PACKET_SIZE_24BIT_48K
-    const val MAX_PACKET_SIZE = PACKET_SIZE_24BIT_48K
+    const val MAX_PACKET_SIZE = 8192 // Accommodates up to 192 kHz 24-bit 5ms chunk (5,760 bytes)
     const val PACKET_SIZE = PACKET_SIZE_16BIT
+
+    fun getFramesPerPacket(sampleRate: Int, frameDurationMs: Int = FRAME_SIZE_MS): Int {
+        return (sampleRate * frameDurationMs) / 1000
+    }
+
+    fun getPacketPayloadSize(sampleRate: Int, is24Bit: Boolean, frameDurationMs: Int = FRAME_SIZE_MS): Int {
+        val frames = getFramesPerPacket(sampleRate, frameDurationMs)
+        val bytesPerSample = if (is24Bit) 3 else 2
+        return frames * CHANNELS * bytesPerSample
+    }
 
     // Packet Header
     const val HEADER_SIZE = 8
     const val MAGIC_HEADER: Short = 0x5341 // "SA" (Simple Audio)
-    // Packet Header Flags
+
+    // Packet Header Flag Byte 5:
+    // Bits 0-2: Sample Rate Signaling (44.1, 48, 88.2, 96, 176.4, 192 kHz)
+    const val SAMPLE_RATE_FLAG_44100: Byte = 0x00
+    const val SAMPLE_RATE_FLAG_48000: Byte = 0x01
+    const val SAMPLE_RATE_FLAG_88200: Byte = 0x02
+    const val SAMPLE_RATE_FLAG_96000: Byte = 0x03
+    const val SAMPLE_RATE_FLAG_176400: Byte = 0x04
+    const val SAMPLE_RATE_FLAG_192000: Byte = 0x05
+    const val SAMPLE_RATE_MASK: Byte = 0x07
+
+    fun sampleRateToFlagBits(sampleRate: Int): Byte = when (sampleRate) {
+        SAMPLE_RATE_44100 -> SAMPLE_RATE_FLAG_44100
+        SAMPLE_RATE_48000 -> SAMPLE_RATE_FLAG_48000
+        SAMPLE_RATE_88200 -> SAMPLE_RATE_FLAG_88200
+        SAMPLE_RATE_96000 -> SAMPLE_RATE_FLAG_96000
+        SAMPLE_RATE_176400 -> SAMPLE_RATE_FLAG_176400
+        SAMPLE_RATE_192000 -> SAMPLE_RATE_FLAG_192000
+        else -> SAMPLE_RATE_FLAG_48000
+    }
+
+    fun flagBitsToSampleRate(flagByte: Byte): Int = when (flagByte.toInt() and SAMPLE_RATE_MASK.toInt()) {
+        SAMPLE_RATE_FLAG_44100.toInt() -> SAMPLE_RATE_44100
+        SAMPLE_RATE_FLAG_48000.toInt() -> SAMPLE_RATE_48000
+        SAMPLE_RATE_FLAG_88200.toInt() -> SAMPLE_RATE_88200
+        SAMPLE_RATE_FLAG_96000.toInt() -> SAMPLE_RATE_96000
+        SAMPLE_RATE_FLAG_176400.toInt() -> SAMPLE_RATE_176400
+        SAMPLE_RATE_FLAG_192000.toInt() -> SAMPLE_RATE_192000
+        else -> SAMPLE_RATE_48000
+    }
+
+    // Packet Header Flags (Bits 3-7)
     const val FLAG_NORMAL: Byte = 0x00
-    const val FLAG_CODEC_AAC: Byte = 0x01 // 1 = AAC encoded payload
-    const val FLAG_CODEC_OPUS: Byte = 0x02 // 2 = Opus encoded payload
     const val FLAG_CONTROL_ONLY: Byte = 0x02 // In control packets (payloadLen == 0)
-    const val FLAG_DISCONNECT: Byte = 0x04
-    const val FLAG_PROFILE_BALANCED: Byte = 0x04 // In audio packets (payloadLen > 0); distinguishes Balanced from Low Latency / Music
-    const val FLAG_PROFILE_LOW_LATENCY: Byte = 0x08
+    const val FLAG_DISCONNECT: Byte = 0x04   // In control packets (payloadLen == 0)
+    const val FLAG_PROFILE_LOW_LATENCY: Byte = 0x08 // Compressed Opus / AAC stream
     const val FLAG_PROFILE_MUSIC: Byte = 0x00
     const val FLAG_24BIT: Byte = 0x10
     const val FLAG_SILENCE: Byte = 0x20
     const val FLAG_FEC_PARITY: Byte = 0x40
-    const val FLAG_SAMPLE_RATE_44100: Byte = 0x80.toByte()
+    const val FLAG_CODEC_AAC: Byte = 0x80.toByte() // When FLAG_PROFILE_LOW_LATENCY: 1 = AAC, 0 = Opus
+    const val FLAG_CODEC_OPUS: Byte = 0x00
     const val FLAG_DISCOVERY_PROBE: Byte = 0x40
     const val FLAG_DISCOVERY_ANNOUNCE: Byte = 0x80.toByte()
 
@@ -81,25 +119,25 @@ object AudioConfig {
     const val DISCOVERY_PORT = 50006
 
     // Streaming Profiles
+    const val PROFILE_AUTO = "AUTO"
     const val PROFILE_MUSIC = "MUSIC"
-    const val PROFILE_BALANCED = "BALANCED"
     const val PROFILE_VIDEO = "VIDEO"
     const val PROFILE_LOW_LATENCY = "LOW_LATENCY" // Alias for backward compatibility
     const val PREF_KEY_PROFILE = "streaming_profile"
 
-    // Music Mode: Deep cushion for lossless, uninterrupted studio playback (24-bit 2,304 kbps)
+    // Music Mode: Uncapped studio master PCM playback (up to 192 kHz 24-bit)
     const val MUSIC_JITTER_BUFFER_SLOTS = 512 // ~2,560ms (2.56 seconds headroom)
-    const val MUSIC_PRE_ROLL_PACKETS = 100 // 500ms pre-roll cushion
+    const val MUSIC_PRE_ROLL_PACKETS = 40 // 200ms pre-roll cushion
     const val MUSIC_MAX_UNDERRUN_FRAMES = 100 // 500ms concealment before muting
     const val MUSIC_WAIT_TIMEOUT_MS = 60L // 60ms wait absorbs Wi-Fi jitter completely
-    const val MUSIC_TARGET_WATERMARK_SLOTS = 100 // 500ms target watermark for clock drift lock
+    const val MUSIC_TARGET_WATERMARK_SLOTS = 40 // 200ms target watermark
 
-    // Balanced Mode: Responsive lossless studio PCM (24-bit 2,304 kbps) with 100ms cushion
-    const val BALANCED_JITTER_BUFFER_SLOTS = 100 // ~500ms headroom
-    const val BALANCED_PRE_ROLL_PACKETS = 20 // 100ms pre-roll cushion
-    const val BALANCED_MAX_UNDERRUN_FRAMES = 20 // 100ms concealment before muting
-    const val BALANCED_WAIT_TIMEOUT_MS = 30L // 30ms wait
-    const val BALANCED_TARGET_WATERMARK_SLOTS = 20 // 100ms target watermark
+    // Auto Mode: Dynamic adaptive jitter buffer (RFC 3550 floating watermark 35ms - 400ms)
+    const val AUTO_JITTER_BUFFER_SLOTS = 256 // ~1,280ms headroom
+    const val AUTO_PRE_ROLL_PACKETS = 10 // 50ms pre-roll cushion
+    const val AUTO_MAX_UNDERRUN_FRAMES = 40 // 200ms concealment
+    const val AUTO_WAIT_TIMEOUT_MS = 40L
+    const val AUTO_TARGET_WATERMARK_SLOTS = 10 // 50ms initial watermark
 
     // Low Latency Mode: High-efficiency Opus / AAC compressed audio (~40ms cushion, 80-85% less airtime)
     const val LOW_LATENCY_JITTER_BUFFER_SLOTS = 32 // ~640ms max headroom
@@ -115,39 +153,39 @@ object AudioConfig {
     const val LOW_LATENCY_AAC_WAIT_TIMEOUT_MS = 50L // 50ms wait safely absorbs Wi-Fi jitter
     const val LOW_LATENCY_AAC_TARGET_WATERMARK_SLOTS = 3 // ~64ms watermark
 
-    // Defaults (Music Mode)
-    const val JITTER_BUFFER_SLOTS = MUSIC_JITTER_BUFFER_SLOTS
-    const val PRE_ROLL_PACKETS = MUSIC_PRE_ROLL_PACKETS
-    const val MAX_UNDERRUN_CONCEAL_FRAMES = MUSIC_MAX_UNDERRUN_FRAMES
-    const val RECEIVER_WAIT_TIMEOUT_MS = MUSIC_WAIT_TIMEOUT_MS
+    // Defaults (Auto Mode)
+    const val JITTER_BUFFER_SLOTS = AUTO_JITTER_BUFFER_SLOTS
+    const val PRE_ROLL_PACKETS = AUTO_PRE_ROLL_PACKETS
+    const val MAX_UNDERRUN_CONCEAL_FRAMES = AUTO_MAX_UNDERRUN_FRAMES
+    const val RECEIVER_WAIT_TIMEOUT_MS = AUTO_WAIT_TIMEOUT_MS
 
     fun getJitterBufferSlots(profile: String): Int = when (profile) {
         PROFILE_VIDEO, PROFILE_LOW_LATENCY -> LOW_LATENCY_JITTER_BUFFER_SLOTS
-        PROFILE_BALANCED -> BALANCED_JITTER_BUFFER_SLOTS
+        PROFILE_AUTO -> AUTO_JITTER_BUFFER_SLOTS
         else -> MUSIC_JITTER_BUFFER_SLOTS
     }
 
     fun getPreRollPackets(profile: String): Int = when (profile) {
         PROFILE_VIDEO, PROFILE_LOW_LATENCY -> LOW_LATENCY_PRE_ROLL_PACKETS
-        PROFILE_BALANCED -> BALANCED_PRE_ROLL_PACKETS
+        PROFILE_AUTO -> AUTO_PRE_ROLL_PACKETS
         else -> MUSIC_PRE_ROLL_PACKETS
     }
 
     fun getMaxUnderrunFrames(profile: String): Int = when (profile) {
         PROFILE_VIDEO, PROFILE_LOW_LATENCY -> LOW_LATENCY_MAX_UNDERRUN_FRAMES
-        PROFILE_BALANCED -> BALANCED_MAX_UNDERRUN_FRAMES
+        PROFILE_AUTO -> AUTO_MAX_UNDERRUN_FRAMES
         else -> MUSIC_MAX_UNDERRUN_FRAMES
     }
 
     fun getReceiverWaitTimeoutMs(profile: String): Long = when (profile) {
         PROFILE_VIDEO, PROFILE_LOW_LATENCY -> LOW_LATENCY_WAIT_TIMEOUT_MS
-        PROFILE_BALANCED -> BALANCED_WAIT_TIMEOUT_MS
+        PROFILE_AUTO -> AUTO_WAIT_TIMEOUT_MS
         else -> MUSIC_WAIT_TIMEOUT_MS
     }
 
     fun getTargetWatermarkSlots(profile: String): Int = when (profile) {
         PROFILE_VIDEO, PROFILE_LOW_LATENCY -> LOW_LATENCY_TARGET_WATERMARK_SLOTS
-        PROFILE_BALANCED -> BALANCED_TARGET_WATERMARK_SLOTS
+        PROFILE_AUTO -> AUTO_TARGET_WATERMARK_SLOTS
         else -> MUSIC_TARGET_WATERMARK_SLOTS
     }
 

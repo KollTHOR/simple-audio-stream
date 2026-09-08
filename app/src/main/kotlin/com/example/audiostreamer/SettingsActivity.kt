@@ -53,8 +53,8 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var pbDownload: ProgressBar
     private lateinit var btnCheckUpdate: MaterialButton
     private lateinit var toggleProfileGroup: MaterialButtonToggleGroup
+    private lateinit var btnProfileAuto: MaterialButton
     private lateinit var btnProfileVideo: MaterialButton
-    private lateinit var btnProfileBalanced: MaterialButton
     private lateinit var btnProfileMusic: MaterialButton
     private lateinit var tvProfileDescription: TextView
     private lateinit var toggleRateGroup: MaterialButtonToggleGroup
@@ -109,8 +109,8 @@ class SettingsActivity : AppCompatActivity() {
         pbDownload = findViewById(R.id.pb_download)
         btnCheckUpdate = findViewById(R.id.btn_check_update)
         toggleProfileGroup = findViewById(R.id.toggle_profile_group)
+        btnProfileAuto = findViewById(R.id.btn_profile_auto)
         btnProfileVideo = findViewById(R.id.btn_profile_video)
-        btnProfileBalanced = findViewById(R.id.btn_profile_balanced)
         btnProfileMusic = findViewById(R.id.btn_profile_music)
         tvProfileDescription = findViewById(R.id.tv_profile_description)
         toggleRateGroup = findViewById(R.id.toggle_rate_group)
@@ -120,11 +120,11 @@ class SettingsActivity : AppCompatActivity() {
         tvRateDescription = findViewById(R.id.tv_rate_description)
 
         val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
-        val currentProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
+        val currentProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_AUTO) ?: AudioConfig.PROFILE_AUTO
         when (currentProfile) {
             AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> toggleProfileGroup.check(R.id.btn_profile_video)
-            AudioConfig.PROFILE_BALANCED -> toggleProfileGroup.check(R.id.btn_profile_balanced)
-            else -> toggleProfileGroup.check(R.id.btn_profile_music)
+            AudioConfig.PROFILE_MUSIC -> toggleProfileGroup.check(R.id.btn_profile_music)
+            else -> toggleProfileGroup.check(R.id.btn_profile_auto)
         }
         updateProfileUi(currentProfile)
 
@@ -132,8 +132,8 @@ class SettingsActivity : AppCompatActivity() {
             if (isChecked) {
                 val selected = when (checkedId) {
                     R.id.btn_profile_video -> AudioConfig.PROFILE_VIDEO
-                    R.id.btn_profile_balanced -> AudioConfig.PROFILE_BALANCED
-                    else -> AudioConfig.PROFILE_MUSIC
+                    R.id.btn_profile_music -> AudioConfig.PROFILE_MUSIC
+                    else -> AudioConfig.PROFILE_AUTO
                 }
                 prefs.edit().putString(AudioConfig.PREF_KEY_PROFILE, selected).apply()
                 updateProfileUi(selected)
@@ -236,22 +236,22 @@ class SettingsActivity : AppCompatActivity() {
         val colorTextSecondary = ContextCompat.getColor(this, R.color.text_secondary)
 
         val isVideo = (profile == AudioConfig.PROFILE_VIDEO || profile == AudioConfig.PROFILE_LOW_LATENCY)
-        val isBalanced = (profile == AudioConfig.PROFILE_BALANCED)
-        val isMusic = (!isVideo && !isBalanced)
+        val isMusic = (profile == AudioConfig.PROFILE_MUSIC)
+        val isAuto = (!isVideo && !isMusic)
+
+        btnProfileAuto.backgroundTintList = ColorStateList.valueOf(if (isAuto) colorPrimary else colorCard)
+        btnProfileAuto.setTextColor(if (isAuto) Color.WHITE else colorTextSecondary)
 
         btnProfileVideo.backgroundTintList = ColorStateList.valueOf(if (isVideo) colorPrimary else colorCard)
         btnProfileVideo.setTextColor(if (isVideo) Color.WHITE else colorTextSecondary)
-
-        btnProfileBalanced.backgroundTintList = ColorStateList.valueOf(if (isBalanced) colorPrimary else colorCard)
-        btnProfileBalanced.setTextColor(if (isBalanced) Color.WHITE else colorTextSecondary)
 
         btnProfileMusic.backgroundTintList = ColorStateList.valueOf(if (isMusic) colorPrimary else colorCard)
         btnProfileMusic.setTextColor(if (isMusic) Color.WHITE else colorTextSecondary)
 
         tvProfileDescription.text = when {
             isVideo -> "Low Latency (Opus/AAC): Pure compressed audio (Opus 320 kbps VBR or AAC 192 kbps) with 40ms cushion. Instantaneous response, 80-85% less Wi-Fi airtime, and zero FastMixer filtering for video lip-sync and gaming across rooms."
-            isBalanced -> "Balanced Mode (100ms): Lossless Studio PCM with responsive 100ms cushion. Fast reaction time with solid Wi-Fi jitter resilience."
-            else -> "Music Mode (500ms): Lossless 24-bit Studio Master PCM with deep 500ms buffer and 2.56s headroom. Maximum jitter protection for uninterrupted hi-fi listening."
+            isMusic -> "Uncapped Music Mode: Lossless 24-bit Studio Master PCM (up to 192 kHz) with deep 500ms buffer and 2.56s headroom. Maximum jitter protection for uninterrupted hi-fi listening."
+            else -> "Auto Adaptive Mode: Dynamically floats jitter watermark between 35ms and 400ms using RFC 3550 statistical inter-arrival jitter estimation. Responds instantaneously to radio interference."
         }
     }
 

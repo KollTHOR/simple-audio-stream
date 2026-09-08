@@ -1,5 +1,6 @@
 package com.example.audiostreamer
 
+import android.os.SystemClock
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -32,6 +33,13 @@ class JitterBuffer(
     private var isTransmitterSilent = false
     private var wasConcealed = false
     private var isCompressedStream = false
+
+    // RFC 3550 Inter-Arrival Jitter Estimation & Floating Target Watermark
+    private var lastArrivalNanos: Long = 0L
+    private var lastPacketSeq: Int = -1
+    private var estimatedJitterMs: Double = 0.0
+    private var targetWatermarkMs: Float = if (initialProfile == AudioConfig.PROFILE_AUTO) 50.0f else 40.0f
+    private var cleanPlaybackFramesCount: Int = 0
 
     // History buffer for robust FEC recovery even if preceding packets were already read
     private val historySize = 32
@@ -87,13 +95,16 @@ class JitterBuffer(
                 maxUnderrunFrames = AudioConfig.LOW_LATENCY_MAX_UNDERRUN_FRAMES
                 waitTimeoutMs = AudioConfig.LOW_LATENCY_WAIT_TIMEOUT_MS
                 targetWatermarkSlots = AudioConfig.LOW_LATENCY_TARGET_WATERMARK_SLOTS
+                targetWatermarkMs = 40.0f
             } else {
                 slotCount = AudioConfig.getJitterBufferSlots(profile)
                 preRollThreshold = AudioConfig.getPreRollPackets(profile)
                 maxUnderrunFrames = AudioConfig.getMaxUnderrunFrames(profile)
                 waitTimeoutMs = AudioConfig.getReceiverWaitTimeoutMs(profile)
                 targetWatermarkSlots = AudioConfig.getTargetWatermarkSlots(profile)
+                targetWatermarkMs = if (profile == AudioConfig.PROFILE_AUTO) 50.0f else 200.0f
             }
+            cleanPlaybackFramesCount = 0
             smoothBufferFill = preRollThreshold.toFloat()
 
             while (availableCount > slotCount) {
@@ -167,6 +178,33 @@ class JitterBuffer(
             historySeq[hSlot] = sequence
 
             smoothBufferFill = smoothBufferFill * 0.998f + availableCount * 0.002f
+
+            // RFC 3550 Inter-Arrival Jitter Estimation
+            val nowNanos = SystemClock.elapsedRealtimeNanos()
+            if (lastArrivalNanos > 0L && lastPacketSeq != -1) {
+                val deltaSeq = seqDiff(sequence, lastPacketSeq)
+                if (deltaSeq in 1..50) {
+                    val nominalDurationMs = if (isCompressedStream) 20.0 else 5.0
+                    val sendTimeDelta = deltaSeq * nominalDurationMs
+                    val arrivalDelta = (nowNanos - lastArrivalNanos) / 1_000_000.0
+                    val transitDiff = arrivalDelta - sendTimeDelta
+                    val absD = kotlin.math.abs(transitDiff)
+                    // RFC 3550: J = J + (|D| - J) / 16.0
+                    estimatedJitterMs += (absD - estimatedJitterMs) / 16.0
+
+                    // Dynamic floating watermark for Auto Mode (35ms - 400ms)
+                    if (currentProfile == AudioConfig.PROFILE_AUTO) {
+                        val dynamicTargetMs = (estimatedJitterMs * 3.5).toFloat().coerceIn(35.0f, 400.0f)
+                        if (dynamicTargetMs > targetWatermarkMs) {
+                            targetWatermarkMs = targetWatermarkMs * 0.9f + dynamicTargetMs * 0.1f
+                        }
+                        val nominalSlots = kotlin.math.ceil(targetWatermarkMs / nominalDurationMs.toFloat()).toInt().coerceIn(2, slotCount - 4)
+                        targetWatermarkSlots = nominalSlots
+                    }
+                }
+            }
+            lastArrivalNanos = nowNanos
+            lastPacketSeq = sequence
 
             // Smooth catch-up only on extreme sustained network backlog
             val isLowLat = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY || currentProfile == AudioConfig.PROFILE_VIDEO)
@@ -399,15 +437,28 @@ class JitterBuffer(
                     }
                 }
 
+                if (currentProfile == AudioConfig.PROFILE_AUTO) {
+                    cleanPlaybackFramesCount++
+                    if (cleanPlaybackFramesCount >= 100) {
+                        cleanPlaybackFramesCount = 0
+                        val baselineTarget = (estimatedJitterMs * 3.5).toFloat().coerceIn(35.0f, 400.0f)
+                        if (targetWatermarkMs > baselineTarget) {
+                            targetWatermarkMs = (targetWatermarkMs - 2.0f).coerceAtLeast(baselineTarget)
+                            val nominalDurationMs = if (isCompressedStream) 20.0f else 5.0f
+                            targetWatermarkSlots = kotlin.math.ceil(targetWatermarkMs / nominalDurationMs).toInt().coerceIn(2, slotCount - 4)
+                        }
+                    }
+                }
+
                 // Audio Clock Drift Management:
                 // Smooth zero-crossing micro-resampling (1 frame = 20-22 microseconds)
                 // Rate-limited to prevent bass modulation comb filtering while holding tight sync
                 packetsSinceDriftAdjust++
                 val driftDelta = smoothBufferFill - targetWatermarkSlots
                 val isLowLat = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY || currentProfile == AudioConfig.PROFILE_VIDEO)
-                val isBalanced = (currentProfile == AudioConfig.PROFILE_BALANCED)
-                val driftThreshold = if (isLowLat) 8f else if (isBalanced) 12f else 16f
-                val minInterval = if (isLowLat) 300 else if (isBalanced) 400 else 600
+                val isAuto = (currentProfile == AudioConfig.PROFILE_AUTO)
+                val driftThreshold = if (isLowLat) 8f else if (isAuto) 10f else 16f
+                val minInterval = if (isLowLat) 300 else if (isAuto) 350 else 600
                 if (packetsSinceDriftAdjust >= minInterval && len >= 12) {
                     if (driftDelta > driftThreshold) {
                         applyZeroCrossingFrameDrop(output, len)
@@ -421,7 +472,7 @@ class JitterBuffer(
                 }
 
                 // Cache last samples for smooth concealment if needed
-                val is24Sample = (len == AudioConfig.PACKET_SIZE_24BIT_44K || len == AudioConfig.PACKET_SIZE_24BIT_48K)
+                val is24Sample = (len % 6 == 0 && (len % 4 != 0 || len >= 1320))
                 if (is24Sample && len >= 6) {
                     val idxL = len - 6
                     val idxR = len - 3
@@ -440,6 +491,12 @@ class JitterBuffer(
                 // Still empty after waiting: increment underrun count and advance expectedReadSeq
                 expectedReadSeq = (expectedReadSeq + 1) and 0xFFFF
                 consecutiveUnderruns++
+                if (currentProfile == AudioConfig.PROFILE_AUTO) {
+                    targetWatermarkMs = (targetWatermarkMs + 30.0f).coerceAtMost(400.0f)
+                    val nominalDurationMs = if (isCompressedStream) 20.0f else 5.0f
+                    targetWatermarkSlots = kotlin.math.ceil(targetWatermarkMs / nominalDurationMs).toInt().coerceIn(2, slotCount - 4)
+                    cleanPlaybackFramesCount = 0
+                }
                 val len = minOf(output.size, lastPacketSize)
                 if (consecutiveUnderruns >= maxUnderrunFrames || isCompressedStream) {
                     // Sustained drop or compressed stream: enter buffering
@@ -620,4 +677,6 @@ class JitterBuffer(
 
     fun getSlotCount(): Int = slotCount
     fun getCurrentProfile(): String = currentProfile
+    fun getEstimatedJitterMs(): Double = estimatedJitterMs
+    fun getTargetWatermarkMs(): Float = targetWatermarkMs
 }

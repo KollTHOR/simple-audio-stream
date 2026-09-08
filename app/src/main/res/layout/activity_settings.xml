@@ -161,15 +161,14 @@
                         android:layout_marginBottom="10dp"
                         app:singleSelection="true"
                         app:selectionRequired="true"
-                        app:checkedButton="@+id/btn_profile_music">
-
+                        app:checkedButton="@+id/btn_profile_auto">
                         <com.google.android.material.button.MaterialButton
-                            android:id="@+id/btn_profile_video"
+                            android:id="@+id/btn_profile_auto"
                             style="?attr/materialButtonOutlinedStyle"
                             android:layout_width="0dp"
                             android:layout_height="match_parent"
                             android:layout_weight="1"
-                            android:text="Low Latency 20ms"
+                            android:text="Auto Adaptive"
                             android:textSize="11sp"
                             android:textStyle="bold"
                             android:textColor="@color/text_primary"
@@ -177,12 +176,12 @@
                             app:cornerRadius="8dp" />
 
                         <com.google.android.material.button.MaterialButton
-                            android:id="@+id/btn_profile_balanced"
+                            android:id="@+id/btn_profile_video"
                             style="?attr/materialButtonOutlinedStyle"
                             android:layout_width="0dp"
                             android:layout_height="match_parent"
                             android:layout_weight="1"
-                            android:text="Balanced 100ms"
+                            android:text="Low Latency (Opus)"
                             android:textSize="11sp"
                             android:textStyle="bold"
                             android:textColor="@color/text_primary"
@@ -195,7 +194,7 @@
                             android:layout_width="0dp"
                             android:layout_height="match_parent"
                             android:layout_weight="1"
-                            android:text="Music 500ms"
+                            android:text="Uncapped Music"
                             android:textSize="11sp"
                             android:textStyle="bold"
                             android:textColor="@color/text_primary"
