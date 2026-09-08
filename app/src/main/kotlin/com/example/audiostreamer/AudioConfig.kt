@@ -39,12 +39,13 @@ object AudioConfig {
     const val MAGIC_HEADER: Short = 0x5341 // "SA" (Simple Audio)
     // Packet Header Flags
     const val FLAG_NORMAL: Byte = 0x00
-    const val FLAG_CODEC_AAC: Byte = 0x01 // 1 = AAC encoded payload, 0 = Raw PCM payload
-    const val FLAG_CONTROL_ONLY: Byte = 0x02
+    const val FLAG_CODEC_AAC: Byte = 0x01 // 1 = AAC encoded payload
+    const val FLAG_CODEC_OPUS: Byte = 0x02 // 2 = Opus encoded payload
+    const val FLAG_CONTROL_ONLY: Byte = 0x02 // In control packets (payloadLen == 0)
     const val FLAG_DISCONNECT: Byte = 0x04
-    const val FLAG_PROFILE_MUSIC: Byte = 0x00
-    const val FLAG_PROFILE_BALANCED: Byte = 0x02 // In audio packets (payloadLen > 0); distinguishes Balanced from Low Latency / Music
+    const val FLAG_PROFILE_BALANCED: Byte = 0x04 // In audio packets (payloadLen > 0); distinguishes Balanced from Low Latency / Music
     const val FLAG_PROFILE_LOW_LATENCY: Byte = 0x08
+    const val FLAG_PROFILE_MUSIC: Byte = 0x00
     const val FLAG_24BIT: Byte = 0x10
     const val FLAG_SILENCE: Byte = 0x20
     const val FLAG_FEC_PARITY: Byte = 0x40
@@ -54,8 +55,12 @@ object AudioConfig {
 
     // Low Latency Codec Settings
     const val PREF_KEY_LOW_LATENCY_CODEC = "pref_low_latency_codec"
-    const val CODEC_PCM = "PCM"
+    const val CODEC_OPUS = "OPUS"
     const val CODEC_AAC = "AAC"
+    const val CODEC_PCM = "PCM"
+    const val OPUS_MIME_TYPE = "audio/opus"
+    const val OPUS_BIT_RATE_HIGH = 320000 // 320 kbps (transparent studio quality)
+    const val OPUS_BIT_RATE_LOW = 192000 // 192 kbps
     const val AAC_BIT_RATE = 192000 // 192 kbps
     const val AAC_MIME_TYPE = "audio/mp4a-latm"
 
@@ -96,12 +101,12 @@ object AudioConfig {
     const val BALANCED_WAIT_TIMEOUT_MS = 30L // 30ms wait
     const val BALANCED_TARGET_WATERMARK_SLOTS = 20 // 100ms target watermark
 
-    // Low Latency Mode: Ultra-fast lossless studio PCM with 10ms cushion (~15-20ms end-to-end latency)
-    const val LOW_LATENCY_JITTER_BUFFER_SLOTS = 6 // ~30ms max headroom
-    const val LOW_LATENCY_PRE_ROLL_PACKETS = 2 // 10ms pre-roll cushion
-    const val LOW_LATENCY_MAX_UNDERRUN_FRAMES = 4 // ~20ms concealment before rebuffering
-    const val LOW_LATENCY_WAIT_TIMEOUT_MS = 8L // 8ms wait
-    const val LOW_LATENCY_TARGET_WATERMARK_SLOTS = 2 // 10ms target watermark
+    // Low Latency Mode: High-efficiency Opus / AAC compressed audio (~20-40ms cushion, 80-85% less airtime)
+    const val LOW_LATENCY_JITTER_BUFFER_SLOTS = 32 // ~640ms max headroom
+    const val LOW_LATENCY_PRE_ROLL_PACKETS = 2 // ~40ms pre-roll cushion
+    const val LOW_LATENCY_MAX_UNDERRUN_FRAMES = 8 // ~160ms concealment before rebuffering
+    const val LOW_LATENCY_WAIT_TIMEOUT_MS = 40L // 40ms wait absorbs Wi-Fi jitter smoothly
+    const val LOW_LATENCY_TARGET_WATERMARK_SLOTS = 2 // ~40ms target watermark
 
     // Video AAC Mode (Fallback): 1024-sample frames (~21.3ms per packet)
     const val LOW_LATENCY_AAC_JITTER_BUFFER_SLOTS = 32 // ~680ms headroom

@@ -16,6 +16,7 @@ import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
+import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.media.VolumeProvider
 import android.media.projection.MediaProjection
@@ -60,6 +61,17 @@ class AudioCaptureService : Service() {
 
         val isRunning = AtomicBoolean(false)
         val remoteVolumePercent = AtomicInteger(100)
+
+        fun isOpusEncoderAvailable(): Boolean {
+            return try {
+                val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+                codecList.codecInfos.any { info ->
+                    info.isEncoder && info.supportedTypes.any { it.equals(AudioConfig.OPUS_MIME_TYPE, ignoreCase = true) }
+                }
+            } catch (e: Exception) {
+                false
+            }
+        }
     }
 
     private var mediaProjection: MediaProjection? = null
@@ -75,6 +87,7 @@ class AudioCaptureService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var aacEncoder: AacEncoder? = null
+    private var opusEncoder: OpusEncoder? = null
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -359,7 +372,11 @@ class AudioCaptureService : Service() {
 
         val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
         val profile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
-        val isAacActive = false
+        val isLowLatency = (profile == AudioConfig.PROFILE_VIDEO || profile == AudioConfig.PROFILE_LOW_LATENCY)
+        val isOpusSupported = isLowLatency && isOpusEncoderAvailable()
+        val isOpusActive = isLowLatency && isOpusSupported
+        val isAacActive = isLowLatency && !isOpusSupported
+        val isCompressedActive = isLowLatency
 
         val sampleRatePref = prefs.getString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_AUTO) ?: AudioConfig.SAMPLE_RATE_AUTO
         val captureSampleRate: Int = when (sampleRatePref) {
@@ -380,8 +397,7 @@ class AudioCaptureService : Service() {
         var is24BitActive = false
         var activePayloadSize = packetSize16
 
-        val isLowLatency = (profile == AudioConfig.PROFILE_VIDEO || profile == AudioConfig.PROFILE_LOW_LATENCY)
-        if (!isAacActive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        if (!isCompressedActive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             try {
                 val audioFormat24 = AudioFormat.Builder()
                     .setEncoding(AudioFormat.ENCODING_PCM_24BIT_PACKED)
@@ -567,14 +583,12 @@ class AudioCaptureService : Service() {
                 }
                 var profileFlag = flag.toByte()
 
-                val initialProfileDisplayName = if (initialIsLowLat) {
-                    if (is24BitActive) "Low Latency 20ms 24-bit (Server)" else "Low Latency 20ms PCM (Server)"
-                } else if (initialIsBalanced) {
-                    if (is24BitActive) "Balanced 100ms 24-bit (Server)" else "Balanced 100ms PCM (Server)"
-                } else if (is24BitActive) {
-                    "Studio 24-bit Music (Server)"
-                } else {
-                    "Music (Server)"
+                val initialProfileDisplayName = when {
+                    isOpusActive -> "Low Latency (Opus 320k)"
+                    isAacActive -> "Low Latency (AAC 192k)"
+                    initialIsBalanced -> if (is24BitActive) "Balanced 100ms 24-bit" else "Balanced 100ms PCM"
+                    is24BitActive -> "Studio 24-bit Music"
+                    else -> "Music (Server)"
                 }
 
                 val initialPayload = activePayloadSize
@@ -584,6 +598,8 @@ class AudioCaptureService : Service() {
                 sendBuffer[6] = (initialPayload shr 8).toByte()
                 sendBuffer[7] = (initialPayload and 0xFF).toByte()
 
+                val opusEnc = if (isOpusActive) OpusEncoder(captureSampleRate) else null
+                this.opusEncoder = opusEnc
                 val aacEnc = if (isAacActive) AacEncoder(captureSampleRate) else null
                 this.aacEncoder = aacEnc
 
@@ -597,7 +613,7 @@ class AudioCaptureService : Service() {
                 var fecMaxPayloadLen = 0
 
                 record.startRecording()
-                Log.i(TAG, "AudioRecord recording started. Streaming 5ms chunks at $captureSampleRate Hz to ${targetAddresses.size} target(s) (Profile: $initialProfileDisplayName, Payload: $initialPayload bytes, FEC: $isFecEnabled)")
+                Log.i(TAG, "AudioRecord recording started. Streaming at $captureSampleRate Hz to ${targetAddresses.size} target(s) (Profile: $initialProfileDisplayName, Payload: $initialPayload bytes, FEC: $isFecEnabled)")
 
                 var sequence = 0
                 var totalPackets = 0L
@@ -612,13 +628,12 @@ class AudioCaptureService : Service() {
                 var smoothPps = 0f
                 var smoothBps = 0f
 
-                val initialBitDepth = if (isAacActive) 16 else if (is24BitActive) 24 else 16
-                val initialBitrate = if (isAacActive) {
-                    192
-                } else if (captureSampleRate == AudioConfig.SAMPLE_RATE_44100) {
-                    if (initialBitDepth == 24) 2117 else 1411
-                } else {
-                    if (initialBitDepth == 24) 2304 else 1536
+                val initialBitDepth = if (isCompressedActive) 16 else if (is24BitActive) 24 else 16
+                val initialBitrate = when {
+                    isOpusActive -> 320
+                    isAacActive -> 192
+                    captureSampleRate == AudioConfig.SAMPLE_RATE_44100 -> if (initialBitDepth == 24) 2117 else 1411
+                    else -> if (initialBitDepth == 24) 2304 else 1536
                 }
 
                 val initialEndpointLabel = if (targetAddresses.size > 1) {
@@ -650,8 +665,13 @@ class AudioCaptureService : Service() {
                 val pcmReadBuffer = ByteArray(4096)
 
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
-                    if (isAacActive && aacEnc != null) {
-                        val pcmBytesRead = record.read(pcmReadBuffer, 0, pcmReadBuffer.size, AudioRecord.READ_BLOCKING)
+                    if (isCompressedActive && (opusEnc != null || aacEnc != null)) {
+                        val targetReadBytes = if (isOpusActive) {
+                            if (captureSampleRate == AudioConfig.SAMPLE_RATE_44100) 3528 else 3840 // 20ms Opus frame
+                        } else {
+                            4096 // ~21.3ms AAC-LC frame (1024 samples)
+                        }
+                        val pcmBytesRead = record.read(pcmReadBuffer, 0, targetReadBytes, AudioRecord.READ_BLOCKING)
                         if (pcmBytesRead > 0) {
                             var chunkPeak = 0
                             var pi = 0
@@ -675,9 +695,15 @@ class AudioCaptureService : Service() {
                             val now = SystemClock.elapsedRealtime()
                             val shouldSendHeartbeat = isSilenceSuppressed && (now - lastHeartbeatTime >= AudioConfig.SILENCE_HEARTBEAT_INTERVAL_MS)
 
+                            val codecFlag = if (isOpusActive) AudioConfig.FLAG_CODEC_OPUS else AudioConfig.FLAG_CODEC_AAC
+
                             if (!isSilenceSuppressed) {
-                                val aacFrames = aacEnc.encode(pcmReadBuffer, 0, pcmBytesRead)
-                                for (frame in aacFrames) {
+                                val encodedFrames = if (isOpusActive) {
+                                    opusEnc?.encode(pcmReadBuffer, 0, pcmBytesRead) ?: emptyList()
+                                } else {
+                                    aacEnc?.encode(pcmReadBuffer, 0, pcmBytesRead) ?: emptyList()
+                                }
+                                for (frame in encodedFrames) {
                                     val frameLen = frame.size
                                     if (frameLen > 0 && frameLen <= AudioConfig.MAX_PACKET_SIZE) {
                                         sendBuffer[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
@@ -687,7 +713,7 @@ class AudioCaptureService : Service() {
                                         val currentSeq = sequence
                                         sequence = (sequence + 1) and 0xFFFF
                                         sendBuffer[4] = remoteVolumePercent.get().toByte()
-                                        sendBuffer[5] = (profileFlag.toInt() or AudioConfig.FLAG_CODEC_AAC.toInt()).toByte()
+                                        sendBuffer[5] = (profileFlag.toInt() or codecFlag.toInt()).toByte()
                                         sendBuffer[6] = (frameLen shr 8).toByte()
                                         sendBuffer[7] = (frameLen and 0xFF).toByte()
                                         System.arraycopy(frame, 0, sendBuffer, AudioConfig.HEADER_SIZE, frameLen)
@@ -712,7 +738,7 @@ class AudioCaptureService : Service() {
                                 sendBuffer[3] = (sequence and 0xFF).toByte()
                                 sequence = (sequence + 1) and 0xFFFF
                                 sendBuffer[4] = remoteVolumePercent.get().toByte()
-                                sendBuffer[5] = (profileFlag.toInt() or AudioConfig.FLAG_CODEC_AAC.toInt() or AudioConfig.FLAG_SILENCE.toInt()).toByte()
+                                sendBuffer[5] = (profileFlag.toInt() or codecFlag.toInt() or AudioConfig.FLAG_SILENCE.toInt()).toByte()
                                 sendBuffer[6] = 0
                                 sendBuffer[7] = 0
                                 packet.length = AudioConfig.HEADER_SIZE
@@ -728,7 +754,7 @@ class AudioCaptureService : Service() {
                                 intervalBytes += packet.length
                             }
                         } else if (pcmBytesRead < 0) {
-                            Log.e(TAG, "AudioRecord read error (AAC): $pcmBytesRead")
+                            Log.e(TAG, "AudioRecord read error (compressed): $pcmBytesRead")
                             break
                         }
                     } else {
@@ -890,7 +916,7 @@ class AudioCaptureService : Service() {
                         if (dt >= 250) {
                             activeProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
                             val inLowLatencyNow = (activeProfile == AudioConfig.PROFILE_LOW_LATENCY)
-                            val is24Now = is24BitActive && !isAacActive
+                            val is24Now = is24BitActive && !isCompressedActive
 
                             val instantPps = ((intervalPackets * 1000L) / dt).toFloat()
                             val instantBps = ((intervalBytes * 1000L) / dt).toFloat()
@@ -903,24 +929,21 @@ class AudioCaptureService : Service() {
                             } else {
                                 ((maxSampleInInterval * 100) / 32768).coerceIn(0, 100)
                             }
-                            val bitDepth = if (isAacActive) 16 else if (is24Now) 24 else 16
-                            val bitrate = if (isAacActive) {
-                                192
-                            } else if (captureSampleRate == AudioConfig.SAMPLE_RATE_44100) {
-                                if (is24Now) 2117 else 1411
-                            } else {
-                                if (is24Now) 2304 else 1536
+                            val bitDepth = if (isCompressedActive) 16 else if (is24Now) 24 else 16
+                            val bitrate = when {
+                                isOpusActive -> 320
+                                isAacActive -> 192
+                                captureSampleRate == AudioConfig.SAMPLE_RATE_44100 -> if (is24Now) 2117 else 1411
+                                else -> if (is24Now) 2304 else 1536
                             }
                             val isLowLatNow = (activeProfile == AudioConfig.PROFILE_VIDEO || activeProfile == AudioConfig.PROFILE_LOW_LATENCY)
                             val isBalancedNow = (activeProfile == AudioConfig.PROFILE_BALANCED)
-                            val profileDisplayName = if (isLowLatNow) {
-                                if (is24Now) "Low Latency 20ms 24-bit (Server)" else "Low Latency 20ms PCM (Server)"
-                            } else if (isBalancedNow) {
-                                if (is24Now) "Balanced 100ms 24-bit (Server)" else "Balanced 100ms PCM (Server)"
-                            } else if (is24BitActive) {
-                                "Studio 24-bit Music (Server)"
-                            } else {
-                                "Music (Server)"
+                            val profileDisplayName = when {
+                                isOpusActive -> "Low Latency (Opus 320k)"
+                                isAacActive -> "Low Latency (AAC 192k)"
+                                isBalancedNow -> if (is24Now) "Balanced 100ms 24-bit" else "Balanced 100ms PCM"
+                                is24BitActive -> "Studio 24-bit Music"
+                                else -> "Music (Server)"
                             }
 
                             val statusDetailText = if (isSilenceSuppressed) {
@@ -1019,6 +1042,11 @@ class AudioCaptureService : Service() {
             Log.e(TAG, "Error stopping AudioRecord", e)
         }
         audioRecord = null
+
+        try {
+            opusEncoder?.release()
+        } catch (ignored: Exception) {}
+        opusEncoder = null
 
         try {
             aacEncoder?.release()
@@ -1223,6 +1251,72 @@ class AudioCaptureService : Service() {
             packet[4] = ((packetLen and 0x7FF) shr 3).toByte()
             packet[5] = (((packetLen and 7) shl 5) + 0x1F).toByte()
             packet[6] = 0xFC.toByte()
+        }
+
+        fun release() {
+            try {
+                codec?.stop()
+                codec?.release()
+            } catch (ignored: Exception) {}
+            codec = null
+        }
+    }
+
+    private class OpusEncoder(val sampleRate: Int, val channelCount: Int = 2, val bitRate: Int = AudioConfig.OPUS_BIT_RATE_HIGH) {
+        private var codec: MediaCodec? = null
+        private val bufferInfo = MediaCodec.BufferInfo()
+
+        init {
+            try {
+                val format = MediaFormat.createAudioFormat(AudioConfig.OPUS_MIME_TYPE, sampleRate, channelCount).apply {
+                    setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
+                    setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
+                }
+                val encoder = MediaCodec.createEncoderByType(AudioConfig.OPUS_MIME_TYPE)
+                encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                encoder.start()
+                codec = encoder
+                Log.i(TAG, "Initialized Opus MediaCodec encoder: rate=$sampleRate, channels=$channelCount, bitRate=$bitRate")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed initializing Opus encoder", e)
+            }
+        }
+
+        fun encode(pcmData: ByteArray, offset: Int, length: Int): List<ByteArray> {
+            val encoder = codec ?: return emptyList()
+            val results = mutableListOf<ByteArray>()
+
+            try {
+                val inIndex = encoder.dequeueInputBuffer(2000L)
+                if (inIndex >= 0) {
+                    val inBuf = encoder.getInputBuffer(inIndex)
+                    inBuf?.clear()
+                    inBuf?.put(pcmData, offset, length)
+                    encoder.queueInputBuffer(inIndex, 0, length, 0L, 0)
+                }
+
+                var outIndex = encoder.dequeueOutputBuffer(bufferInfo, 1000L)
+                while (outIndex >= 0 || outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        Log.i(TAG, "Opus encoder output format changed: ${encoder.outputFormat}")
+                    } else {
+                        val outBuf = encoder.getOutputBuffer(outIndex)
+                        val outSize = bufferInfo.size
+                        val isConfig = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+                        if (!isConfig && outBuf != null && outSize > 0) {
+                            val frame = ByteArray(outSize)
+                            outBuf.position(bufferInfo.offset)
+                            outBuf.get(frame, 0, outSize)
+                            results.add(frame)
+                        }
+                        encoder.releaseOutputBuffer(outIndex, false)
+                    }
+                    outIndex = encoder.dequeueOutputBuffer(bufferInfo, 0L)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Opus encode error: ${e.message}")
+            }
+            return results
         }
 
         fun release() {

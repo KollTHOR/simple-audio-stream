@@ -151,15 +151,6 @@ class JitterBuffer(
                 dropOldestSlot()
             }
 
-            // In Low Latency mode, enforce tight watermark ceiling:
-            // Never allow network bursts or video pauses to queue more than targetWatermark + 2 slots (~20ms)
-            val isLowLat = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY || currentProfile == AudioConfig.PROFILE_VIDEO)
-            if (isLowLat && availableCount > targetWatermarkSlots + 2) {
-                while (availableCount > targetWatermarkSlots + 1) {
-                    dropOldestSlot()
-                }
-            }
-
             System.arraycopy(data, offset, buffer[slot], 0, length)
             packetLengths[slot] = length
             slotSeq[slot] = sequence
@@ -176,10 +167,11 @@ class JitterBuffer(
 
             smoothBufferFill = smoothBufferFill * 0.998f + availableCount * 0.002f
 
-            // Fast catch-up for low latency mode:
-            if (isLowLat && smoothBufferFill > targetWatermarkSlots + 2) {
+            // Smooth catch-up only on extreme sustained network backlog
+            val isLowLat = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY || currentProfile == AudioConfig.PROFILE_VIDEO)
+            if (isLowLat && smoothBufferFill > targetWatermarkSlots + 12) {
                 packetsSinceCatchUp++
-                if (packetsSinceCatchUp >= 40) {
+                if (packetsSinceCatchUp >= 100) {
                     dropOldestSlot()
                     packetsSinceCatchUp = 0
                     smoothBufferFill -= 1.0f
@@ -414,8 +406,8 @@ class JitterBuffer(
                 val driftDelta = smoothBufferFill - targetWatermarkSlots
                 val isLowLat = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY || currentProfile == AudioConfig.PROFILE_VIDEO)
                 val isBalanced = (currentProfile == AudioConfig.PROFILE_BALANCED)
-                val driftThreshold = if (isLowLat) 2f else if (isBalanced) 10f else 16f
-                val minInterval = if (isLowLat) 100 else if (isBalanced) 400 else 600 // In Low Latency: adjust every 500ms
+                val driftThreshold = if (isLowLat) 8f else if (isBalanced) 12f else 16f
+                val minInterval = if (isLowLat) 300 else if (isBalanced) 400 else 600
                 if (packetsSinceDriftAdjust >= minInterval && len >= 12) {
                     if (driftDelta > driftThreshold) {
                         applyZeroCrossingFrameDrop(output, len)

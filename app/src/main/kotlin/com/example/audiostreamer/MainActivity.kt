@@ -439,13 +439,14 @@ class MainActivity : AppCompatActivity() {
             t.streamProfileName
         } else {
             when (savedProfile) {
-                AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> "Low Latency (20ms Studio)"
+                AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> "Low Latency (Opus/AAC)"
                 AudioConfig.PROFILE_BALANCED -> "Balanced (100ms Studio)"
                 else -> "Music Mode (500ms Studio)"
             }
         }
         tvPipelineProfile.text = activeProfileName
-        tvPipelineFormat.text = "${t.sampleRate / 1000.0} kHz • ${t.bitDepth}-bit Stereo PCM • ${t.bitrateKbps} kbps"
+        val codecDesc = if (activeProfileName.contains("Opus")) "Opus VBR" else if (activeProfileName.contains("AAC")) "AAC" else "${t.bitDepth}-bit Stereo PCM"
+        tvPipelineFormat.text = "${t.sampleRate / 1000.0} kHz • $codecDesc • ${t.bitrateKbps} kbps"
 
         if (!isSenderRunning && !isSinkRunning) {
             tvBadgeStatus.text = "IDLE"

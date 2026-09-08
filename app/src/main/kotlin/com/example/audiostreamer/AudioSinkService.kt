@@ -28,6 +28,8 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.SocketException
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
 
 class AudioSinkService : Service() {
@@ -61,9 +63,12 @@ class AudioSinkService : Service() {
     @Volatile private var currentEncoding: Int = AudioConfig.ENCODING
     @Volatile private var currentPerformanceMode: Int = AudioTrack.PERFORMANCE_MODE_NONE
     @Volatile private var currentIsAac: Boolean = false
+    @Volatile private var currentIsOpus: Boolean = false
     @Volatile private var aacDecoder: AacDecoder? = null
     @Volatile private var aacDecoderSampleRate: Int = AudioConfig.SAMPLE_RATE_48000
-    @Volatile private var lastConfiguredIsAac: Boolean? = null
+    @Volatile private var opusDecoder: OpusDecoder? = null
+    @Volatile private var opusDecoderSampleRate: Int = AudioConfig.SAMPLE_RATE_48000
+    @Volatile private var lastConfiguredCodec: String? = null
     @Volatile private var sinkAudioPeakSample = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -92,7 +97,7 @@ class AudioSinkService : Service() {
     @Synchronized
     private fun configureAudioTrack(sampleRate: Int, encoding: Int, profile: String, currentVolume: Int): AudioTrack {
         val isLowLatency = (profile == AudioConfig.PROFILE_VIDEO || profile == AudioConfig.PROFILE_LOW_LATENCY)
-        val perfMode = if (isLowLatency) AudioTrack.PERFORMANCE_MODE_LOW_LATENCY else AudioTrack.PERFORMANCE_MODE_NONE
+        val perfMode = AudioTrack.PERFORMANCE_MODE_NONE
         val existing = audioTrack
         if (existing != null && currentSampleRate == sampleRate && currentEncoding == encoding && currentPerformanceMode == perfMode && existing.state == AudioTrack.STATE_INITIALIZED) {
             return existing
@@ -133,7 +138,7 @@ class AudioSinkService : Service() {
             if (is24) AudioConfig.PACKET_SIZE_24BIT_48K else AudioConfig.PACKET_SIZE_16BIT_48K
         }
         val bufferSize = when (profile) {
-            AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> minBufferSize
+            AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> maxOf(minBufferSize * 2, 8192)
             AudioConfig.PROFILE_BALANCED -> maxOf(minBufferSize, packetSize * 40) // ~200ms
             else -> maxOf(minBufferSize * 4, packetSize * 100) // Deep buffer ~500ms
         }
@@ -152,22 +157,9 @@ class AudioSinkService : Service() {
             return configureAudioTrack(sampleRate, AudioConfig.ENCODING, profile, currentVolume)
         }
 
-        // In Low Latency mode, clamp AudioTrack internal bufferSizeInFrames to ~10ms (480 frames)
-        if (isLowLatency && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            try {
-                val bytesPerFrame = AudioConfig.CHANNELS * (if (is24) 3 else 2)
-                val minFrames = minBufferSize / bytesPerFrame
-                val targetFrames = if (sampleRate == AudioConfig.SAMPLE_RATE_44100) AudioConfig.FRAMES_PER_PACKET_44K * 2 else AudioConfig.FRAMES_PER_PACKET_48K * 2 // 10ms
-                track.bufferSizeInFrames = minOf(track.bufferCapacityInFrames, maxOf(minFrames, targetFrames))
-                Log.i(TAG, "Clamped low latency AudioTrack bufferSizeInFrames to ${track.bufferSizeInFrames} (capacity: ${track.bufferCapacityInFrames})")
-            } catch (e: Exception) {
-                Log.w(TAG, "Could not clamp AudioTrack bufferSizeInFrames: ${e.message}")
-            }
-        }
-
         // Prime AudioTrack with pre-roll silence so DAC ring buffer is never at 0 frames on startup
         val primeBytes = when (profile) {
-            AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> packetSize * 1 // 5ms prime
+            AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> packetSize * 2 // 10ms prime
             AudioConfig.PROFILE_BALANCED -> packetSize * 4 // 20ms prime
             else -> packetSize * 8 // 40ms prime
         }
@@ -297,17 +289,25 @@ class AudioSinkService : Service() {
                                     lastSilencePacketTime = 0L
                                 }
 
-                                val isDisconnect = (flags.toInt() and AudioConfig.FLAG_DISCONNECT.toInt()) != 0
+                                val isDisconnect = payloadLen == 0 && ((flags.toInt() and AudioConfig.FLAG_DISCONNECT.toInt()) != 0)
                                 val isControlOnly = payloadLen == 0 && ((flags.toInt() and AudioConfig.FLAG_CONTROL_ONLY.toInt()) != 0)
                                 val isServerLowLatency = (flags.toInt() and AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt()) != 0
-                                val isServerBalanced = !isControlOnly && ((flags.toInt() and AudioConfig.FLAG_PROFILE_BALANCED.toInt()) != 0)
+                                val isServerBalanced = !isControlOnly && payloadLen > 0 && ((flags.toInt() and AudioConfig.FLAG_PROFILE_BALANCED.toInt()) != 0)
                                 val isIncomingAac = (flags.toInt() and AudioConfig.FLAG_CODEC_AAC.toInt()) != 0
+                                val isIncomingOpus = !isControlOnly && payloadLen > 0 && ((flags.toInt() and AudioConfig.FLAG_CODEC_OPUS.toInt()) != 0)
                                 currentIsAac = isIncomingAac
+                                currentIsOpus = isIncomingOpus
                                 val isIncoming44k = (flags.toInt() and AudioConfig.FLAG_SAMPLE_RATE_44100.toInt()) != 0 ||
                                     payloadLen == AudioConfig.PACKET_SIZE_16BIT_44K || payloadLen == AudioConfig.PACKET_SIZE_24BIT_44K
                                 val targetSampleRate = if (isIncoming44k) AudioConfig.SAMPLE_RATE_44100 else AudioConfig.SAMPLE_RATE_48000
 
-                                if (isIncomingAac) {
+                                if (isIncomingOpus) {
+                                    if (opusDecoder == null || opusDecoderSampleRate != targetSampleRate) {
+                                        try { opusDecoder?.release() } catch (ignored: Exception) {}
+                                        opusDecoder = OpusDecoder(targetSampleRate)
+                                        opusDecoderSampleRate = targetSampleRate
+                                    }
+                                } else if (isIncomingAac) {
                                     if (aacDecoder == null || aacDecoderSampleRate != targetSampleRate) {
                                         try { aacDecoder?.release() } catch (ignored: Exception) {}
                                         aacDecoder = AacDecoder(targetSampleRate)
@@ -317,19 +317,25 @@ class AudioSinkService : Service() {
 
                                 // Only adapt profile and reconfigure AudioTrack on audio packets (never on control-only packets)
                                 if (!isControlOnly && !isDisconnect && !isSilence) {
-                                    val isServer24Bit = !isIncomingAac && ((flags.toInt() and AudioConfig.FLAG_24BIT.toInt()) != 0 ||
+                                    val isServer24Bit = !isIncomingAac && !isIncomingOpus && ((flags.toInt() and AudioConfig.FLAG_24BIT.toInt()) != 0 ||
                                         payloadLen == AudioConfig.PACKET_SIZE_24BIT_48K || payloadLen == AudioConfig.PACKET_SIZE_24BIT_44K)
                                     val serverProfile = when {
-                                        isIncomingAac -> AudioConfig.PROFILE_VIDEO
+                                        isIncomingOpus -> AudioConfig.PROFILE_LOW_LATENCY
+                                        isIncomingAac -> AudioConfig.PROFILE_LOW_LATENCY
                                         isServerLowLatency -> AudioConfig.PROFILE_LOW_LATENCY
                                         isServerBalanced -> AudioConfig.PROFILE_BALANCED
                                         else -> AudioConfig.PROFILE_MUSIC
                                     }
-                                    if (serverProfile != currentProfile || isIncomingAac != lastConfiguredIsAac) {
+                                    val currentCodec = when {
+                                        isIncomingOpus -> "OPUS"
+                                        isIncomingAac -> "AAC"
+                                        else -> "PCM"
+                                    }
+                                    if (serverProfile != currentProfile || currentCodec != lastConfiguredCodec) {
                                         currentProfile = serverProfile
-                                        lastConfiguredIsAac = isIncomingAac
+                                        lastConfiguredCodec = currentCodec
                                         jitterBuffer.setProfile(serverProfile, isIncomingAac)
-                                        Log.i(TAG, "Adapted client buffer to server profile: $serverProfile, AAC=$isIncomingAac")
+                                        Log.i(TAG, "Adapted client buffer to server profile: $serverProfile, codec=$currentCodec")
                                     }
 
                                     val targetEncoding = if (isServer24Bit && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -337,8 +343,7 @@ class AudioSinkService : Service() {
                                     } else {
                                         AudioConfig.ENCODING
                                     }
-                                    val isLowLat = (serverProfile == AudioConfig.PROFILE_VIDEO || serverProfile == AudioConfig.PROFILE_LOW_LATENCY)
-                                    val targetPerfMode = if (isLowLat) AudioTrack.PERFORMANCE_MODE_LOW_LATENCY else AudioTrack.PERFORMANCE_MODE_NONE
+                                    val targetPerfMode = AudioTrack.PERFORMANCE_MODE_NONE
                                     // Fast-path: skip @Synchronized call if nothing has changed
                                     if (targetSampleRate != currentSampleRate || targetEncoding != currentEncoding || targetPerfMode != currentPerformanceMode) {
                                         configureAudioTrack(targetSampleRate, targetEncoding, serverProfile, currentRemoteVolume)
@@ -367,11 +372,11 @@ class AudioSinkService : Service() {
                                     lastSenderHost = senderAddr.hostAddress ?: "Transmitter"
                                 }
 
-                                // Route PCM or AAC audio to JitterBuffer
+                                // Route PCM, Opus, or AAC audio to JitterBuffer
                                 val is24Payload = (payloadLen == AudioConfig.PACKET_SIZE_24BIT_48K || payloadLen == AudioConfig.PACKET_SIZE_24BIT_44K)
                                 val is16Payload = (payloadLen == AudioConfig.PACKET_SIZE_16BIT_48K || payloadLen == AudioConfig.PACKET_SIZE_16BIT_44K)
-                                val isAacPayload = isIncomingAac && payloadLen > 0
-                                if ((is16Payload || is24Payload || isAacPayload) && !isDisconnect && !isControlOnly) {
+                                val isCompressedPayload = (isIncomingOpus || isIncomingAac) && payloadLen > 0
+                                if ((is16Payload || is24Payload || isCompressedPayload) && !isDisconnect && !isControlOnly) {
                                     val pcmOffset = offset + AudioConfig.HEADER_SIZE
                                     val effectivePayloadLen = payloadLen
                                     val writeData = data
@@ -380,7 +385,7 @@ class AudioSinkService : Service() {
                                     jitterBuffer.write(seq, writeData, writeOffset, effectivePayloadLen)
 
                                     // Compute audio peak level (for PCM payloads)
-                                    if (!isAacPayload) {
+                                    if (!isCompressedPayload) {
                                         var i = writeOffset
                                         val end = writeOffset + effectivePayloadLen
                                         val isEffective24 = (effectivePayloadLen == AudioConfig.PACKET_SIZE_24BIT_48K || effectivePayloadLen == AudioConfig.PACKET_SIZE_24BIT_44K)
@@ -433,16 +438,20 @@ class AudioSinkService : Service() {
                             val fill = jitterBuffer.getFillLevel()
                             val usedSlots = jitterBuffer.getAvailableCount()
                             val totalSlots = jitterBuffer.getSlotCount()
-                            val bitDepth = if (currentIsAac) 16 else if (is24) 24 else 16
-                            val bitrate = if (currentIsAac) {
+                            val bitDepth = if (currentIsAac || currentIsOpus) 16 else if (is24) 24 else 16
+                            val bitrate = if (currentIsOpus) {
+                                320
+                            } else if (currentIsAac) {
                                 192
                             } else if (currentSampleRate == AudioConfig.SAMPLE_RATE_44100) {
                                 if (is24) 2117 else 1411
                             } else {
                                 if (is24) 2304 else 1536
                             }
-                            val profileName = if (currentIsAac) {
-                                "Legacy AAC (Server)"
+                            val profileName = if (currentIsOpus) {
+                                "Low Latency (Opus 320k)"
+                            } else if (currentIsAac) {
+                                "Low Latency (AAC 192k)"
                             } else if (currentProfile == AudioConfig.PROFILE_VIDEO || currentProfile == AudioConfig.PROFILE_LOW_LATENCY) {
                                 if (is24) "Low Latency 20ms 24-bit (Server)" else "Low Latency 20ms PCM (Server)"
                             } else if (currentProfile == AudioConfig.PROFILE_BALANCED) {
@@ -515,7 +524,21 @@ class AudioSinkService : Service() {
                         if (bytesToPlay > 0) {
                             val track = audioTrack
                             if (track != null && track.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                                if (currentIsAac) {
+                                if (currentIsOpus) {
+                                    val pcmList = opusDecoder?.decode(chunk, 0, bytesToPlay) ?: emptyList()
+                                    for (pcm in pcmList) {
+                                        if (pcm.isNotEmpty()) {
+                                            track.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
+                                            var p = 0
+                                            while (p < pcm.size - 1) {
+                                                val sample = (pcm[p].toInt() and 0xFF) or (pcm[p + 1].toInt() shl 8)
+                                                val abs = kotlin.math.abs(sample.toShort().toInt())
+                                                if (abs > sinkAudioPeakSample) sinkAudioPeakSample = abs
+                                                p += 2
+                                            }
+                                        }
+                                    }
+                                } else if (currentIsAac) {
                                     val isAdts = (bytesToPlay >= 7 && (chunk[0].toInt() and 0xFF) == 0xFF && (chunk[1].toInt() and 0xF0) == 0xF0)
                                     if (isAdts) {
                                         val pcmList = aacDecoder?.decode(chunk, 0, bytesToPlay) ?: emptyList()
@@ -725,7 +748,15 @@ class AudioSinkService : Service() {
             aacDecoder?.release()
         } catch (ignored: Exception) {}
         aacDecoder = null
-        lastConfiguredIsAac = null
+
+        try {
+            opusDecoder?.release()
+        } catch (ignored: Exception) {}
+        opusDecoder = null
+
+        lastConfiguredCodec = null
+        currentIsOpus = false
+        currentIsAac = false
         sinkAudioPeakSample = 0
 
         jitterBuffer.reset()
@@ -818,6 +849,108 @@ class AudioSinkService : Service() {
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "AAC decode error: ${e.message}")
+            }
+            return results
+        }
+
+        fun release() {
+            try {
+                codec?.stop()
+                codec?.release()
+            } catch (ignored: Exception) {}
+            codec = null
+        }
+    }
+
+    private class OpusDecoder(private val sampleRate: Int, private val channelCount: Int = 2) {
+        private var codec: MediaCodec? = null
+        private val bufferInfo = MediaCodec.BufferInfo()
+
+        init {
+            try {
+                val format = MediaFormat.createAudioFormat(AudioConfig.OPUS_MIME_TYPE, sampleRate, channelCount).apply {
+                    setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
+                }
+
+                // Construct 19-byte OpusHead identification header
+                val header = ByteArray(19)
+                val magic = "OpusHead".toByteArray(Charsets.US_ASCII)
+                System.arraycopy(magic, 0, header, 0, 8)
+                header[8] = 1 // Version
+                header[9] = channelCount.toByte()
+                // Pre-skip (312 samples)
+                val preSkipSamples = 312
+                header[10] = (preSkipSamples and 0xFF).toByte()
+                header[11] = ((preSkipSamples shr 8) and 0xFF).toByte()
+                // Sample rate (little endian)
+                header[12] = (sampleRate and 0xFF).toByte()
+                header[13] = ((sampleRate shr 8) and 0xFF).toByte()
+                header[14] = ((sampleRate shr 16) and 0xFF).toByte()
+                header[15] = ((sampleRate shr 24) and 0xFF).toByte()
+                // Gain = 0
+                header[16] = 0
+                header[17] = 0
+                // Channel mapping family = 0
+                header[18] = 0
+
+                val csd0 = ByteBuffer.wrap(header)
+                format.setByteBuffer("csd-0", csd0)
+
+                // csd-1: Pre-skip in nanoseconds (Long, little-endian)
+                val preSkipNs = (preSkipSamples.toLong() * 1_000_000_000L) / sampleRate.toLong()
+                val csd1 = ByteBuffer.allocate(8).order(ByteOrder.nativeOrder()).putLong(preSkipNs)
+                csd1.flip()
+                format.setByteBuffer("csd-1", csd1)
+
+                // csd-2: Seek pre-roll in nanoseconds (Long, little-endian) (80ms standard)
+                val seekPreRollNs = 80_000_000L
+                val csd2 = ByteBuffer.allocate(8).order(ByteOrder.nativeOrder()).putLong(seekPreRollNs)
+                csd2.flip()
+                format.setByteBuffer("csd-2", csd2)
+
+                val decoder = MediaCodec.createDecoderByType(AudioConfig.OPUS_MIME_TYPE)
+                decoder.configure(format, null, null, 0)
+                decoder.start()
+                codec = decoder
+                Log.i(TAG, "Initialized Opus MediaCodec decoder: rate=$sampleRate, channels=$channelCount")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed initializing Opus decoder", e)
+            }
+        }
+
+        fun decode(opusData: ByteArray, offset: Int, length: Int): List<ByteArray> {
+            val decoder = codec ?: return emptyList()
+            if (length <= 0) return emptyList()
+            val results = mutableListOf<ByteArray>()
+
+            try {
+                val inIndex = decoder.dequeueInputBuffer(2000L)
+                if (inIndex >= 0) {
+                    val inBuf = decoder.getInputBuffer(inIndex)
+                    inBuf?.clear()
+                    inBuf?.put(opusData, offset, length)
+                    decoder.queueInputBuffer(inIndex, 0, length, 0L, 0)
+                }
+
+                var outIndex = decoder.dequeueOutputBuffer(bufferInfo, 2000L)
+                while (outIndex >= 0 || outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        Log.i(TAG, "Opus decoder output format changed: ${decoder.outputFormat}")
+                    } else {
+                        val outBuf = decoder.getOutputBuffer(outIndex)
+                        val outSize = bufferInfo.size
+                        if (outBuf != null && outSize > 0) {
+                            val pcm = ByteArray(outSize)
+                            outBuf.position(bufferInfo.offset)
+                            outBuf.get(pcm, 0, outSize)
+                            results.add(pcm)
+                        }
+                        decoder.releaseOutputBuffer(outIndex, false)
+                    }
+                    outIndex = decoder.dequeueOutputBuffer(bufferInfo, 0L)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Opus decode error: ${e.message}")
             }
             return results
         }
