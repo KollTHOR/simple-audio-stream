@@ -71,6 +71,11 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var btnBit16: MaterialButton
     private lateinit var btnBit24: MaterialButton
     private lateinit var tvBitDescription: TextView
+    private lateinit var cardAudioStats: com.google.android.material.card.MaterialCardView
+    private lateinit var tvDetectedMediaApp: TextView
+    private lateinit var tvDetectedMediaFormat: TextView
+    private lateinit var tvDetectedStreamStatus: TextView
+    private lateinit var btnRefreshAudioStats: ImageView
     private lateinit var btnAppInfo: MaterialButton
     private lateinit var btnAccessibilitySettings: MaterialButton
 
@@ -138,6 +143,16 @@ class SettingsActivity : AppCompatActivity() {
         btnBit16 = findViewById(R.id.btn_bit_16)
         btnBit24 = findViewById(R.id.btn_bit_24)
         tvBitDescription = findViewById(R.id.tv_bit_description)
+
+        cardAudioStats = findViewById(R.id.card_audio_stats)
+        tvDetectedMediaApp = findViewById(R.id.tv_detected_media_app)
+        tvDetectedMediaFormat = findViewById(R.id.tv_detected_media_format)
+        tvDetectedStreamStatus = findViewById(R.id.tv_detected_stream_status)
+        btnRefreshAudioStats = findViewById(R.id.btn_refresh_audio_stats)
+
+        btnRefreshAudioStats.setOnClickListener {
+            updateAudioStatsUi()
+        }
 
         val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
         val currentProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_AUTO) ?: AudioConfig.PROFILE_AUTO
@@ -289,6 +304,7 @@ class SettingsActivity : AppCompatActivity() {
         super.onResume()
         checkInstallPermissionOnResume()
         updateAccessibilityButton()
+        updateAudioStatsUi()
     }
 
     private fun updateAccessibilityButton() {
@@ -348,9 +364,44 @@ class SettingsActivity : AppCompatActivity() {
         cardBitDepth.visibility = if (isMusic) View.VISIBLE else View.GONE
 
         tvProfileDescription.text = when {
-            isVideo -> "Low Latency (Opus): Locked to 16-bit / 44.1 kHz with pure compressed Opus (320 kbps VBR) and 40ms cushion. Instantaneous response, 80-85% less Wi-Fi airtime for video lip-sync and gaming."
-            isMusic -> "Unlocked Music Mode: Bit-perfect lossless PCM with clock drift splicing disabled. Unlocks sample rate and bit depth controls (with Auto media detection or manual override up to 192 kHz / 24-bit)."
+            isVideo -> "Low Latency (Opus): Locked to 16-bit / 48 kHz with pure compressed Opus (320 kbps VBR) and 40ms cushion. Instantaneous response, 80-85% less Wi-Fi airtime for video lip-sync and gaming."
+            isMusic -> "Unlocked Music Mode: Bit-perfect lossless PCM with studio-grade clock drift synchronization. Unlocks sample rate and bit depth controls (with Auto media detection or manual override up to 192 kHz / 24-bit)."
             else -> "Auto Adaptive Mode: Fully autoselects sample rate and bit depth based on active Android media playback (Tidal, Spotify, YouTube). Dynamically floats jitter watermark between 35ms and 400ms using RFC 3550 statistical estimation."
+        }
+    }
+
+    private fun updateAudioStatsUi() {
+        val detected = AudioPlaybackDetector.getActiveMediaFormat(this)
+        val appText = if (detected.isPlaying) {
+            "${detected.appName} (Playing)"
+        } else if (detected.appName != "None") {
+            "${detected.appName} (Paused/Standby)"
+        } else {
+            "No Active Media"
+        }
+        tvDetectedMediaApp.text = appText
+        val greenColor = ContextCompat.getColor(this, R.color.status_green)
+        val hintColor = ContextCompat.getColor(this, R.color.text_hint)
+        tvDetectedMediaApp.setTextColor(if (detected.isPlaying) greenColor else hintColor)
+
+        val rateKHz = detected.sampleRate / 1000.0
+        val bitStr = if (detected.is24Bit) "24-bit" else "16-bit"
+        tvDetectedMediaFormat.text = "$rateKHz kHz • $bitStr"
+
+        val tel = StreamState.telemetry.value
+        val isTxRunning = AudioCaptureService.isRunning.get()
+        if (isTxRunning && tel.isActive && tel.isTransmitter) {
+            val pipeRate = tel.sampleRate / 1000.0
+            val pipeBit = "${tel.bitDepth}-bit"
+            val pipeMode = tel.streamProfileName
+            tvDetectedStreamStatus.text = "$pipeRate kHz • $pipeBit ($pipeMode)"
+            tvDetectedStreamStatus.setTextColor(greenColor)
+        } else if (isTxRunning) {
+            tvDetectedStreamStatus.text = "Transmitter starting..."
+            tvDetectedStreamStatus.setTextColor(ContextCompat.getColor(this, R.color.status_blue))
+        } else {
+            tvDetectedStreamStatus.text = "Idle (Not transmitting)"
+            tvDetectedStreamStatus.setTextColor(hintColor)
         }
     }
 

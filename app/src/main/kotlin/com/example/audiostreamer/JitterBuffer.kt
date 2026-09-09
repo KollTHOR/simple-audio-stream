@@ -450,24 +450,23 @@ class JitterBuffer(
                 }
 
                 // Audio Clock Drift Management:
-                // Only run in Auto Mode under sustained clock drift.
-                // In Uncapped Music Mode (PROFILE_MUSIC), drift splicing is COMPLETELY DISABLED to guarantee 100% bit-perfect, zero-crackle audio.
+                // Smooth zero-crossing micro-resampling (1 frame = 20-22 microseconds)
+                // Rate-limited to prevent bass modulation comb filtering while holding tight sync across independent crystal clocks
+                packetsSinceDriftAdjust++
+                val driftDelta = smoothBufferFill - targetWatermarkSlots
+                val isLowLat = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY || currentProfile == AudioConfig.PROFILE_VIDEO)
                 val isAuto = (currentProfile == AudioConfig.PROFILE_AUTO)
-                if (isAuto && len >= 12) {
-                    packetsSinceDriftAdjust++
-                    val driftDelta = smoothBufferFill - targetWatermarkSlots
-                    val driftThreshold = 18f
-                    val minInterval = 1200 // At least ~6 seconds of sustained deviation
-                    if (packetsSinceDriftAdjust >= minInterval) {
-                        if (driftDelta > driftThreshold) {
-                            applyZeroCrossingFrameDrop(output, len)
-                            packetsSinceDriftAdjust = 0
-                            smoothBufferFill -= 0.5f
-                        } else if (driftDelta < -driftThreshold) {
-                            applyZeroCrossingFrameDuplicate(output, len)
-                            packetsSinceDriftAdjust = 0
-                            smoothBufferFill += 0.5f
-                        }
+                val driftThreshold = if (isLowLat) 8f else if (isAuto) 10f else 16f
+                val minInterval = if (isLowLat) 300 else if (isAuto) 350 else 600
+                if (packetsSinceDriftAdjust >= minInterval && len >= 12) {
+                    if (driftDelta > driftThreshold) {
+                        applyZeroCrossingFrameDrop(output, len)
+                        packetsSinceDriftAdjust = 0
+                        smoothBufferFill -= 0.5f
+                    } else if (driftDelta < -driftThreshold) {
+                        applyZeroCrossingFrameDuplicate(output, len)
+                        packetsSinceDriftAdjust = 0
+                        smoothBufferFill += 0.5f
                     }
                 }
 

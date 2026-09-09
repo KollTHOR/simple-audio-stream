@@ -440,8 +440,8 @@ class AudioCaptureService : Service() {
         val target24Bit: Boolean
 
         if (isLowLatency) {
-            // Low Latency: Fixed to 16-bit / 44.1 kHz (or 48 kHz) using Opus
-            targetRate = AudioConfig.SAMPLE_RATE_44100
+            // Low Latency: Strictly locked to 16-bit / 48 kHz Opus (RFC 6716 native 48kHz framing)
+            targetRate = AudioConfig.SAMPLE_RATE_48000
             target24Bit = false
         } else if (isAuto) {
             // Adaptive Mode: Fully autoselects bit depth and sampling rate based on Android audio reports
@@ -482,9 +482,14 @@ class AudioCaptureService : Service() {
             Log.i(TAG, "Uncapped Music: requested $targetRate Hz clamped to mutually supported $negotiatedRate Hz (TX: ${AudioCapabilities.describeCapabilitiesMask(txCaps)}, RX: ${AudioCapabilities.describeCapabilitiesMask(rxCaps)})")
         }
 
-        val candidateRates = mutableListOf(negotiatedRate)
-        if (!candidateRates.contains(44100)) candidateRates.add(44100)
-        if (!candidateRates.contains(48000)) candidateRates.add(48000)
+        val candidateRates = if (isCompressedActive) {
+            mutableListOf(AudioConfig.SAMPLE_RATE_48000)
+        } else {
+            val list = mutableListOf(negotiatedRate)
+            if (!list.contains(44100)) list.add(44100)
+            if (!list.contains(48000)) list.add(48000)
+            list
+        }
 
         if (isCompressedActive) {
             for (rate in candidateRates) {
@@ -1164,27 +1169,7 @@ class AudioCaptureService : Service() {
         // Real-time audio engine adaptation: monitor Android playback sessions (e.g. Tidal/Spotify)
         if (profile == AudioConfig.PROFILE_AUTO || (profile == AudioConfig.PROFILE_MUSIC && (rawRatePref == AudioConfig.SAMPLE_RATE_AUTO || rawBitPref == AudioConfig.BIT_DEPTH_AUTO))) {
             AudioPlaybackDetector.startMonitoring(this) { newFormat ->
-                val now = SystemClock.elapsedRealtime()
-                if (now - lastLiveAdaptTime >= 2000L && isRunning.get()) {
-                    val currentRate = activeCaptureSampleRate
-                    val current24 = is24BitActive
-                    val neededRate = when {
-                        profile == AudioConfig.PROFILE_AUTO -> newFormat.sampleRate
-                        rawRatePref == AudioConfig.SAMPLE_RATE_AUTO -> newFormat.sampleRate
-                        else -> currentRate
-                    }
-                    val needed24 = when {
-                        profile == AudioConfig.PROFILE_AUTO -> newFormat.is24Bit
-                        rawBitPref == AudioConfig.BIT_DEPTH_AUTO -> newFormat.is24Bit || (neededRate >= 88200)
-                        rawBitPref == AudioConfig.BIT_DEPTH_24 -> true
-                        else -> false
-                    }
-                    if (neededRate != currentRate || needed24 != current24) {
-                        lastLiveAdaptTime = now
-                        Log.i(TAG, "AudioPlaybackDetector detected new media stream (${newFormat.description}). Live adapting pipeline from $currentRate Hz (${if (current24) "24b" else "16b"}) -> $neededRate Hz (${if (needed24) "24b" else "16b"}).")
-                        restartStreaming()
-                    }
-                }
+                Log.d(TAG, "AudioPlaybackDetector active media format: ${newFormat.description}")
             }
         }
     }
