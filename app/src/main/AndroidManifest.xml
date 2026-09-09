@@ -78,6 +78,20 @@
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
+        <!-- Optional Accessibility Service for Background Hardware Volume Interception (Pocket Mode) -->
+        <service
+            android:name=".VolumeKeyInterceptorService"
+            android:enabled="true"
+            android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/volume_interceptor_config" />
+        </service>
+
     </application>
 
 </manifest>

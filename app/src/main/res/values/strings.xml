@@ -11,5 +11,5 @@
     <string name="status_idle">Status: Idle</string>
     <string name="status_streaming">Status: Streaming System Audio</string>
     <string name="status_listening">Status: Listening for Audio</string>
-    <string name="accessibility_desc">Intercepts hardware volume buttons during audio streaming to adjust remote DAP volume and prevent phone speaker playback in the background.</string>
+    <string name="accessibility_desc">Intercepts hardware volume buttons exclusively while audio streaming is active to adjust remote DAP volume and prevent phone speakers from playing in the background. No personal data, screen content, or keystrokes are logged or stored.</string>
 </resources>
