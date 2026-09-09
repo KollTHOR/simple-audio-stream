@@ -12,12 +12,17 @@ object AudioConfig {
     const val DEFAULT_SAMPLE_RATE = SAMPLE_RATE_48000
     const val SAMPLE_RATE = SAMPLE_RATE_48000
     const val PREF_KEY_SAMPLE_RATE = "pref_sample_rate"
+    const val PREF_KEY_BIT_DEPTH = "pref_bit_depth"
     const val PREF_KEY_RECEIVER_CAPS = "last_known_receiver_caps"
     const val SAMPLE_RATE_AUTO = "AUTO"
     const val SAMPLE_RATE_44K = "44100"
     const val SAMPLE_RATE_48K = "48000"
     const val SAMPLE_RATE_96K = "96000"
     const val SAMPLE_RATE_192K = "192000"
+
+    const val BIT_DEPTH_AUTO = "AUTO"
+    const val BIT_DEPTH_16 = "16"
+    const val BIT_DEPTH_24 = "24"
 
     const val CHANNELS = 2 // Stereo
     const val ENCODING = AudioFormat.ENCODING_PCM_16BIT

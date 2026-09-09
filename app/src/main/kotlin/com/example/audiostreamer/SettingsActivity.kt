@@ -59,11 +59,18 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var tvProfileDescription: TextView
     private lateinit var cardSampleRate: com.google.android.material.card.MaterialCardView
     private lateinit var toggleRateGroup: MaterialButtonToggleGroup
+    private lateinit var btnRateAuto: MaterialButton
     private lateinit var btnRate44k: MaterialButton
     private lateinit var btnRate48k: MaterialButton
     private lateinit var btnRate96k: MaterialButton
     private lateinit var btnRate192k: MaterialButton
     private lateinit var tvRateDescription: TextView
+    private lateinit var cardBitDepth: com.google.android.material.card.MaterialCardView
+    private lateinit var toggleBitGroup: MaterialButtonToggleGroup
+    private lateinit var btnBitAuto: MaterialButton
+    private lateinit var btnBit16: MaterialButton
+    private lateinit var btnBit24: MaterialButton
+    private lateinit var tvBitDescription: TextView
     private lateinit var btnAppInfo: MaterialButton
     private lateinit var btnAccessibilitySettings: MaterialButton
 
@@ -119,11 +126,18 @@ class SettingsActivity : AppCompatActivity() {
         tvProfileDescription = findViewById(R.id.tv_profile_description)
         cardSampleRate = findViewById(R.id.card_sample_rate)
         toggleRateGroup = findViewById(R.id.toggle_rate_group)
+        btnRateAuto = findViewById(R.id.btn_rate_auto)
         btnRate44k = findViewById(R.id.btn_rate_44k)
         btnRate48k = findViewById(R.id.btn_rate_48k)
         btnRate96k = findViewById(R.id.btn_rate_96k)
         btnRate192k = findViewById(R.id.btn_rate_192k)
         tvRateDescription = findViewById(R.id.tv_rate_description)
+        cardBitDepth = findViewById(R.id.card_bit_depth)
+        toggleBitGroup = findViewById(R.id.toggle_bit_group)
+        btnBitAuto = findViewById(R.id.btn_bit_auto)
+        btnBit16 = findViewById(R.id.btn_bit_16)
+        btnBit24 = findViewById(R.id.btn_bit_24)
+        tvBitDescription = findViewById(R.id.tv_bit_description)
 
         val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
         val currentProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_AUTO) ?: AudioConfig.PROFILE_AUTO
@@ -147,16 +161,13 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
 
-        var currentRate = prefs.getString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_48K) ?: AudioConfig.SAMPLE_RATE_48K
-        if (currentRate == AudioConfig.SAMPLE_RATE_AUTO) {
-            currentRate = AudioConfig.SAMPLE_RATE_48K
-            prefs.edit().putString(AudioConfig.PREF_KEY_SAMPLE_RATE, currentRate).apply()
-        }
+        val currentRate = prefs.getString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_AUTO) ?: AudioConfig.SAMPLE_RATE_AUTO
         when (currentRate) {
             AudioConfig.SAMPLE_RATE_44K -> toggleRateGroup.check(R.id.btn_rate_44k)
+            AudioConfig.SAMPLE_RATE_48K -> toggleRateGroup.check(R.id.btn_rate_48k)
             AudioConfig.SAMPLE_RATE_96K -> toggleRateGroup.check(R.id.btn_rate_96k)
             AudioConfig.SAMPLE_RATE_192K -> toggleRateGroup.check(R.id.btn_rate_192k)
-            else -> toggleRateGroup.check(R.id.btn_rate_48k)
+            else -> toggleRateGroup.check(R.id.btn_rate_auto)
         }
         updateRateUi(currentRate)
 
@@ -164,12 +175,34 @@ class SettingsActivity : AppCompatActivity() {
             if (isChecked) {
                 val selected = when (checkedId) {
                     R.id.btn_rate_44k -> AudioConfig.SAMPLE_RATE_44K
+                    R.id.btn_rate_48k -> AudioConfig.SAMPLE_RATE_48K
                     R.id.btn_rate_96k -> AudioConfig.SAMPLE_RATE_96K
                     R.id.btn_rate_192k -> AudioConfig.SAMPLE_RATE_192K
-                    else -> AudioConfig.SAMPLE_RATE_48K
+                    else -> AudioConfig.SAMPLE_RATE_AUTO
                 }
                 prefs.edit().putString(AudioConfig.PREF_KEY_SAMPLE_RATE, selected).apply()
                 updateRateUi(selected)
+                notifySettingsChanged()
+            }
+        }
+
+        val currentBit = prefs.getString(AudioConfig.PREF_KEY_BIT_DEPTH, AudioConfig.BIT_DEPTH_AUTO) ?: AudioConfig.BIT_DEPTH_AUTO
+        when (currentBit) {
+            AudioConfig.BIT_DEPTH_16 -> toggleBitGroup.check(R.id.btn_bit_16)
+            AudioConfig.BIT_DEPTH_24 -> toggleBitGroup.check(R.id.btn_bit_24)
+            else -> toggleBitGroup.check(R.id.btn_bit_auto)
+        }
+        updateBitUi(currentBit)
+
+        toggleBitGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (isChecked) {
+                val selected = when (checkedId) {
+                    R.id.btn_bit_16 -> AudioConfig.BIT_DEPTH_16
+                    R.id.btn_bit_24 -> AudioConfig.BIT_DEPTH_24
+                    else -> AudioConfig.BIT_DEPTH_AUTO
+                }
+                prefs.edit().putString(AudioConfig.PREF_KEY_BIT_DEPTH, selected).apply()
+                updateBitUi(selected)
                 notifySettingsChanged()
             }
         }
@@ -312,11 +345,12 @@ class SettingsActivity : AppCompatActivity() {
         btnProfileMusic.setTextColor(if (isMusic) Color.WHITE else colorTextSecondary)
 
         cardSampleRate.visibility = if (isMusic) View.VISIBLE else View.GONE
+        cardBitDepth.visibility = if (isMusic) View.VISIBLE else View.GONE
 
         tvProfileDescription.text = when {
-            isVideo -> "Low Latency (Opus/AAC): Pure compressed audio (Opus 320 kbps VBR or AAC 192 kbps) with 40ms cushion. Instantaneous response, 80-85% less Wi-Fi airtime, and zero FastMixer filtering for video lip-sync and gaming across rooms."
-            isMusic -> "Uncapped Music Mode: Lossless 24-bit Studio Master PCM (up to 192 kHz) with deep 500ms buffer and 2.56s headroom. Maximum jitter protection for uninterrupted hi-fi listening."
-            else -> "Auto Adaptive Mode: Dynamically floats jitter watermark between 35ms and 400ms using RFC 3550 statistical inter-arrival jitter estimation. Responds instantaneously to radio interference."
+            isVideo -> "Low Latency (Opus): Locked to 16-bit / 44.1 kHz with pure compressed Opus (320 kbps VBR) and 40ms cushion. Instantaneous response, 80-85% less Wi-Fi airtime for video lip-sync and gaming."
+            isMusic -> "Unlocked Music Mode: Bit-perfect lossless PCM with clock drift splicing disabled. Unlocks sample rate and bit depth controls (with Auto media detection or manual override up to 192 kHz / 24-bit)."
+            else -> "Auto Adaptive Mode: Fully autoselects sample rate and bit depth based on active Android media playback (Tidal, Spotify, YouTube). Dynamically floats jitter watermark between 35ms and 400ms using RFC 3550 statistical estimation."
         }
     }
 
@@ -334,10 +368,14 @@ class SettingsActivity : AppCompatActivity() {
         btnRate192k.isEnabled = is192kSupported
         btnRate192k.alpha = if (is192kSupported) 1.0f else 0.4f
 
+        val isAutoSelected = (rate == AudioConfig.SAMPLE_RATE_AUTO)
         val is44Selected = (rate == AudioConfig.SAMPLE_RATE_44K)
-        val is48Selected = (rate == AudioConfig.SAMPLE_RATE_48K || rate == AudioConfig.SAMPLE_RATE_AUTO)
+        val is48Selected = (rate == AudioConfig.SAMPLE_RATE_48K)
         val is96Selected = (rate == AudioConfig.SAMPLE_RATE_96K)
         val is192Selected = (rate == AudioConfig.SAMPLE_RATE_192K)
+
+        btnRateAuto.backgroundTintList = ColorStateList.valueOf(if (isAutoSelected) colorPrimary else colorCard)
+        btnRateAuto.setTextColor(if (isAutoSelected) Color.WHITE else colorTextSecondary)
 
         btnRate44k.backgroundTintList = ColorStateList.valueOf(if (is44Selected) colorPrimary else colorCard)
         btnRate44k.setTextColor(if (is44Selected) Color.WHITE else colorTextSecondary)
@@ -355,7 +393,33 @@ class SettingsActivity : AppCompatActivity() {
             AudioConfig.SAMPLE_RATE_44K -> "44.1 kHz: Native CD-quality streaming (880 bytes / chunk). Direct uncompressed PCM."
             AudioConfig.SAMPLE_RATE_96K -> if (is96kSupported) "96.0 kHz: High-resolution studio master (1920 bytes / chunk). Requires 96k DAC support." else "96.0 kHz: Not supported by local transmitter hardware."
             AudioConfig.SAMPLE_RATE_192K -> if (is192kSupported) "192.0 kHz: Ultra high-resolution studio master (3840 bytes / chunk). Pure audiophile tier." else "192.0 kHz: Not supported by local transmitter hardware."
-            else -> "48.0 kHz: Native studio & video rate (960 bytes / chunk). Default master streaming rate."
+            AudioConfig.SAMPLE_RATE_48K -> "48.0 kHz: Native studio & video rate (960 bytes / chunk). Standard master streaming rate."
+            else -> "Auto: Synchronizes sample rate with active Android media playback (Tidal, Spotify, YouTube). Avoids audio resampler comb filtering and distortion."
+        }
+    }
+
+    private fun updateBitUi(bit: String) {
+        val colorPrimary = ContextCompat.getColor(this, R.color.primary)
+        val colorCard = ContextCompat.getColor(this, R.color.card_bg)
+        val colorTextSecondary = ContextCompat.getColor(this, R.color.text_secondary)
+
+        val isAutoSelected = (bit == AudioConfig.BIT_DEPTH_AUTO)
+        val is16Selected = (bit == AudioConfig.BIT_DEPTH_16)
+        val is24Selected = (bit == AudioConfig.BIT_DEPTH_24)
+
+        btnBitAuto.backgroundTintList = ColorStateList.valueOf(if (isAutoSelected) colorPrimary else colorCard)
+        btnBitAuto.setTextColor(if (isAutoSelected) Color.WHITE else colorTextSecondary)
+
+        btnBit16.backgroundTintList = ColorStateList.valueOf(if (is16Selected) colorPrimary else colorCard)
+        btnBit16.setTextColor(if (is16Selected) Color.WHITE else colorTextSecondary)
+
+        btnBit24.backgroundTintList = ColorStateList.valueOf(if (is24Selected) colorPrimary else colorCard)
+        btnBit24.setTextColor(if (is24Selected) Color.WHITE else colorTextSecondary)
+
+        tvBitDescription.text = when (bit) {
+            AudioConfig.BIT_DEPTH_16 -> "16-bit: Standard 16-bit integer PCM. Bit-for-bit match for CD audio, Tidal HiFi, and Spotify with zero upsampling."
+            AudioConfig.BIT_DEPTH_24 -> "24-bit: Lossless 24-bit packed PCM. 144 dB theoretical dynamic range for studio masters."
+            else -> "Auto: Automatically uses 16-bit for CD/standard streams (44.1k/48k) to avoid artificial upsampling, and 24-bit for Hi-Res streams."
         }
     }
 

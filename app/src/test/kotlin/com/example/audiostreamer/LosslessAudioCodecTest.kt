@@ -216,4 +216,68 @@ class LosslessAudioCodecTest {
         assertTrue("Encode time must be sub-millisecond (< 500 us)", avgEncodeUs < 500.0)
         assertTrue("Decode time must be sub-millisecond (< 500 us)", avgDecodeUs < 500.0)
     }
+
+    @Test
+    fun testTransientSpikeEscape() {
+        val codec = LosslessAudioCodec(1024)
+        val frameCount = 240
+        val pcm = ByteArray(frameCount * 6)
+        // Mostly smooth low amplitude sine
+        for (i in 0 until frameCount) {
+            var sL = (sin(i.toDouble() / 10.0) * 1000.0).toInt()
+            var sR = (sin(i.toDouble() / 10.0) * 1000.0).toInt()
+            // Sudden sharp step transient spike at sample 100
+            if (i == 100) {
+                sL = 7000000
+                sR = -7000000
+            } else if (i == 101) {
+                sL = -7000000
+                sR = 7000000
+            }
+            val p = i * 6
+            pcm[p] = (sL and 0xFF).toByte()
+            pcm[p + 1] = ((sL shr 8) and 0xFF).toByte()
+            pcm[p + 2] = ((sL shr 16) and 0xFF).toByte()
+            pcm[p + 3] = (sR and 0xFF).toByte()
+            pcm[p + 4] = ((sR shr 8) and 0xFF).toByte()
+            pcm[p + 5] = ((sR shr 16) and 0xFF).toByte()
+        }
+
+        val comp = ByteArray(pcm.size * 2)
+        val compLen = codec.encode(pcm, 0, pcm.size, true, comp, 0)
+        val decomp = ByteArray(pcm.size)
+        val decompLen = codec.decode(comp, 0, compLen, true, decomp, 0)
+        assertEquals(pcm.size, decompLen)
+        assertArrayEquals("PCM must match exactly across sharp transient spike", pcm, decomp)
+    }
+
+    @Test
+    fun test16BitTransientSpikeEscape() {
+        val codec = LosslessAudioCodec(1024)
+        val frameCount = 240
+        val pcm = ByteArray(frameCount * 4)
+        for (i in 0 until frameCount) {
+            var sL = (sin(i.toDouble() / 10.0) * 100.0).toInt().toShort()
+            var sR = (sin(i.toDouble() / 10.0) * 100.0).toInt().toShort()
+            if (i == 100) {
+                sL = 32000.toShort()
+                sR = (-32000).toShort()
+            } else if (i == 101) {
+                sL = (-32000).toShort()
+                sR = 32000.toShort()
+            }
+            val p = i * 4
+            pcm[p] = (sL.toInt() and 0xFF).toByte()
+            pcm[p + 1] = ((sL.toInt() shr 8) and 0xFF).toByte()
+            pcm[p + 2] = (sR.toInt() and 0xFF).toByte()
+            pcm[p + 3] = ((sR.toInt() shr 8) and 0xFF).toByte()
+        }
+
+        val comp = ByteArray(pcm.size * 2)
+        val compLen = codec.encode(pcm, 0, pcm.size, false, comp, 0)
+        val decomp = ByteArray(pcm.size)
+        val decompLen = codec.decode(comp, 0, compLen, false, decomp, 0)
+        assertEquals(pcm.size, decompLen)
+        assertArrayEquals("16-bit PCM must match exactly across sharp transient spike", pcm, decomp)
+    }
 }

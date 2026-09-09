@@ -159,7 +159,7 @@ class LosslessAudioCodec(private val maxFramesPerPacket: Int = 1024) {
         val k1 = calculateRiceK(ch1, frameCount)
         val k2 = calculateRiceK(ch2, frameCount)
 
-        val rawSampleBits = if (is24Bit) 24 else 16
+        val escapeBits = if (is24Bit) 30 else 20
 
         // 5. Entropy encode into bitstream
         bitWriter.reset()
@@ -175,7 +175,7 @@ class LosslessAudioCodec(private val maxFramesPerPacket: Int = 1024) {
                 bitWriter.writeBits(u and ((1 shl k1) - 1), k1)
             } else {
                 bitWriter.writeZeros(MAX_UNARY_Q)
-                bitWriter.writeBits(u, rawSampleBits)
+                bitWriter.writeBits(u, escapeBits)
             }
         }
 
@@ -189,7 +189,7 @@ class LosslessAudioCodec(private val maxFramesPerPacket: Int = 1024) {
                 bitWriter.writeBits(u and ((1 shl k2) - 1), k2)
             } else {
                 bitWriter.writeZeros(MAX_UNARY_Q)
-                bitWriter.writeBits(u, rawSampleBits)
+                bitWriter.writeBits(u, escapeBits)
             }
         }
 
@@ -263,7 +263,7 @@ class LosslessAudioCodec(private val maxFramesPerPacket: Int = 1024) {
         val k2 = (kParamByte ushr 4) and 0x0F
 
         bitReader.init(comp, offset + 4, length - 4)
-        val rawSampleBits = if (is24Bit) 24 else 16
+        val escapeBits = if (is24Bit) 30 else 20
 
         val ch1 = if (mode == MODE_MID_SIDE) zzM else zzL
         val ch2 = if (mode == MODE_MID_SIDE) zzS else zzR
@@ -275,7 +275,7 @@ class LosslessAudioCodec(private val maxFramesPerPacket: Int = 1024) {
                 val r = bitReader.readBits(k1)
                 ch1[i] = (q shl k1) or r
             } else {
-                ch1[i] = bitReader.readBits(rawSampleBits)
+                ch1[i] = bitReader.readBits(escapeBits)
             }
         }
 
@@ -286,7 +286,7 @@ class LosslessAudioCodec(private val maxFramesPerPacket: Int = 1024) {
                 val r = bitReader.readBits(k2)
                 ch2[i] = (q shl k2) or r
             } else {
-                ch2[i] = bitReader.readBits(rawSampleBits)
+                ch2[i] = bitReader.readBits(escapeBits)
             }
         }
 

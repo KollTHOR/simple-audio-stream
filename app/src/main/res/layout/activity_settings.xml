@@ -257,7 +257,22 @@
                         android:layout_marginBottom="10dp"
                         app:singleSelection="true"
                         app:selectionRequired="true"
-                        app:checkedButton="@+id/btn_rate_48k">
+                        app:checkedButton="@+id/btn_rate_auto">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_rate_auto"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="0dp"
+                            android:layout_height="match_parent"
+                            android:layout_weight="1"
+                            android:paddingStart="2dp"
+                            android:paddingEnd="2dp"
+                            android:text="Auto"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_primary"
+                            app:strokeColor="@color/card_stroke"
+                            app:cornerRadius="8dp" />
 
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/btn_rate_44k"
@@ -265,8 +280,8 @@
                             android:layout_width="0dp"
                             android:layout_height="match_parent"
                             android:layout_weight="1"
-                            android:paddingStart="4dp"
-                            android:paddingEnd="4dp"
+                            android:paddingStart="2dp"
+                            android:paddingEnd="2dp"
                             android:text="44.1k"
                             android:textSize="11sp"
                             android:textStyle="bold"
@@ -280,8 +295,8 @@
                             android:layout_width="0dp"
                             android:layout_height="match_parent"
                             android:layout_weight="1"
-                            android:paddingStart="4dp"
-                            android:paddingEnd="4dp"
+                            android:paddingStart="2dp"
+                            android:paddingEnd="2dp"
                             android:text="48.0k"
                             android:textSize="11sp"
                             android:textStyle="bold"
@@ -295,8 +310,8 @@
                             android:layout_width="0dp"
                             android:layout_height="match_parent"
                             android:layout_weight="1"
-                            android:paddingStart="4dp"
-                            android:paddingEnd="4dp"
+                            android:paddingStart="2dp"
+                            android:paddingEnd="2dp"
                             android:text="96.0k"
                             android:textSize="11sp"
                             android:textStyle="bold"
@@ -310,8 +325,8 @@
                             android:layout_width="0dp"
                             android:layout_height="match_parent"
                             android:layout_weight="1"
-                            android:paddingStart="4dp"
-                            android:paddingEnd="4dp"
+                            android:paddingStart="2dp"
+                            android:paddingEnd="2dp"
                             android:text="192k"
                             android:textSize="11sp"
                             android:textStyle="bold"
@@ -324,7 +339,104 @@
                         android:id="@+id/tv_rate_description"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="48.0 kHz: Native studio &amp; video rate (960 bytes / chunk). Default master streaming rate."
+                        android:text="Auto: Synchronizes with active media playback (Tidal, Spotify, YouTube). Avoids audio resampler comb filtering."
+                        android:textSize="12sp"
+                        android:textColor="@color/text_hint"
+                        android:lineSpacingMultiplier="1.15" />
+
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <!-- Server Bit Depth Card -->
+            <com.google.android.material.card.MaterialCardView
+                android:id="@+id/card_bit_depth"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="@dimen/card_spacing"
+                app:cardCornerRadius="14dp"
+                app:cardElevation="1dp"
+                app:strokeColor="@color/card_stroke"
+                app:strokeWidth="1dp"
+                app:cardBackgroundColor="@color/card_bg">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="@dimen/card_inner_padding">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="TRANSMITTER BIT DEPTH"
+                        android:textSize="11sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/text_hint"
+                        android:letterSpacing="0.05"
+                        android:layout_marginBottom="8dp" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Select audio bit depth resolution:"
+                        android:textSize="13sp"
+                        android:textColor="@color/text_secondary"
+                        android:layout_marginBottom="12dp" />
+
+                    <com.google.android.material.button.MaterialButtonToggleGroup
+                        android:id="@+id/toggle_bit_group"
+                        android:layout_width="match_parent"
+                        android:layout_height="@dimen/toggle_height"
+                        android:layout_marginBottom="10dp"
+                        app:singleSelection="true"
+                        app:selectionRequired="true"
+                        app:checkedButton="@+id/btn_bit_auto">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_bit_auto"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="0dp"
+                            android:layout_height="match_parent"
+                            android:layout_weight="1"
+                            android:text="Auto"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_primary"
+                            app:strokeColor="@color/card_stroke"
+                            app:cornerRadius="8dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_bit_16"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="0dp"
+                            android:layout_height="match_parent"
+                            android:layout_weight="1"
+                            android:text="16-bit"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_primary"
+                            app:strokeColor="@color/card_stroke"
+                            app:cornerRadius="8dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_bit_24"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="0dp"
+                            android:layout_height="match_parent"
+                            android:layout_weight="1"
+                            android:text="24-bit"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_primary"
+                            app:strokeColor="@color/card_stroke"
+                            app:cornerRadius="8dp" />
+                    </com.google.android.material.button.MaterialButtonToggleGroup>
+
+                    <TextView
+                        android:id="@+id/tv_bit_description"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Auto: Automatically chooses 16-bit for standard CD/stream audio and 24-bit for Hi-Res (>=88.2 kHz)."
                         android:textSize="12sp"
                         android:textColor="@color/text_hint"
                         android:lineSpacingMultiplier="1.15" />

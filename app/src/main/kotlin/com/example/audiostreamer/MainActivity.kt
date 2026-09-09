@@ -1055,7 +1055,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
-        val savedProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
+        val savedProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_AUTO) ?: AudioConfig.PROFILE_AUTO
         val activeProfileName = if (isSinkRunning || isSenderRunning) {
             t.streamProfileName
         } else {
