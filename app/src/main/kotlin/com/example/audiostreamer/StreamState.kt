@@ -23,7 +23,8 @@ data class Telemetry(
     val bitrateKbps: Int = 1536,
     val isSilenceSuppressed: Boolean = false,
     val fecRecoveredTotal: Long = 0L,
-    val activeReceiversCount: Int = 1
+    val activeReceiversCount: Int = 1,
+    val remoteVolumePercent: Int = 100
 )
 
 object StreamState {

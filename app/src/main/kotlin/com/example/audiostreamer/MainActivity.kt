@@ -934,7 +934,7 @@ class MainActivity : AppCompatActivity() {
         updateModeAndButtonUi()
 
         if (currentMode == Mode.TRANSMITTER) {
-            val curVol = AudioCaptureService.remoteVolumePercent.get()
+            val curVol = t.remoteVolumePercent
             if (!sliderRemoteVol.isPressed && sliderRemoteVol.value.toInt() != curVol) {
                 sliderRemoteVol.value = curVol.toFloat()
                 tvRemoteVolLabel.text = "$curVol%"
@@ -1261,31 +1261,24 @@ class MainActivity : AppCompatActivity() {
     private fun sendVolumeDeltaIntent(delta: Int) {
         val cur = AudioCaptureService.remoteVolumePercent.get()
         val newVol = (cur + delta).coerceIn(0, 100)
+        sliderRemoteVol.value = newVol.toFloat()
+        tvRemoteVolLabel.text = "$newVol%"
         sendVolumeIntent(newVol)
     }
 
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (currentMode == Mode.TRANSMITTER && AudioCaptureService.isRunning.get()) {
-            when (keyCode) {
-                KeyEvent.KEYCODE_VOLUME_UP -> {
-                    sendVolumeDeltaIntent(5)
-                    return true
-                }
-                KeyEvent.KEYCODE_VOLUME_DOWN -> {
-                    sendVolumeDeltaIntent(-5)
-                    return true
-                }
-            }
-        }
-        return super.onKeyDown(keyCode, event)
-    }
-
-    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
-        if (currentMode == Mode.TRANSMITTER && AudioCaptureService.isRunning.get()) {
+            val keyCode = event.keyCode
             if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    if (event.repeatCount == 0 || event.repeatCount % 3 == 0) {
+                        val delta = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) 5 else -5
+                        sendVolumeDeltaIntent(delta)
+                    }
+                }
                 return true
             }
         }
-        return super.onKeyUp(keyCode, event)
+        return super.dispatchKeyEvent(event)
     }
 }

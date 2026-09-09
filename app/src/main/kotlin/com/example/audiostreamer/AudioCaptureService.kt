@@ -171,6 +171,7 @@ class AudioCaptureService : Service() {
     private fun updateRemoteVolume(newVolume: Int) {
         val clamped = newVolume.coerceIn(0, 100)
         remoteVolumePercent.set(clamped)
+        StreamState.update { it.copy(remoteVolumePercent = clamped) }
         Log.d(TAG, "Remote volume updated: $clamped%")
 
         // If streaming is actively running, streamThread transmits the new volume in the next 5ms audio packet.
@@ -1245,6 +1246,8 @@ class AudioCaptureService : Service() {
     }
 
     private fun registerVolumeClampGuard() {
+        // Only activate background clamp guard if the user has enabled the Accessibility Service (Pocket Mode)
+        if (!VolumeKeyInterceptorService.isRunning.get()) return
         if (volumeReceiver != null || volumeObserver != null) return
         try {
             val receiver = object : BroadcastReceiver() {
@@ -1278,7 +1281,7 @@ class AudioCaptureService : Service() {
     }
 
     private fun checkAndClampTransmitterVolume() {
-        if (!isRunning.get()) return
+        if (!isRunning.get() || !VolumeKeyInterceptorService.isRunning.get()) return
         try {
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
             val currentVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
@@ -1288,12 +1291,10 @@ class AudioCaptureService : Service() {
                     0,
                     AudioManager.FLAG_REMOVE_SOUND_AND_VIBRATE
                 )
-                val newVol = (remoteVolumePercent.get() + 5).coerceIn(0, 100)
-                updateRemoteVolume(newVol)
-                Log.d(TAG, "Speaker bleed watchdog: forced STREAM_MUSIC to 0, incremented remote volume to $newVol%")
+                Log.d(TAG, "Pocket mode: maintained transmitter STREAM_MUSIC at 0")
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Error in speaker bleed watchdog: ${e.message}")
+            Log.w(TAG, "Error in pocket mode volume clamp: ${e.message}")
         }
     }
 

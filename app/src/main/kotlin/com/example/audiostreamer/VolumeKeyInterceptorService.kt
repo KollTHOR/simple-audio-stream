@@ -58,15 +58,17 @@ class VolumeKeyInterceptorService : AccessibilityService() {
         }
 
         if (event.action == KeyEvent.ACTION_DOWN) {
-            val delta = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) 5 else -5
-            val current = AudioCaptureService.remoteVolumePercent.get()
-            val newVol = (current + delta).coerceIn(0, 100)
+            if (event.repeatCount == 0 || event.repeatCount % 3 == 0) {
+                val delta = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) 5 else -5
+                val current = AudioCaptureService.remoteVolumePercent.get()
+                val newVol = (current + delta).coerceIn(0, 100)
 
-            val intent = Intent(this, AudioCaptureService::class.java).apply {
-                action = AudioCaptureService.ACTION_SET_VOLUME
-                putExtra(AudioCaptureService.EXTRA_VOLUME_PERCENT, newVol)
+                val intent = Intent(this, AudioCaptureService::class.java).apply {
+                    action = AudioCaptureService.ACTION_SET_VOLUME
+                    putExtra(AudioCaptureService.EXTRA_VOLUME_PERCENT, newVol)
+                }
+                startService(intent)
             }
-            startService(intent)
         }
 
         // Consume both ACTION_DOWN and ACTION_UP to avoid un-silencing the transmitter phone

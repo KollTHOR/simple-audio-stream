@@ -374,7 +374,7 @@
                             <TextView
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="Sync Receiver Hardware Volume"
+                                android:text="[Receiver Only] Sync System Media Slider"
                                 android:textSize="14sp"
                                 android:textStyle="bold"
                                 android:textColor="@color/text_primary" />
@@ -382,7 +382,7 @@
                             <TextView
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="Aligns receiver phone physical media volume (STREAM_MUSIC) to match transmitter volume."
+                                android:text="When acting as a Receiver, also aligns the Android system media volume slider (STREAM_MUSIC) to match remote volume."
                                 android:textSize="12sp"
                                 android:textColor="@color/text_secondary"
                                 android:layout_marginTop="2dp" />
