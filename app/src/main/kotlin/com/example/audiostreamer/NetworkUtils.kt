@@ -23,7 +23,8 @@ object NetworkUtils {
      * Finds all non-loopback IPv4 addresses across all active interfaces (e.g. Wi-Fi and Hotspot).
      */
     fun getAllLocalIpAddresses(): List<String> {
-        val ips = mutableListOf<String>()
+        val lanIps = mutableListOf<String>()
+        val p2pIps = mutableListOf<String>()
         try {
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return emptyList()
             for (intf in interfaces) {
@@ -37,11 +38,17 @@ object NetworkUtils {
                     null
                 } ?: continue
 
+                val isP2pInterface = intf.name.contains("p2p", ignoreCase = true)
+
                 for (addr in addrs) {
                     if (!addr.isLoopbackAddress && addr is Inet4Address) {
                         val host = addr.hostAddress ?: continue
                         if (!host.startsWith("127.")) {
-                            ips.add(host)
+                            if (isP2pInterface || host.startsWith("192.168.49.")) {
+                                p2pIps.add(host)
+                            } else {
+                                lanIps.add(host)
+                            }
                         }
                     }
                 }
@@ -49,7 +56,8 @@ object NetworkUtils {
         } catch (e: Exception) {
             Log.w(TAG, "Failed to get all local IP addresses", e)
         }
-        return ips.distinct()
+        // Always prioritize real Wi-Fi/Ethernet LAN IPs ahead of P2P virtual interfaces
+        return (lanIps + p2pIps).distinct()
     }
 
     /**

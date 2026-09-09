@@ -75,7 +75,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var pbDiscoveryScanning: ProgressBar
     private lateinit var tvDiscoveryScanningText: TextView
     private lateinit var btnScanReceivers: MaterialButton
-    private lateinit var chipGroupDiscovered: ChipGroup
+    private lateinit var layoutDiscoveredDevicesContainer: LinearLayout
 
     private lateinit var layoutReceiverP2p: LinearLayout
     private lateinit var switchReceiverP2p: SwitchMaterial
@@ -295,7 +295,7 @@ class MainActivity : AppCompatActivity() {
         pbDiscoveryScanning = findViewById(R.id.pb_discovery_scanning)
         tvDiscoveryScanningText = findViewById(R.id.tv_discovery_scanning_text)
         btnScanReceivers = findViewById(R.id.btn_scan_receivers)
-        chipGroupDiscovered = findViewById(R.id.chip_group_discovered)
+        layoutDiscoveredDevicesContainer = findViewById(R.id.layout_discovered_devices_container)
 
         layoutReceiverP2p = findViewById(R.id.layout_receiver_p2p)
         switchReceiverP2p = findViewById(R.id.switch_receiver_p2p)
@@ -464,13 +464,17 @@ class MainActivity : AppCompatActivity() {
 
         toggleModeGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
             if (isChecked) {
-                currentMode = if (checkedId == R.id.btn_mode_transmitter) {
+                val newMode = if (checkedId == R.id.btn_mode_transmitter) {
                     Mode.TRANSMITTER
                 } else {
                     Mode.RECEIVER
                 }
-                syncDiscoveryMode()
-                updateModeAndButtonUi()
+                if (currentMode != newMode) {
+                    onModeSwitched(currentMode, newMode)
+                    currentMode = newMode
+                    syncDiscoveryMode()
+                    updateModeAndButtonUi()
+                }
             }
         }
 
@@ -552,129 +556,238 @@ class MainActivity : AppCompatActivity() {
         tvDiscoveryScanningText.visibility = if (isScanning) View.VISIBLE else View.GONE
     }
 
-    private fun updateDiscoveredDevicesUi() {
-        chipGroupDiscovered.removeAllViews()
+    data class UnifiedDevice(
+        val id: String,
+        val displayName: String,
+        val modelName: String?,
+        val lanIp: String?,
+        val port: Int = AudioConfig.DEFAULT_PORT,
+        val p2pPeer: WifiP2pDevice?,
+        val p2pSsid: String?,
+        val p2pPassphrase: String?,
+        val p2pGoIp: String?,
+        val isDirectAvailable: Boolean,
+        var useDirect: Boolean = false,
+        val capabilitiesMask: Int = 0
+    )
+
+    private val deviceDirectPreferences = mutableMapOf<String, Boolean>()
+
+    private fun getUnifiedDiscoveredDevices(): List<UnifiedDevice> {
         val localDevices = DiscoveryManager.discoveredDevices.value
-        val p2pPeers = WifiDirectManager.discoveredPeers.value
+        val p2pPeers = WifiDirectManager.discoveredPeers.value.toMutableList()
+        val unified = mutableListOf<UnifiedDevice>()
 
         for (dev in localDevices) {
-            val chip = Chip(this).apply {
-                text = if (dev.isP2pActive) "${dev.name} (P2P Ready)" else dev.name
-                isClickable = true
-                isCheckable = false
-                setChipBackgroundColorResource(R.color.pill_bg)
-                setChipStrokeColorResource(R.color.pill_stroke)
-                chipStrokeWidth = 1.dpToPx().toFloat()
-                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_primary))
-                setChipIconResource(R.drawable.ic_receiver)
-                chipIconTint = ColorStateList.valueOf(ContextCompat.getColor(this@MainActivity, R.color.primary))
-                setOnClickListener {
-                    showDiscoveredDeviceActionDialog(dev)
-                }
+            // Find matching P2P peer by deviceAddress / p2pMac or by name match
+            val matchingPeerIndex = p2pPeers.indexOfFirst { peer ->
+                (dev.p2pMac != null && peer.deviceAddress.equals(dev.p2pMac, ignoreCase = true)) ||
+                (peer.deviceName.isNotEmpty() && (
+                    peer.deviceName.equals(dev.name, ignoreCase = true) ||
+                    dev.name.contains(peer.deviceName, ignoreCase = true) ||
+                    peer.deviceName.contains(dev.name, ignoreCase = true)
+                ))
             }
-            chipGroupDiscovered.addView(chip)
+
+            val matchingPeer = if (matchingPeerIndex >= 0) p2pPeers.removeAt(matchingPeerIndex) else null
+            val isDirect = dev.isP2pActive || matchingPeer != null || !dev.p2pSsid.isNullOrEmpty()
+
+            val displayName = matchingPeer?.deviceName?.takeIf { it.isNotEmpty() }
+                ?: dev.name.takeIf { it != "Audio Receiver" && it.isNotEmpty() }
+                ?: "Audio Receiver"
+
+            unified.add(
+                UnifiedDevice(
+                    id = dev.p2pMac ?: "ip_${dev.ip}",
+                    displayName = displayName,
+                    modelName = dev.modelName ?: if (dev.name != displayName && dev.name != "Audio Receiver") dev.name else null,
+                    lanIp = if (dev.ip.startsWith("192.168.49.")) null else dev.ip,
+                    port = dev.port,
+                    p2pPeer = matchingPeer,
+                    p2pSsid = dev.p2pSsid,
+                    p2pPassphrase = dev.p2pPassphrase,
+                    p2pGoIp = dev.p2pGoIp ?: if (dev.ip.startsWith("192.168.49.")) dev.ip else null,
+                    isDirectAvailable = isDirect,
+                    useDirect = !isDirect && dev.ip.startsWith("192.168.49."),
+                    capabilitiesMask = dev.capabilitiesMask
+                )
+            )
         }
 
+        // Add any remaining P2P peers that were not matched with a UDP broadcast
         for (peer in p2pPeers) {
             val peerName = peer.deviceName.ifEmpty { "Wi-Fi Direct Receiver" }
-            val chip = Chip(this).apply {
-                text = "$peerName (Direct)"
-                isClickable = true
-                isCheckable = false
-                setChipBackgroundColorResource(R.color.pill_bg)
-                setChipStrokeColorResource(R.color.pill_stroke)
-                chipStrokeWidth = 1.dpToPx().toFloat()
-                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_primary))
-                setChipIconResource(R.drawable.ic_receiver)
-                chipIconTint = ColorStateList.valueOf(ContextCompat.getColor(this@MainActivity, R.color.status_blue))
-                setOnClickListener {
-                    showDiscoveredPeerActionDialog(peer)
-                }
-            }
-            chipGroupDiscovered.addView(chip)
+            unified.add(
+                UnifiedDevice(
+                    id = "p2p_${peer.deviceAddress}",
+                    displayName = peerName,
+                    modelName = null,
+                    lanIp = null,
+                    port = AudioConfig.DEFAULT_PORT,
+                    p2pPeer = peer,
+                    p2pSsid = null,
+                    p2pPassphrase = null,
+                    p2pGoIp = null,
+                    isDirectAvailable = true,
+                    useDirect = true,
+                    capabilitiesMask = 0
+                )
+            )
         }
 
-        val hasDevices = localDevices.isNotEmpty() || p2pPeers.isNotEmpty()
+        return unified
+    }
+
+    private fun updateDiscoveredDevicesUi() {
+        layoutDiscoveredDevicesContainer.removeAllViews()
+        val devices = getUnifiedDiscoveredDevices()
+
+        for (dev in devices) {
+            val itemView = layoutInflater.inflate(R.layout.item_discovered_device, layoutDiscoveredDevicesContainer, false)
+            val card = itemView.findViewById<MaterialCardView>(R.id.card_discovered_device)
+            val tvName = itemView.findViewById<TextView>(R.id.tv_discovered_name)
+            val tvDetails = itemView.findViewById<TextView>(R.id.tv_discovered_details)
+            val switchDirect = itemView.findViewById<SwitchMaterial>(R.id.switch_discovered_direct)
+            val btnSave = itemView.findViewById<MaterialButton>(R.id.btn_discovered_save)
+            val btnUse = itemView.findViewById<MaterialButton>(R.id.btn_discovered_use)
+
+            tvName.text = if (!dev.modelName.isNullOrEmpty() && dev.modelName != dev.displayName) {
+                "${dev.displayName} (${dev.modelName})"
+            } else {
+                dev.displayName
+            }
+
+            // Restore user's Direct switch preference for this device
+            val directPref = deviceDirectPreferences[dev.id] ?: (dev.lanIp == null && dev.isDirectAvailable)
+            dev.useDirect = directPref
+
+            switchDirect.visibility = if (dev.isDirectAvailable) View.VISIBLE else View.GONE
+            switchDirect.isEnabled = dev.lanIp != null // If no LAN IP, Direct is mandatory
+            switchDirect.isChecked = dev.useDirect
+
+            fun updateDetailsText() {
+                val modeDesc = if (switchDirect.isChecked) {
+                    "Wi-Fi Direct (High Priority Link)"
+                } else {
+                    "Local Wi-Fi (${dev.lanIp ?: "No LAN IP"})"
+                }
+                tvDetails.text = modeDesc
+            }
+            updateDetailsText()
+
+            switchDirect.setOnCheckedChangeListener { _, isChecked ->
+                dev.useDirect = isChecked
+                deviceDirectPreferences[dev.id] = isChecked
+                updateDetailsText()
+            }
+
+            fun performUseDevice() {
+                if (switchDirect.isChecked) {
+                    connectToUnifiedDeviceDirect(dev)
+                } else {
+                    if (dev.lanIp != null) {
+                        etTargetIp.setText(dev.lanIp)
+                        etPort.setText(dev.port.toString())
+                        currentConnType = ConnectionType.LOCAL_WIFI
+                        ConnectionProfileManager.setActiveProfile(this@MainActivity, null)
+                        updateSavedProfilesUi()
+                        Toast.makeText(this@MainActivity, "Target set to ${dev.displayName} (${dev.lanIp})", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(this@MainActivity, "No LAN IP found, connecting via Wi-Fi Direct...", Toast.LENGTH_SHORT).show()
+                        connectToUnifiedDeviceDirect(dev)
+                    }
+                }
+            }
+
+            fun performSaveProfile() {
+                val isP2p = switchDirect.isChecked || dev.lanIp == null
+                val targetIp = if (isP2p) (dev.p2pGoIp ?: "192.168.49.1") else dev.lanIp!!
+                val profile = ConnectionProfile(
+                    id = if (isP2p) "p2p_${dev.id}" else "wifi_${dev.id}",
+                    name = dev.displayName,
+                    targetIp = targetIp,
+                    port = dev.port,
+                    connectionType = if (isP2p) ConnectionType.WIFI_DIRECT else ConnectionType.LOCAL_WIFI,
+                    preferredStreamingProfile = AudioConfig.PROFILE_MUSIC,
+                    capabilitiesMask = dev.capabilitiesMask,
+                    p2pSsid = dev.p2pSsid,
+                    p2pPassphrase = dev.p2pPassphrase
+                )
+                ConnectionProfileManager.saveProfile(this@MainActivity, profile)
+                applyProfile(profile)
+                Toast.makeText(this@MainActivity, "Profile saved and selected: ${profile.name}", Toast.LENGTH_SHORT).show()
+            }
+
+            btnUse.setOnClickListener { performUseDevice() }
+            btnSave.setOnClickListener { performSaveProfile() }
+            card.setOnClickListener { performUseDevice() }
+
+            layoutDiscoveredDevicesContainer.addView(itemView)
+        }
+
+        val hasDevices = devices.isNotEmpty()
         layoutDiscoverySection.visibility = if (currentMode == Mode.TRANSMITTER && hasDevices) View.VISIBLE else View.GONE
     }
 
-    private fun showDiscoveredDeviceActionDialog(dev: DiscoveredDevice) {
-        val options = if (dev.isP2pActive && !dev.p2pSsid.isNullOrEmpty()) {
-            arrayOf("Use Once (Local Wi-Fi)", "Save as Profile", "Direct Link (Wi-Fi Direct)")
-        } else {
-            arrayOf("Use Once", "Save as Profile")
-        }
+    private fun connectToUnifiedDeviceDirect(dev: UnifiedDevice) {
+        if (!checkAndRequestP2pPermissions()) return
+        currentConnType = ConnectionType.WIFI_DIRECT
 
-        MaterialAlertDialogBuilder(this)
-            .setTitle(dev.name)
-            .setItems(options) { _, which ->
-                when (options[which]) {
-                    "Use Once", "Use Once (Local Wi-Fi)" -> {
-                        etTargetIp.setText(dev.ip)
-                        etPort.setText(dev.port.toString())
-                        currentConnType = ConnectionType.LOCAL_WIFI
-                        ConnectionProfileManager.setActiveProfile(this, null)
-                        updateSavedProfilesUi()
-                        Toast.makeText(this, "Target set to ${dev.name} (${dev.ip})", Toast.LENGTH_SHORT).show()
-                    }
-                    "Save as Profile" -> {
-                        val profile = ConnectionProfileManager.createOrUpdateFromDiscoveredDevice(
-                            this, dev, ConnectionType.LOCAL_WIFI
-                        )
-                        applyProfile(profile)
-                        Toast.makeText(this, "Profile saved and selected: ${profile.name}", Toast.LENGTH_SHORT).show()
-                    }
-                    "Direct Link (Wi-Fi Direct)" -> {
-                        switchToP2pMode(dev)
-                    }
+        if (!dev.p2pSsid.isNullOrEmpty()) {
+            val pass = dev.p2pPassphrase ?: WifiDirectManager.P2P_DEFAULT_PASSPHRASE
+            AppLogger.i("MainActivity", "Direct-linking to '${dev.displayName}' SSID=${dev.p2pSsid}...")
+            Toast.makeText(this, "Direct-linking to ${dev.displayName}...", Toast.LENGTH_SHORT).show()
+            WifiDirectManager.connectWithCredentials(this, dev.p2pSsid, pass) { goIp ->
+                runOnUiThread {
+                    etTargetIp.setText(goIp)
+                    etPort.setText(dev.port.toString())
+                    Toast.makeText(this@MainActivity, "Direct connected to ${dev.displayName} ($goIp)", Toast.LENGTH_SHORT).show()
                 }
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        } else if (dev.p2pPeer != null) {
+            AppLogger.i("MainActivity", "Connecting to P2P peer '${dev.displayName}'...")
+            Toast.makeText(this, "Connecting to ${dev.displayName}...", Toast.LENGTH_SHORT).show()
+            WifiDirectManager.connectToPeer(this, dev.p2pPeer) { goIp ->
+                runOnUiThread {
+                    etTargetIp.setText(goIp)
+                    etPort.setText(dev.port.toString())
+                    Toast.makeText(this@MainActivity, "Direct connected to ${dev.displayName} ($goIp)", Toast.LENGTH_SHORT).show()
+                }
+            }
+        } else {
+            Toast.makeText(this, "No Wi-Fi Direct credentials found for ${dev.displayName}", Toast.LENGTH_SHORT).show()
+        }
     }
 
-    private fun showDiscoveredPeerActionDialog(peer: WifiP2pDevice) {
-        val peerName = peer.deviceName.ifEmpty { "Wi-Fi Direct Receiver" }
-        val options = arrayOf("Connect & Use Once", "Connect & Save Profile")
+    private fun onModeSwitched(oldMode: Mode, newMode: Mode) {
+        if (oldMode == Mode.RECEIVER && newMode == Mode.TRANSMITTER) {
+            // 1. If receiver autonomous P2P group was active, tear it down
+            if (switchReceiverP2p.isChecked || WifiDirectManager.isGroupCreated.value) {
+                switchReceiverP2p.isChecked = false
+                WifiDirectManager.removeGroup(this)
+                layoutReceiverP2pInfo.visibility = View.GONE
+                AppLogger.i("MainActivity", "Torn down autonomous P2P group on mode switch to Transmitter")
+            }
 
-        MaterialAlertDialogBuilder(this)
-            .setTitle(peerName)
-            .setItems(options) { _, which ->
-                when (which) {
-                    0 -> {
-                        Toast.makeText(this, "Connecting to $peerName...", Toast.LENGTH_SHORT).show()
-                        WifiDirectManager.connectToPeer(this, peer) { goIp ->
-                            runOnUiThread {
-                                etTargetIp.setText(goIp)
-                                etPort.setText(AudioConfig.DEFAULT_PORT.toString())
-                                currentConnType = ConnectionType.WIFI_DIRECT
-                                ConnectionProfileManager.setActiveProfile(this, null)
-                                updateSavedProfilesUi()
-                                Toast.makeText(this, "Connected to $peerName ($goIp)", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    }
-                    1 -> {
-                        Toast.makeText(this, "Connecting to $peerName...", Toast.LENGTH_SHORT).show()
-                        WifiDirectManager.connectToPeer(this, peer) { goIp ->
-                            runOnUiThread {
-                                val p2pProfile = ConnectionProfile(
-                                    id = "p2p_${peer.deviceAddress}",
-                                    name = peerName,
-                                    targetIp = goIp,
-                                    port = AudioConfig.DEFAULT_PORT,
-                                    connectionType = ConnectionType.WIFI_DIRECT
-                                )
-                                ConnectionProfileManager.saveProfile(this, p2pProfile)
-                                applyProfile(p2pProfile)
-                                Toast.makeText(this, "Connected and saved: ${p2pProfile.name}", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    }
+            // 2. Clear any stale P2P IP (e.g. 192.168.49.1) from target IP field
+            val targetText = etTargetIp.text?.toString()?.trim().orEmpty()
+            if (targetText.startsWith("192.168.49.") || targetText == WifiDirectManager.groupOwnerIp.value) {
+                val activeProf = ConnectionProfileManager.activeProfileFlow.value
+                if (activeProf != null && !activeProf.targetIp.startsWith("192.168.49.")) {
+                    etTargetIp.setText(activeProf.targetIp)
+                    etPort.setText(activeProf.port.toString())
+                    currentConnType = activeProf.connectionType
+                } else {
+                    val broadcastIp = NetworkUtils.getSuggestedBroadcastIp()
+                    etTargetIp.setText(broadcastIp)
+                    etPort.setText(AudioConfig.DEFAULT_PORT.toString())
+                    currentConnType = ConnectionType.LOCAL_WIFI
                 }
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+
+            // 3. Refresh local IP to make sure detectedLocalIp is not stuck on p2p0
+            refreshLocalIp()
+        }
     }
 
     private fun updateSavedProfilesUi() {

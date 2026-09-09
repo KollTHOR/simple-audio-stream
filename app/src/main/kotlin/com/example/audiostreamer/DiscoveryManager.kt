@@ -27,6 +27,8 @@ data class DiscoveredDevice(
     val p2pSsid: String? = null,
     val p2pPassphrase: String? = null,
     val p2pGoIp: String? = null,
+    val p2pMac: String? = null,
+    val modelName: String? = null,
     val lastSeenMs: Long = SystemClock.elapsedRealtime()
 )
 
@@ -122,6 +124,8 @@ object DiscoveryManager {
                                 var p2pSsid: String? = null
                                 var p2pPass: String? = null
                                 var p2pGoIp: String? = null
+                                var p2pMac: String? = null
+                                var modelName: String? = null
 
                                 if (rawPayload.startsWith("{") && rawPayload.endsWith("}")) {
                                     try {
@@ -131,6 +135,8 @@ object DiscoveryManager {
                                         p2pSsid = json.optString("ssid").takeIf { it.isNotEmpty() }
                                         p2pPass = json.optString("pass").takeIf { it.isNotEmpty() }
                                         p2pGoIp = json.optString("goIp").takeIf { it.isNotEmpty() }
+                                        p2pMac = json.optString("p2pMac").takeIf { it.isNotEmpty() }
+                                        modelName = json.optString("model").takeIf { it.isNotEmpty() }
                                     } catch (ignored: Exception) {}
                                 }
 
@@ -145,7 +151,9 @@ object DiscoveryManager {
                                             isP2pActive = isP2pActive,
                                             p2pSsid = p2pSsid,
                                             p2pPassphrase = p2pPass,
-                                            p2pGoIp = p2pGoIp
+                                            p2pGoIp = p2pGoIp,
+                                            p2pMac = p2pMac,
+                                            modelName = modelName
                                         )
                                     )
                                 }
@@ -286,26 +294,29 @@ object DiscoveryManager {
     }
 
     private fun buildAnnouncePacket(): ByteArray {
-        val deviceName = getLocalDeviceName()
+        val modelName = getLocalDeviceName()
+        val p2pName = WifiDirectManager.thisDeviceName
+        val effectiveName = if (!p2pName.isNullOrEmpty()) p2pName else modelName
         val isP2p = WifiDirectManager.isGroupCreated.value
         val p2pSsid = WifiDirectManager.networkSsid.value
         val p2pPass = WifiDirectManager.networkPassphrase.value
         val p2pGoIp = WifiDirectManager.groupOwnerIp.value ?: WifiDirectManager.DEFAULT_GO_IP
+        val p2pMac = WifiDirectManager.thisDeviceAddress
 
-        val payloadString = if (isP2p && !p2pSsid.isNullOrEmpty()) {
-            val json = org.json.JSONObject().apply {
-                put("name", deviceName)
+        val json = org.json.JSONObject().apply {
+            put("name", effectiveName)
+            put("model", modelName)
+            if (p2pMac != null) put("p2pMac", p2pMac)
+            if (isP2p && !p2pSsid.isNullOrEmpty()) {
                 put("p2p", true)
                 put("ssid", p2pSsid)
                 put("pass", if (!p2pPass.isNullOrEmpty()) p2pPass else WifiDirectManager.P2P_DEFAULT_PASSPHRASE)
                 put("goIp", p2pGoIp)
             }
-            json.toString()
-        } else {
-            deviceName
         }
 
-        val nameBytes = payloadString.toByteArray(Charsets.UTF_8).take(128).toByteArray()
+        val payloadString = json.toString()
+        val nameBytes = payloadString.toByteArray(Charsets.UTF_8).take(220).toByteArray()
         val announceBuf = ByteArray(AudioConfig.HEADER_SIZE + nameBytes.size)
         announceBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
         announceBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
@@ -401,9 +412,37 @@ object DiscoveryManager {
     @Synchronized
     private fun addDiscoveredDevice(device: DiscoveredDevice) {
         val current = _discoveredDevices.value.toMutableList()
-        val existingIndex = current.indexOfFirst { it.ip == device.ip }
+        val existingIndex = current.indexOfFirst {
+            (it.p2pMac != null && device.p2pMac != null && it.p2pMac.equals(device.p2pMac, ignoreCase = true)) ||
+            (it.ip == device.ip) ||
+            (it.name.equals(device.name, ignoreCase = true) && !it.name.equals("Audio Receiver", ignoreCase = true)) ||
+            (it.modelName != null && device.modelName != null && it.modelName.equals(device.modelName, ignoreCase = true))
+        }
+
         if (existingIndex >= 0) {
-            current[existingIndex] = device
+            val existing = current[existingIndex]
+            val bestIp = if (existing.ip.startsWith("192.168.49.") && !device.ip.startsWith("192.168.49.")) {
+                device.ip
+            } else if (!existing.ip.startsWith("192.168.49.")) {
+                existing.ip
+            } else {
+                device.ip
+            }
+
+            val updated = existing.copy(
+                name = if (device.name != "Audio Receiver") device.name else existing.name,
+                ip = bestIp,
+                port = device.port,
+                capabilitiesMask = if (device.capabilitiesMask != 0) device.capabilitiesMask else existing.capabilitiesMask,
+                isP2pActive = device.isP2pActive || existing.isP2pActive,
+                p2pSsid = device.p2pSsid ?: existing.p2pSsid,
+                p2pPassphrase = device.p2pPassphrase ?: existing.p2pPassphrase,
+                p2pGoIp = device.p2pGoIp ?: existing.p2pGoIp,
+                p2pMac = device.p2pMac ?: existing.p2pMac,
+                modelName = device.modelName ?: existing.modelName,
+                lastSeenMs = SystemClock.elapsedRealtime()
+            )
+            current[existingIndex] = updated
         } else {
             current.add(device)
             Log.i(TAG, "Discovered new receiver: ${device.name} at ${device.ip}")

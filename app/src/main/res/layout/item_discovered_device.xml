@@ -2,9 +2,13 @@
 <com.google.android.material.card.MaterialCardView
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/card_discovered_device"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:layout_marginBottom="8dp"
+    android:layout_marginBottom="6dp"
+    android:clickable="true"
+    android:focusable="true"
+    android:foreground="?attr/selectableItemBackground"
     app:cardCornerRadius="10dp"
     app:cardElevation="0dp"
     app:strokeColor="@color/card_stroke"
@@ -14,105 +18,98 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="12dp">
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingStart="10dp"
+        android:paddingEnd="8dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp">
+
+        <ImageView
+            android:id="@+id/iv_discovered_icon"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:src="@drawable/ic_receiver"
+            app:tint="@color/primary"
+            android:layout_marginEnd="10dp" />
 
         <LinearLayout
-            android:layout_width="match_parent"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/tv_discovered_name"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Xiaomi 15"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_primary"
+                android:maxLines="1"
+                android:ellipsize="end" />
+
+            <TextView
+                android:id="@+id/tv_discovered_details"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="192.168.1.50 • Local Wi-Fi"
+                android:textSize="11sp"
+                android:textColor="@color/text_secondary"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:layout_marginTop="2dp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical">
 
-            <TextView
-                android:id="@+id/tv_device_name"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Audio Receiver"
-                android:textSize="14sp"
-                android:textStyle="bold"
-                android:textColor="@color/text_primary" />
-
-            <TextView
-                android:id="@+id/tv_device_conn_badge"
+            <com.google.android.material.switchmaterial.SwitchMaterial
+                android:id="@+id/switch_discovered_direct"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="LOCAL WI-FI"
-                android:textSize="10sp"
-                android:textStyle="bold"
-                android:textColor="@color/pill_text"
-                android:background="@drawable/bg_stat_badge"
-                android:paddingHorizontal="6dp"
-                android:paddingVertical="2dp" />
-        </LinearLayout>
-
-        <TextView
-            android:id="@+id/tv_device_endpoint"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="192.168.1.100:50005"
-            android:textSize="12sp"
-            android:textColor="@color/text_secondary"
-            android:layout_marginTop="2dp" />
-
-        <TextView
-            android:id="@+id/tv_device_caps"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Capabilities: Up to 192kHz • 24-bit"
-            android:textSize="11sp"
-            android:textColor="@color/text_hint"
-            android:layout_marginTop="2dp" />
-
-        <TextView
-            android:id="@+id/tv_device_p2p_notice"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Wi-Fi Direct Active (P2P Ready)"
-            android:textSize="11sp"
-            android:textStyle="bold"
-            android:textColor="@color/status_green"
-            android:layout_marginTop="3dp"
-            android:visibility="gone" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="end"
-            android:layout_marginTop="8dp">
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btn_device_save"
-                style="?attr/materialButtonOutlinedStyle"
-                android:layout_width="wrap_content"
-                android:layout_height="32dp"
-                android:minHeight="0dp"
-                android:minWidth="0dp"
-                android:paddingHorizontal="10dp"
-                android:paddingVertical="0dp"
+                android:text="Direct"
                 android:textSize="11sp"
-                android:textStyle="bold"
-                android:text="Save Profile"
                 android:textColor="@color/text_secondary"
-                app:strokeColor="@color/card_stroke"
-                app:cornerRadius="6dp"
-                android:layout_marginEnd="8dp" />
+                android:layout_marginEnd="6dp" />
 
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/btn_device_connect"
-                style="@style/Widget.MaterialComponents.Button"
+                android:id="@+id/btn_discovered_save"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
                 android:layout_width="wrap_content"
-                android:layout_height="32dp"
+                android:layout_height="wrap_content"
                 android:minHeight="0dp"
                 android:minWidth="0dp"
-                android:paddingHorizontal="12dp"
-                android:paddingVertical="0dp"
+                android:paddingLeft="8dp"
+                android:paddingRight="8dp"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp"
                 android:textSize="11sp"
                 android:textStyle="bold"
-                android:text="Connect"
-                app:backgroundTint="@color/primary"
-                app:cornerRadius="6dp" />
+                android:textColor="@color/primary"
+                android:text="Save"
+                android:layout_marginEnd="4dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_discovered_use"
+                style="@style/Widget.MaterialComponents.Button.UnelevatedButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp"
+                android:minWidth="0dp"
+                android:paddingLeft="10dp"
+                android:paddingRight="10dp"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:backgroundTint="@color/primary"
+                android:textColor="@color/white"
+                android:text="Use" />
         </LinearLayout>
     </LinearLayout>
 </com.google.android.material.card.MaterialCardView>

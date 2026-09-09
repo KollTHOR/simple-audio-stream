@@ -59,9 +59,10 @@ object WifiDirectManager {
     private val _isScanningPeers = MutableStateFlow(false)
     val isScanningPeers: StateFlow<Boolean> = _isScanningPeers.asStateFlow()
 
-    private val _statusMessage = MutableStateFlow("Wi-Fi Direct Idle")
+    private val _statusMessage = MutableStateFlow("Ready")
     val statusMessage: StateFlow<String> = _statusMessage.asStateFlow()
-
+    var thisDeviceAddress: String? = null
+    var thisDeviceName: String? = null
     var onConnectedCallback: ((goIp: String) -> Unit)? = null
 
     fun hasPermissions(context: Context): Boolean {
@@ -166,6 +167,8 @@ object WifiDirectManager {
                         @Suppress("DEPRECATION")
                         val dev = intent.getParcelableExtra<WifiP2pDevice>(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE)
                         if (dev != null) {
+                            thisDeviceAddress = dev.deviceAddress
+                            thisDeviceName = dev.deviceName
                             Log.i(TAG, "Local P2P Device: '${dev.deviceName}' (${dev.deviceAddress}), status=${dev.status}")
                         }
                     }
