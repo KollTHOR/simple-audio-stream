@@ -152,326 +152,13 @@
                             android:textColor="@color/text_secondary"
                             android:layout_marginBottom="12dp" />
 
-                        <!-- Connection Type Selector (Transmitter Only) -->
-                        <LinearLayout
-                            android:id="@+id/layout_conn_type"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="vertical"
-                            android:layout_marginBottom="12dp">
-
-                            <TextView
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="CONNECTION TYPE"
-                                android:textSize="11sp"
-                                android:textStyle="bold"
-                                android:textColor="@color/text_hint"
-                                android:letterSpacing="0.05"
-                                android:layout_marginBottom="6dp" />
-
-                            <com.google.android.material.button.MaterialButtonToggleGroup
-                                android:id="@+id/toggle_conn_type"
-                                android:layout_width="match_parent"
-                                android:layout_height="@dimen/toggle_height"
-                                app:singleSelection="true"
-                                app:selectionRequired="true"
-                                app:checkedButton="@+id/btn_conn_wifi">
-
-                                <com.google.android.material.button.MaterialButton
-                                    android:id="@+id/btn_conn_wifi"
-                                    style="?attr/materialButtonOutlinedStyle"
-                                    android:layout_width="0dp"
-                                    android:layout_height="match_parent"
-                                    android:layout_weight="1"
-                                    android:text="Local Wi-Fi"
-                                    android:textSize="11sp"
-                                    android:textStyle="bold"
-                                    android:textColor="@color/text_primary"
-                                    app:strokeColor="@color/card_stroke"
-                                    app:cornerRadius="8dp" />
-
-                                <com.google.android.material.button.MaterialButton
-                                    android:id="@+id/btn_conn_p2p"
-                                    style="?attr/materialButtonOutlinedStyle"
-                                    android:layout_width="0dp"
-                                    android:layout_height="match_parent"
-                                    android:layout_weight="1"
-                                    android:text="Direct Link (P2P)"
-                                    android:textSize="11sp"
-                                    android:textStyle="bold"
-                                    android:textColor="@color/text_primary"
-                                    app:strokeColor="@color/card_stroke"
-                                    app:cornerRadius="8dp" />
-                            </com.google.android.material.button.MaterialButtonToggleGroup>
-                        </LinearLayout>
-
-                        <!-- Active Target Device & Preferences Card -->
-                        <LinearLayout
-                            android:id="@+id/layout_active_device"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="vertical"
-                            android:background="@color/input_bg"
-                            android:padding="12dp"
-                            android:layout_marginBottom="12dp">
-
-                            <TextView
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="ACTIVE TARGET RECEIVER"
-                                android:textSize="10sp"
-                                android:textStyle="bold"
-                                android:textColor="@color/text_hint"
-                                android:letterSpacing="0.05"
-                                android:layout_marginBottom="4dp" />
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:orientation="horizontal"
-                                android:gravity="center_vertical">
-
-                                <TextView
-                                    android:id="@+id/tv_selected_device_name"
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_weight="1"
-                                    android:text="Audio Receiver"
-                                    android:textSize="16sp"
-                                    android:textStyle="bold"
-                                    android:textColor="@color/text_primary" />
-
-                                <TextView
-                                    android:id="@+id/tv_selected_device_type"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:text="192.168.1.255:50005"
-                                    android:textSize="11sp"
-                                    android:textStyle="bold"
-                                    android:textColor="@color/pill_text"
-                                    android:background="@drawable/bg_stat_badge"
-                                    android:paddingHorizontal="6dp"
-                                    android:paddingVertical="2dp" />
-                            </LinearLayout>
-
-                            <TextView
-                                android:id="@+id/tv_selected_device_caps"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="Hardware: Up to 192kHz • 24-bit"
-                                android:textSize="11sp"
-                                android:textColor="@color/text_hint"
-                                android:layout_marginTop="4dp" />
-
-                            <TextView
-                                android:id="@+id/tv_selected_device_pref"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="Streaming Mode: Auto Adaptive"
-                                android:textSize="11sp"
-                                android:textColor="@color/text_secondary"
-                                android:layout_marginTop="2dp" />
-
-                            <!-- Seamless Direct Link Auto-Switch Banner -->
-                            <LinearLayout
-                                android:id="@+id/layout_p2p_seamless_banner"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:orientation="vertical"
-                                android:background="@drawable/bg_stat_badge"
-                                android:padding="10dp"
-                                android:layout_marginTop="8dp"
-                                android:visibility="gone">
-
-                                <TextView
-                                    android:id="@+id/tv_p2p_banner_title"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:text="DIRECT LINK (WI-FI DIRECT) AVAILABLE"
-                                    android:textSize="10sp"
-                                    android:textStyle="bold"
-                                    android:textColor="@color/status_green"
-                                    android:letterSpacing="0.05" />
-
-                                <TextView
-                                    android:id="@+id/tv_p2p_banner_desc"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:text="Receiver has Autonomous Wi-Fi Direct active. Switch to direct low-latency P2P streaming without router."
-                                    android:textSize="11sp"
-                                    android:textColor="@color/text_secondary"
-                                    android:layout_marginTop="2dp" />
-
-                                <LinearLayout
-                                    android:layout_width="match_parent"
-                                    android:layout_height="wrap_content"
-                                    android:orientation="horizontal"
-                                    android:gravity="end"
-                                    android:layout_marginTop="6dp">
-
-                                    <com.google.android.material.button.MaterialButton
-                                        android:id="@+id/btn_switch_wifi"
-                                        style="?attr/materialButtonOutlinedStyle"
-                                        android:layout_width="wrap_content"
-                                        android:layout_height="32dp"
-                                        android:minHeight="0dp"
-                                        android:minWidth="0dp"
-                                        android:paddingHorizontal="10dp"
-                                        android:paddingVertical="0dp"
-                                        android:textSize="11sp"
-                                        android:text="Switch to Wi-Fi"
-                                        android:textColor="@color/text_secondary"
-                                        app:strokeColor="@color/card_stroke"
-                                        app:cornerRadius="6dp"
-                                        android:layout_marginEnd="6dp"
-                                        android:visibility="gone" />
-
-                                    <com.google.android.material.button.MaterialButton
-                                        android:id="@+id/btn_switch_p2p"
-                                        style="@style/Widget.MaterialComponents.Button"
-                                        android:layout_width="wrap_content"
-                                        android:layout_height="32dp"
-                                        android:minHeight="0dp"
-                                        android:minWidth="0dp"
-                                        android:paddingHorizontal="10dp"
-                                        android:paddingVertical="0dp"
-                                        android:textSize="11sp"
-                                        android:textStyle="bold"
-                                        android:text="Switch to Direct Link (P2P)"
-                                        app:backgroundTint="@color/status_green"
-                                        app:cornerRadius="6dp" />
-                                </LinearLayout>
-                            </LinearLayout>
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:orientation="horizontal"
-                                android:gravity="end"
-                                android:layout_marginTop="8dp">
-
-                                <com.google.android.material.button.MaterialButton
-                                    android:id="@+id/btn_edit_profile"
-                                    style="?attr/materialButtonOutlinedStyle"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="32dp"
-                                    android:minHeight="0dp"
-                                    android:minWidth="0dp"
-                                    android:paddingHorizontal="10dp"
-                                    android:paddingVertical="0dp"
-                                    android:textSize="11sp"
-                                    android:textColor="@color/text_secondary"
-                                    android:text="Edit Preferences"
-                                    app:strokeColor="@color/card_stroke"
-                                    app:cornerRadius="6dp"
-                                    android:layout_marginEnd="8dp" />
-
-                                <com.google.android.material.button.MaterialButton
-                                    android:id="@+id/btn_save_profile"
-                                    style="@style/Widget.MaterialComponents.Button"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="32dp"
-                                    android:minHeight="0dp"
-                                    android:minWidth="0dp"
-                                    android:paddingHorizontal="12dp"
-                                    android:paddingVertical="0dp"
-                                    android:textSize="11sp"
-                                    android:textStyle="bold"
-                                    android:text="Save Profile"
-                                    app:backgroundTint="@color/primary"
-                                    app:cornerRadius="6dp" />
-                            </LinearLayout>
-                        </LinearLayout>
-
-                        <!-- Discovered Receivers Section -->
-                        <LinearLayout
-                            android:id="@+id/layout_discovery_section"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="vertical"
-                            android:layout_marginBottom="12dp">
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:orientation="horizontal"
-                                android:gravity="center_vertical"
-                                android:layout_marginBottom="6dp">
-
-                                <TextView
-                                    android:id="@+id/tv_discovery_title"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:text="DISCOVERED RECEIVERS"
-                                    android:textSize="11sp"
-                                    android:textStyle="bold"
-                                    android:textColor="@color/text_hint"
-                                    android:letterSpacing="0.05" />
-
-                                <ProgressBar
-                                    android:id="@+id/pb_discovery_scanning"
-                                    android:layout_width="14dp"
-                                    android:layout_height="14dp"
-                                    android:layout_marginStart="8dp"
-                                    android:indeterminate="true"
-                                    android:visibility="gone" />
-
-                                <TextView
-                                    android:id="@+id/tv_discovery_scanning_text"
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_weight="1"
-                                    android:layout_marginStart="4dp"
-                                    android:text="Scanning..."
-                                    android:textSize="11sp"
-                                    android:textColor="@color/text_hint"
-                                    android:visibility="gone" />
-
-                                <com.google.android.material.button.MaterialButton
-                                    android:id="@+id/btn_scan_receivers"
-                                    style="@style/Widget.MaterialComponents.Button.TextButton"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:minHeight="0dp"
-                                    android:minWidth="0dp"
-                                    android:paddingLeft="8dp"
-                                    android:paddingRight="8dp"
-                                    android:paddingTop="2dp"
-                                    android:paddingBottom="2dp"
-                                    android:textSize="11sp"
-                                    android:textStyle="bold"
-                                    android:textColor="@color/primary"
-                                    android:text="Scan Now" />
-                            </LinearLayout>
-
-                            <!-- Dynamic Discovered Device List Container -->
-                            <LinearLayout
-                                android:id="@+id/layout_discovered_container"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:orientation="vertical" />
-
-                            <!-- Empty State for Discovery -->
-                            <TextView
-                                android:id="@+id/layout_discovery_empty"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:text="No receivers found on local Wi-Fi. Ensure the receiver app is running on the same network or turn on Autonomous Wi-Fi Direct."
-                                android:textSize="12sp"
-                                android:textColor="@color/text_hint"
-                                android:background="@color/input_bg"
-                                android:padding="12dp"
-                                android:layout_marginBottom="4dp" />
-                        </LinearLayout>
-
-                        <!-- Saved Profiles Section -->
+                        <!-- Target Profiles Section (Transmitter Only) -->
                         <LinearLayout
                             android:id="@+id/layout_saved_profiles_section"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:orientation="vertical"
-                            android:layout_marginBottom="12dp">
+                            android:layout_marginBottom="10dp">
 
                             <LinearLayout
                                 android:layout_width="match_parent"
@@ -485,7 +172,7 @@
                                     android:layout_width="0dp"
                                     android:layout_height="wrap_content"
                                     android:layout_weight="1"
-                                    android:text="SAVED PROFILES &amp; PREFERENCES"
+                                    android:text="TARGET PROFILES"
                                     android:textSize="11sp"
                                     android:textStyle="bold"
                                     android:textColor="@color/text_hint"
@@ -498,13 +185,13 @@
                                     android:layout_height="wrap_content"
                                     android:minHeight="0dp"
                                     android:minWidth="0dp"
-                                    android:paddingLeft="8dp"
-                                    android:paddingRight="8dp"
+                                    android:paddingLeft="6dp"
+                                    android:paddingRight="6dp"
                                     android:paddingTop="2dp"
                                     android:paddingBottom="2dp"
                                     android:textSize="11sp"
-                                    android:textColor="@color/text_secondary"
-                                    android:text="+ New Profile" />
+                                    android:textColor="@color/primary"
+                                    android:text="+ Add Profile" />
                             </LinearLayout>
 
                             <!-- Dynamic Saved Profiles List Container -->
@@ -514,17 +201,92 @@
                                 android:layout_height="wrap_content"
                                 android:orientation="vertical" />
 
-                            <!-- Empty State for Saved Profiles -->
+                            <!-- Empty State for Profiles -->
                             <TextView
                                 android:id="@+id/layout_saved_empty"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:text="No saved profiles yet. Click 'Save Profile' on an active or discovered device to save preferences."
+                                android:text="No profiles saved. Tap '+ Add Profile' or select a nearby device below."
                                 android:textSize="12sp"
                                 android:textColor="@color/text_hint"
                                 android:background="@color/input_bg"
                                 android:padding="12dp"
                                 android:layout_marginBottom="4dp" />
+                        </LinearLayout>
+
+                        <!-- Nearby Discovered Receivers (Horizontal Chips Row) -->
+                        <LinearLayout
+                            android:id="@+id/layout_discovery_section"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:layout_marginBottom="10dp"
+                            android:visibility="gone">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="horizontal"
+                                android:gravity="center_vertical"
+                                android:layout_marginBottom="6dp">
+
+                                <TextView
+                                    android:id="@+id/tv_discovery_title"
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="NEARBY DEVICES (TAP TO SELECT)"
+                                    android:textSize="11sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_hint"
+                                    android:letterSpacing="0.05" />
+
+                                <ProgressBar
+                                    android:id="@+id/pb_discovery_scanning"
+                                    android:layout_width="14dp"
+                                    android:layout_height="14dp"
+                                    android:indeterminate="true"
+                                    android:visibility="gone"
+                                    android:layout_marginEnd="6dp" />
+
+                                <TextView
+                                    android:id="@+id/tv_discovery_scanning_text"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Scanning..."
+                                    android:textSize="11sp"
+                                    android:textColor="@color/text_hint"
+                                    android:visibility="gone"
+                                    android:layout_marginEnd="6dp" />
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/btn_scan_receivers"
+                                    style="@style/Widget.MaterialComponents.Button.TextButton"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:minHeight="0dp"
+                                    android:minWidth="0dp"
+                                    android:paddingLeft="6dp"
+                                    android:paddingRight="6dp"
+                                    android:paddingTop="2dp"
+                                    android:paddingBottom="2dp"
+                                    android:textSize="11sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/primary"
+                                    android:text="Scan" />
+                            </LinearLayout>
+
+                            <HorizontalScrollView
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:scrollbars="none">
+
+                                <com.google.android.material.chip.ChipGroup
+                                    android:id="@+id/chip_group_discovered"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    app:singleLine="true" />
+                            </HorizontalScrollView>
                         </LinearLayout>
 
                         <!-- Receiver Mode: Wi-Fi Direct Autonomous Group Card -->

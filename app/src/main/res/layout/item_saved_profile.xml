@@ -5,7 +5,10 @@
     android:id="@+id/card_saved_profile"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:layout_marginBottom="8dp"
+    android:layout_marginBottom="6dp"
+    android:clickable="true"
+    android:focusable="true"
+    android:foreground="?attr/selectableItemBackground"
     app:cardCornerRadius="10dp"
     app:cardElevation="0dp"
     app:strokeColor="@color/card_stroke"
@@ -15,111 +18,78 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="12dp">
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingStart="8dp"
+        android:paddingEnd="4dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp">
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical">
-
-            <TextView
-                android:id="@+id/tv_profile_name"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Living Room DAP"
-                android:textSize="14sp"
-                android:textStyle="bold"
-                android:textColor="@color/text_primary" />
-
-            <TextView
-                android:id="@+id/tv_profile_conn_badge"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="WI-FI"
-                android:textSize="10sp"
-                android:textStyle="bold"
-                android:textColor="@color/pill_text"
-                android:background="@drawable/bg_stat_badge"
-                android:paddingHorizontal="6dp"
-                android:paddingVertical="2dp" />
-        </LinearLayout>
-
-        <TextView
-            android:id="@+id/tv_profile_endpoint"
+        <RadioButton
+            android:id="@+id/rb_profile_active"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="192.168.1.150:50005"
-            android:textSize="12sp"
-            android:textColor="@color/text_secondary"
-            android:layout_marginTop="2dp" />
-
-        <TextView
-            android:id="@+id/tv_profile_preference"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Preference: Uncapped Studio (24-bit)"
-            android:textSize="11sp"
-            android:textColor="@color/text_hint"
-            android:layout_marginTop="2dp" />
+            android:clickable="false"
+            android:focusable="false"
+            android:buttonTint="@color/primary"
+            android:layout_marginEnd="6dp" />
 
         <LinearLayout
-            android:layout_width="match_parent"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_marginTop="8dp">
+            android:layout_weight="1"
+            android:orientation="vertical">
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btn_profile_delete"
-                style="@style/Widget.MaterialComponents.Button.TextButton"
+            <LinearLayout
                 android:layout_width="wrap_content"
-                android:layout_height="32dp"
-                android:minHeight="0dp"
-                android:minWidth="0dp"
-                android:paddingHorizontal="6dp"
-                android:paddingVertical="0dp"
-                android:textSize="11sp"
-                android:text="Delete"
-                android:textColor="@color/status_red" />
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
 
-            <View
-                android:layout_width="0dp"
-                android:layout_height="0dp"
-                android:layout_weight="1" />
+                <TextView
+                    android:id="@+id/tv_profile_name"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Living Room DAP"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/text_primary"
+                    android:maxLines="1"
+                    android:ellipsize="end" />
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btn_profile_edit"
-                style="?attr/materialButtonOutlinedStyle"
+                <TextView
+                    android:id="@+id/tv_profile_conn_badge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="WI-FI"
+                    android:textSize="9sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/pill_text"
+                    android:background="@drawable/bg_stat_badge"
+                    android:paddingHorizontal="5dp"
+                    android:paddingVertical="1dp"
+                    android:layout_marginStart="8dp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/tv_profile_details"
                 android:layout_width="wrap_content"
-                android:layout_height="32dp"
-                android:minHeight="0dp"
-                android:minWidth="0dp"
-                android:paddingHorizontal="10dp"
-                android:paddingVertical="0dp"
-                android:textSize="11sp"
-                android:text="Edit"
+                android:layout_height="wrap_content"
+                android:text="192.168.1.150:50005 • Auto Adaptive"
+                android:textSize="12sp"
                 android:textColor="@color/text_secondary"
-                app:strokeColor="@color/card_stroke"
-                app:cornerRadius="6dp"
-                android:layout_marginEnd="8dp" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btn_profile_use"
-                style="@style/Widget.MaterialComponents.Button"
-                android:layout_width="wrap_content"
-                android:layout_height="32dp"
-                android:minHeight="0dp"
-                android:minWidth="0dp"
-                android:paddingHorizontal="12dp"
-                android:paddingVertical="0dp"
-                android:textSize="11sp"
-                android:textStyle="bold"
-                android:text="Select"
-                app:backgroundTint="@color/primary"
-                app:cornerRadius="6dp" />
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:layout_marginTop="2dp" />
         </LinearLayout>
+
+        <ImageButton
+            android:id="@+id/btn_profile_overflow"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_more_vert"
+            app:tint="@color/text_secondary"
+            android:contentDescription="Profile Options" />
     </LinearLayout>
 </com.google.android.material.card.MaterialCardView>
