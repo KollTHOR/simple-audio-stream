@@ -34,8 +34,10 @@ object AudioPlaybackDetector {
         private set
 
     /**
-     * Inspects active playback configurations and returns the currently playing media format.
-     * If multiple are active, prioritizes media playback (USAGE_MEDIA) over system sounds.
+     * Returns the format of what is actually leaving the Android audio engine.
+     * Prioritizes explicitly-reported active playback configurations (all usages including USAGE_UNKNOWN
+     * to cover apps like UAPP that use Android driver mode), with the hardware output mix bus rate
+     * (PROPERTY_OUTPUT_SAMPLE_RATE) as the definitive fallback when no config reports a rate.
      */
     fun getActiveMediaFormat(context: Context): DetectedMediaFormat {
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -50,7 +52,9 @@ object AudioPlaybackDetector {
             )
         }
 
-        val nativeRate = audioManager.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: AudioConfig.SAMPLE_RATE_48000
+        // The hardware output mix bus rate: this is the rate audio is actually mixed at
+        // and leaving the Android audio engine. AudioPlaybackCaptureConfiguration reads from this bus.
+        val hwOutputRate = audioManager.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: AudioConfig.SAMPLE_RATE_48000
 
         val configs = try {
             audioManager.activePlaybackConfigurations
@@ -65,32 +69,30 @@ object AudioPlaybackDetector {
         var detectedAppName = "None"
         var detectedPkgName = ""
 
-        for (config in configs) {
-            val attr = config.audioAttributes
-            val usage = attr.usage
-            val isMedia = (usage == AudioAttributes.USAGE_MEDIA || usage == AudioAttributes.USAGE_GAME)
-            if (!isMedia) continue
+        // Sort: USAGE_MEDIA/GAME first (highest priority), then USAGE_UNKNOWN (covers UAPP Android driver)
+        val sortedConfigs = configs.sortedByDescending { config ->
+            when (config.audioAttributes.usage) {
+                AudioAttributes.USAGE_MEDIA, AudioAttributes.USAGE_GAME -> 2
+                AudioAttributes.USAGE_UNKNOWN -> 1
+                else -> 0
+            }
+        }
+
+        for (config in sortedConfigs) {
+            val usage = config.audioAttributes.usage
+            // Accept USAGE_MEDIA, USAGE_GAME, and USAGE_UNKNOWN
+            // USAGE_UNKNOWN covers apps like UAPP in Android driver mode
+            val isAcceptable = (usage == AudioAttributes.USAGE_MEDIA
+                || usage == AudioAttributes.USAGE_GAME
+                || usage == AudioAttributes.USAGE_UNKNOWN)
+            if (!isAcceptable) continue
 
             val uid = getClientUid(config)
             val (appLabel, pkg) = getAppInfoForUid(context, uid)
 
             val isConfigPlaying = isConfigurationActive(config)
-            var configRate = extractSampleRate(config)
+            val configRate = extractSampleRate(config)
             val config24Bit = isConfiguration24Bit(config, configRate)
-
-            // If sample rate was not explicitly reported by port, check known streaming apps
-            if (configRate == 0 && isConfigPlaying) {
-                val lowerPkg = pkg.lowercase()
-                val lowerLabel = appLabel.lowercase()
-                if (lowerPkg.contains("tidal") || lowerLabel.contains("tidal") ||
-                    lowerPkg.contains("spotify") || lowerLabel.contains("spotify") ||
-                    lowerPkg.contains("qobuz") || lowerLabel.contains("deezer") ||
-                    lowerPkg.contains("apple.android.music")) {
-                    configRate = AudioConfig.SAMPLE_RATE_44100
-                } else if (lowerPkg.contains("youtube") || lowerLabel.contains("youtube")) {
-                    configRate = AudioConfig.SAMPLE_RATE_48000
-                }
-            }
 
             if (isConfigPlaying) {
                 isPlayingMedia = true
@@ -102,7 +104,7 @@ object AudioPlaybackDetector {
                     break
                 }
             } else if (detectedRate == 0 && configRate > 0) {
-                // Keep as standby if no active player found yet
+                // Keep as standby if no active player rate found yet
                 detectedAppName = appLabel
                 detectedPkgName = pkg
                 detectedRate = configRate
@@ -110,10 +112,10 @@ object AudioPlaybackDetector {
             }
         }
 
+        // Resolve effective rate: use detected rate if valid, otherwise use hardware output mix bus rate
         val effectiveRate = when {
             detectedRate in listOf(44100, 48000, 88200, 96000, 176400, 192000) -> detectedRate
             detectedRate > 0 -> {
-                // Round to nearest standard rate
                 when {
                     detectedRate > 144000 -> 192000
                     detectedRate > 72000 -> 96000
@@ -121,23 +123,25 @@ object AudioPlaybackDetector {
                     else -> 48000
                 }
             }
-            nativeRate == 44100 -> 44100
-            else -> 48000
+            // No rate from configs: use the hardware output mix bus rate
+            // This correctly represents what is actually leaving the Android audio engine
+            hwOutputRate in listOf(44100, 48000, 88200, 96000, 176400, 192000) -> hwOutputRate
+            else -> AudioConfig.SAMPLE_RATE_48000
         }
 
-        // Automatic bit depth: Hi-Res rates (>=88.2kHz) default to 24-bit; standard rates default to 16-bit unless explicitly 24-bit
         val effective24Bit = isDetected24Bit || (effectiveRate >= 88200)
 
+        val appDisplayName = if (detectedAppName != "None") detectedAppName else "Android Mix Bus"
         val desc = if (isPlayingMedia) {
-            "$detectedAppName: ${effectiveRate / 1000.0} kHz / ${if (effective24Bit) "24-bit" else "16-bit"} (Playing)"
+            "$appDisplayName: ${effectiveRate / 1000.0} kHz / ${if (effective24Bit) "24-bit" else "16-bit"} (Playing)"
         } else if (detectedAppName != "None") {
-            "$detectedAppName: ${effectiveRate / 1000.0} kHz / ${if (effective24Bit) "24-bit" else "16-bit"} (Paused/Standby)"
+            "$appDisplayName: ${effectiveRate / 1000.0} kHz / ${if (effective24Bit) "24-bit" else "16-bit"} (Standby)"
         } else {
-            "System Idle: ${effectiveRate / 1000.0} kHz / ${if (effective24Bit) "24-bit" else "16-bit"}"
+            "Hardware Mix Bus @ ${hwOutputRate / 1000.0} kHz / ${if (effective24Bit) "24-bit" else "16-bit"}"
         }
 
         val result = DetectedMediaFormat(
-            appName = detectedAppName,
+            appName = appDisplayName,
             packageName = detectedPkgName,
             sampleRate = effectiveRate,
             is24Bit = effective24Bit,
@@ -146,6 +150,16 @@ object AudioPlaybackDetector {
         )
         lastReportedFormat = result
         return result
+    }
+
+    /**
+     * Returns the hardware output mix bus sample rate from AudioManager.
+     * This is the rate at which AudioFlinger mixes all audio output,
+     * and the rate at which AudioPlaybackCaptureConfiguration captures audio.
+     */
+    fun getHardwareOutputRate(context: Context): Int {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        return am?.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: AudioConfig.SAMPLE_RATE_48000
     }
 
     /**

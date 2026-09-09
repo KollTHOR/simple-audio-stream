@@ -444,8 +444,18 @@ class AudioCaptureService : Service() {
             targetRate = AudioConfig.SAMPLE_RATE_48000
             target24Bit = false
         } else if (isAuto) {
-            // Adaptive Mode: Fully autoselects bit depth and sampling rate based on Android audio reports
-            targetRate = detectedMedia.sampleRate
+            // Auto Adaptive Mode: capture at the Android hardware output mix bus rate to eliminate
+            // resampling artifacts. AudioPlaybackCaptureConfiguration reads from AudioFlinger's mix bus,
+            // which operates at hwOutputRate. Capturing at any rate higher than hwOutputRate causes
+            // Android to upsample the mix bus internally, producing mushy/boxy sound at the receiver.
+            val hwOutputRate = AudioPlaybackDetector.getHardwareOutputRate(this)
+            // If detected rate is a standard rate at or below the hw mix bus rate, use it (e.g. 44.1kHz when hw is 44.1kHz)
+            // Otherwise cap at hwOutputRate to avoid double-resampling
+            targetRate = if (detectedMedia.sampleRate in listOf(44100, 48000) && detectedMedia.sampleRate <= hwOutputRate) {
+                detectedMedia.sampleRate
+            } else {
+                hwOutputRate
+            }
             target24Bit = detectedMedia.is24Bit
         } else {
             // Unlocked Music Mode: Honors manual settings or autoselects from media report
@@ -606,6 +616,15 @@ class AudioCaptureService : Service() {
             return
         }
         this.audioRecord = record
+        // Read back actual AudioRecord sample rate after init.
+        // The OS may grant a different rate than requested if the hardware mix bus does not
+        // natively support the requested rate (AudioFlinger resamples internally).
+        val actualGrantedRate = record.sampleRate
+        if (actualGrantedRate > 0 && actualGrantedRate != captureSampleRate) {
+            Log.w(TAG, "AudioRecord granted $actualGrantedRate Hz (requested $captureSampleRate Hz). Hardware mix bus rate mismatch - using $actualGrantedRate Hz.")
+            captureSampleRate = actualGrantedRate
+            activePayloadSize = AudioConfig.getPacketPayloadSize(actualGrantedRate, is24BitActive)
+        }
         activeCaptureSampleRate = captureSampleRate
 
         silenceTransmitterSpeakers()
