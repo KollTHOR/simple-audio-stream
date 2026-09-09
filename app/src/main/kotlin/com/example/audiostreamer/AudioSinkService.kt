@@ -893,6 +893,7 @@ class AudioSinkService : Service() {
             .setContentIntent(activityIntent)
             .addAction(android.R.drawable.ic_media_pause, "Stop", pendingStopIntent)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }

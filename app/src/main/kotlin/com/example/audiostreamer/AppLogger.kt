@@ -112,7 +112,7 @@ object AppLogger {
         return lines
     }
 
-    fun buildDiagnosticReport(context: Context, includeSystemLogcat: Boolean = true): String {
+    fun buildDiagnosticReport(context: Context, includeSystemLogcat: Boolean = true, sessionTime: Long? = null): String {
         val sb = StringBuilder()
         val appVersionName = BuildConfig.VERSION_NAME
         val appVersionCode = BuildConfig.VERSION_CODE
@@ -127,9 +127,12 @@ object AppLogger {
         val ip = NetworkUtils.getLocalIpAddress() ?: "Unavailable"
         val tel = StreamState.telemetry.value
 
+        val genDate = Date(sessionTime ?: System.currentTimeMillis())
+        val genSuffix = if (sessionTime != null) " (Live Monitoring)" else ""
+
         sb.appendLine("==================================================")
         sb.appendLine("SIMPLE AUDIO STREAM - DIAGNOSTIC REPORT")
-        sb.appendLine("Generated: ${dateFormat.format(Date())}")
+        sb.appendLine("Generated: ${dateFormat.format(genDate)}$genSuffix")
         sb.appendLine("==================================================")
         sb.appendLine()
         sb.appendLine("[APPLICATION]")
@@ -248,18 +251,43 @@ object AppLogger {
         var isLive = false
         val liveHandler = android.os.Handler(android.os.Looper.getMainLooper())
         var liveRunnable: Runnable? = null
+        var sessionStartTime = System.currentTimeMillis()
+        var lastRenderedReport = ""
 
         fun refreshContent(includeSystemLogcat: Boolean = true, autoScroll: Boolean = false) {
-            if (!isLive && includeSystemLogcat) {
+            if (!isLive && includeSystemLogcat && lastRenderedReport.isEmpty()) {
                 tvContent.text = "Compiling diagnostic report..."
             }
+            val time = if (isLive) sessionStartTime else System.currentTimeMillis()
             Thread {
-                val report = buildDiagnosticReport(activity, includeSystemLogcat = includeSystemLogcat)
+                val report = buildDiagnosticReport(activity, includeSystemLogcat = includeSystemLogcat, sessionTime = time)
                 activity.runOnUiThread {
+                    if (report == lastRenderedReport) return@runOnUiThread
+                    lastRenderedReport = report
+
+                    val child = scrollVertical?.getChildAt(0)
+                    val isNearBottom = if (child != null && scrollVertical.height > 0) {
+                        val bottomDiff = child.bottom - (scrollVertical.height + scrollVertical.scrollY)
+                        bottomDiff <= 120
+                    } else {
+                        true
+                    }
+                    val prevScrollY = scrollVertical?.scrollY ?: 0
+
                     tvContent.text = report
-                    if (autoScroll) {
+
+                    if (autoScroll && isNearBottom) {
                         scrollVertical?.post {
-                            scrollVertical.fullScroll(android.view.View.FOCUS_DOWN)
+                            val c = scrollVertical.getChildAt(0)
+                            if (c != null) {
+                                scrollVertical.scrollTo(0, c.bottom)
+                            } else {
+                                scrollVertical.fullScroll(android.view.View.FOCUS_DOWN)
+                            }
+                        }
+                    } else if (prevScrollY > 0) {
+                        scrollVertical?.post {
+                            scrollVertical.scrollTo(0, prevScrollY)
                         }
                     }
                 }
@@ -277,6 +305,8 @@ object AppLogger {
 
         fun startLiveFeed() {
             isLive = true
+            sessionStartTime = System.currentTimeMillis()
+            lastRenderedReport = ""
             btnLive?.text = "Live: ON"
             btnLive?.setTextColor(activity.getColor(R.color.status_green))
             btnLive?.strokeColor = android.content.res.ColorStateList.valueOf(activity.getColor(R.color.status_green))
@@ -284,7 +314,7 @@ object AppLogger {
                 override fun run() {
                     if (!isLive || !dialog.isShowing) return
                     refreshContent(includeSystemLogcat = false, autoScroll = true)
-                    liveHandler.postDelayed(this, 750L)
+                    liveHandler.postDelayed(this, 1000L)
                 }
             }
             liveHandler.post(liveRunnable!!)

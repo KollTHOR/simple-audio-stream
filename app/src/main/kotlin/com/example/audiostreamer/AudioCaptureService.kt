@@ -24,11 +24,8 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
-import android.media.VolumeProvider
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
-import android.media.session.MediaSession
-import android.media.session.PlaybackState
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
@@ -91,8 +88,6 @@ class AudioCaptureService : Service() {
     private var udpSocket: DatagramSocket? = null
     private var streamThread: Thread? = null
     private var controlListenerThread: Thread? = null
-    private var mediaSession: MediaSession? = null
-    private var volumeProvider: VolumeProvider? = null
     private var previousPhoneVolume: Int? = null
     private var currentTargetIp = "192.168.43.255"
     private var currentTargetPort = AudioConfig.DEFAULT_PORT
@@ -119,7 +114,6 @@ class AudioCaptureService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        setupMediaSession()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -161,7 +155,6 @@ class AudioCaptureService : Service() {
                 currentTargetIp = targetIp
                 currentTargetPort = targetPort
 
-                setupMediaSession()
                 silenceTransmitterSpeakers()
                 registerVolumeClampGuard()
                 startServiceForeground()
@@ -178,7 +171,6 @@ class AudioCaptureService : Service() {
     private fun updateRemoteVolume(newVolume: Int) {
         val clamped = newVolume.coerceIn(0, 100)
         remoteVolumePercent.set(clamped)
-        volumeProvider?.currentVolume = clamped
         Log.d(TAG, "Remote volume updated: $clamped%")
 
         // If streaming is actively running, streamThread transmits the new volume in the next 5ms audio packet.
@@ -330,23 +322,19 @@ class AudioCaptureService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val builder = Notification.Builder(this, CHANNEL_ID)
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Audio Transmitter Active")
             .setContentText(statusText)
             .setSmallIcon(R.drawable.ic_transmitter)
             .setContentIntent(pendingActivityIntent)
-            .addAction(Notification.Action.Builder(null, "-5%", pVolDown).build())
-            .addAction(Notification.Action.Builder(null, "+5%", pVolUp).build())
-            .addAction(Notification.Action.Builder(null, "Stop", pendingStopIntent).build())
+            .addAction(R.drawable.ic_volume_down, "-5%", pVolDown)
+            .addAction(R.drawable.ic_volume_up, "+5%", pVolUp)
+            .addAction(R.drawable.ic_stop, "Stop", pendingStopIntent)
             .setOngoing(true)
-
-        mediaSession?.sessionToken?.let { token ->
-            builder.style = Notification.MediaStyle()
-                .setMediaSession(token)
-                .setShowActionsInCompactView(0, 1, 2)
-        }
-
-        return builder.build()
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .build()
     }
 
     private fun createNotificationChannel() {
@@ -590,7 +578,6 @@ class AudioCaptureService : Service() {
         }
         this.audioRecord = record
 
-        setupMediaSession()
         silenceTransmitterSpeakers()
 
         streamThread = Thread({
@@ -651,7 +638,6 @@ class AudioCaptureService : Service() {
                                         val incomingVol = byte4.coerceIn(0, 100)
                                         Log.i(TAG, "Received reverse volume sync: $incomingVol% from $endpoint")
                                         remoteVolumePercent.set(incomingVol)
-                                        volumeProvider?.currentVolume = incomingVol
                                         StreamState.update { it.copy() }
                                         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                                         notificationManager.notify(NOTIFICATION_ID, buildNotification("Streaming @ Receiver Vol: $incomingVol%"))
@@ -1187,15 +1173,6 @@ class AudioCaptureService : Service() {
 
             unregisterVolumeClampGuard()
 
-            try {
-                mediaSession?.isActive = false
-                mediaSession?.release()
-            } catch (e: Exception) {
-                Log.e(TAG, "Error releasing MediaSession", e)
-            }
-            mediaSession = null
-            volumeProvider = null
-
             // Automatically restore phone media volume
             try {
                 previousPhoneVolume?.let { savedVol ->
@@ -1230,43 +1207,6 @@ class AudioCaptureService : Service() {
             }
 
             releaseLocks()
-        }
-    }
-
-    private fun setupMediaSession() {
-        if (mediaSession != null) return
-        try {
-            val session = MediaSession(this, "AudioStreamTransmitter")
-            val vol = remoteVolumePercent.get()
-            val provider = object : VolumeProvider(VOLUME_CONTROL_RELATIVE, 100, vol) {
-                override fun onAdjustVolume(direction: Int) {
-                    val delta = when {
-                        direction > 0 -> 5
-                        direction < 0 -> -5
-                        else -> 0
-                    }
-                    if (delta != 0) {
-                        val newVol = (remoteVolumePercent.get() + delta).coerceIn(0, 100)
-                        updateRemoteVolume(newVol)
-                    }
-                }
-
-                override fun onSetVolumeTo(volume: Int) {
-                    updateRemoteVolume(volume.coerceIn(0, 100))
-                }
-            }
-            volumeProvider = provider
-            session.setPlaybackToRemote(provider)
-            val state = PlaybackState.Builder()
-                .setActions(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_STOP)
-                .setState(PlaybackState.STATE_PLAYING, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1.0f)
-                .build()
-            session.setPlaybackState(state)
-            session.isActive = true
-            this.mediaSession = session
-            Log.i(TAG, "MediaSession initialized with relative remote volume provider (initial vol: $vol%)")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error initializing MediaSession", e)
         }
     }
 
