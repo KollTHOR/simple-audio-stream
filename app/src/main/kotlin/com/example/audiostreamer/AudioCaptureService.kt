@@ -778,6 +778,9 @@ class AudioCaptureService : Service() {
 
                 val pcmReadBuffer = ByteArray(4096)
 
+                val rawPcmBuffer = ByteArray(AudioConfig.MAX_PACKET_SIZE)
+                val losslessCodec = LosslessAudioCodec(1024)
+
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                     if (isCompressedActive && (opusEnc != null || aacEnc != null)) {
                         val targetReadBytes = if (isOpusActive) {
@@ -889,10 +892,9 @@ class AudioCaptureService : Service() {
                             break
                         }
                     } else {
-                    val bytesRead = record.read(sendBuffer, AudioConfig.HEADER_SIZE, activePayloadSize, AudioRecord.READ_BLOCKING)
+                    val bytesRead = record.read(rawPcmBuffer, 0, activePayloadSize, AudioRecord.READ_BLOCKING)
                     if (bytesRead > 0) {
                         val currentIsLowLat = (activeProfile == AudioConfig.PROFILE_VIDEO || activeProfile == AudioConfig.PROFILE_LOW_LATENCY)
-                        val effectivePayloadLen = bytesRead
                         val isEffective24 = is24BitActive
                         val baseProfileFlag = when {
                             currentIsLowLat -> AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt()
@@ -908,22 +910,20 @@ class AudioCaptureService : Service() {
                         // Compute peak amplitude of current chunk
                         var chunkPeak = 0
                         if (isEffective24) {
-                            var i = AudioConfig.HEADER_SIZE
-                            val end = AudioConfig.HEADER_SIZE + effectivePayloadLen
-                            while (i < end - 2) {
-                                val raw = (sendBuffer[i].toInt() and 0xFF) or
-                                    ((sendBuffer[i + 1].toInt() and 0xFF) shl 8) or
-                                    ((sendBuffer[i + 2].toInt() and 0xFF) shl 16)
+                            var i = 0
+                            while (i < bytesRead - 2) {
+                                val raw = (rawPcmBuffer[i].toInt() and 0xFF) or
+                                    ((rawPcmBuffer[i + 1].toInt() and 0xFF) shl 8) or
+                                    ((rawPcmBuffer[i + 2].toInt() and 0xFF) shl 16)
                                 val sample = if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw
                                 val abs = kotlin.math.abs(sample)
                                 if (abs > chunkPeak) chunkPeak = abs
                                 i += 24
                             }
                         } else {
-                            var i = AudioConfig.HEADER_SIZE
-                            val end = AudioConfig.HEADER_SIZE + effectivePayloadLen
-                            while (i < end - 1) {
-                                val sample = (sendBuffer[i].toInt() and 0xFF) or (sendBuffer[i + 1].toInt() shl 8)
+                            var i = 0
+                            while (i < bytesRead - 1) {
+                                val sample = (rawPcmBuffer[i].toInt() and 0xFF) or (rawPcmBuffer[i + 1].toInt() shl 8)
                                 val abs = kotlin.math.abs(sample.toShort().toInt())
                                 if (abs > chunkPeak) chunkPeak = abs
                                 i += 16
@@ -964,7 +964,7 @@ class AudioCaptureService : Service() {
                             val currentSeq = sequence
                             sequence = (sequence + 1) and 0xFFFF
 
-                            sendBuffer[4] = remoteVolumePercent.get().toByte()
+                            val vol = remoteVolumePercent.get().coerceIn(0, 100)
 
                             val sendFlags = if (isSilenceSuppressed) {
                                 (profileFlag.toInt() or AudioConfig.FLAG_SILENCE.toInt()).toByte()
@@ -973,12 +973,32 @@ class AudioCaptureService : Service() {
                             }
                             sendBuffer[5] = sendFlags
 
+                            var effectivePayloadLen: Int
                             if (isSilenceSuppressed) {
+                                sendBuffer[4] = vol.toByte()
                                 sendBuffer[6] = 0
                                 sendBuffer[7] = 0
                                 packet.length = AudioConfig.HEADER_SIZE
                                 lastHeartbeatTime = now
+                                effectivePayloadLen = 0
                             } else {
+                                val compBytes = losslessCodec.encode(
+                                    pcm = rawPcmBuffer,
+                                    offset = 0,
+                                    length = bytesRead,
+                                    is24Bit = isEffective24,
+                                    out = sendBuffer,
+                                    outOffset = AudioConfig.HEADER_SIZE
+                                )
+                                val isLossless = (compBytes < bytesRead) && (sendBuffer[AudioConfig.HEADER_SIZE] != LosslessAudioCodec.MODE_RAW)
+                                if (isLossless) {
+                                    sendBuffer[4] = ((vol and AudioConfig.BYTE4_VOLUME_MASK) or AudioConfig.FLAG_BYTE4_LOSSLESS).toByte()
+                                    effectivePayloadLen = compBytes
+                                } else {
+                                    sendBuffer[4] = (vol and AudioConfig.BYTE4_VOLUME_MASK).toByte()
+                                    System.arraycopy(rawPcmBuffer, 0, sendBuffer, AudioConfig.HEADER_SIZE, bytesRead)
+                                    effectivePayloadLen = bytesRead
+                                }
                                 sendBuffer[6] = (effectivePayloadLen shr 8).toByte()
                                 sendBuffer[7] = (effectivePayloadLen and 0xFF).toByte()
                                 packet.length = AudioConfig.HEADER_SIZE + effectivePayloadLen

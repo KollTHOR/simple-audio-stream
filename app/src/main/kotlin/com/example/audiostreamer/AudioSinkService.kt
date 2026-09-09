@@ -73,6 +73,7 @@ class AudioSinkService : Service() {
     @Volatile private var currentSampleRate: Int = AudioConfig.SAMPLE_RATE_48000
     @Volatile private var currentEncoding: Int = AudioConfig.ENCODING
     @Volatile private var currentPerformanceMode: Int = AudioTrack.PERFORMANCE_MODE_NONE
+    @Volatile private var currentIsServer24Bit: Boolean = false
     @Volatile private var currentIsAac: Boolean = false
     @Volatile private var currentIsOpus: Boolean = false
     @Volatile private var aacDecoder: AacDecoder? = null
@@ -116,7 +117,8 @@ class AudioSinkService : Service() {
                     (sampleRate * 35) / 1000
                 }
                 AudioConfig.PROFILE_AUTO -> {
-                    val wmMs = jitterBuffer.getTargetWatermarkMs().toInt().coerceIn(35, 400)
+                    val minWatermarkMs = if (sampleRate >= 88200) 60 else 35
+                    val wmMs = jitterBuffer.getTargetWatermarkMs().toInt().coerceIn(minWatermarkMs, 400)
                     (sampleRate * wmMs) / 1000
                 }
                 else -> {
@@ -265,6 +267,8 @@ class AudioSinkService : Service() {
 
                 val rawBuffer = ByteArray(AudioConfig.HEADER_SIZE + AudioConfig.MAX_PACKET_SIZE)
                 val packet = DatagramPacket(rawBuffer, rawBuffer.size)
+                val losslessDecoder = LosslessAudioCodec(1024)
+                val decompressedPcmBuf = ByteArray(AudioConfig.MAX_PACKET_SIZE)
 
                 var totalPackets = 0L
                 var totalBytes = 0L
@@ -293,7 +297,9 @@ class AudioSinkService : Service() {
                             if (magic == AudioConfig.MAGIC_HEADER.toInt()) {
                                 val flags = data[offset + 5]
                                 val seq = ((data[offset + 2].toInt() and 0xFF) shl 8) or (data[offset + 3].toInt() and 0xFF)
-                                val volume = data[offset + 4].toInt() and 0xFF
+                                val rawByte4 = data[offset + 4].toInt() and 0xFF
+                                val isLossless = (rawByte4 and AudioConfig.FLAG_BYTE4_LOSSLESS) != 0
+                                val volume = rawByte4 and AudioConfig.BYTE4_VOLUME_MASK
                                 val payloadLen = ((data[offset + 6].toInt() and 0xFF) shl 8) or (data[offset + 7].toInt() and 0xFF)
 
                                 // Check for XOR FEC Parity packet
@@ -363,8 +369,10 @@ class AudioSinkService : Service() {
                                 // Only adapt profile and reconfigure AudioTrack on audio packets (never on control-only packets)
                                 if (!isControlOnly && !isDisconnect && !isSilence) {
                                     val isServer24Bit = !isIncomingAac && !isIncomingOpus && ((flags.toInt() and AudioConfig.FLAG_24BIT.toInt()) != 0)
+                                    currentIsServer24Bit = isServer24Bit
                                     val serverProfile = AudioConfig.getProfileFromFlags(flags)
                                     jitterBuffer.set24Bit(isServer24Bit)
+                                    jitterBuffer.setSampleRate(targetSampleRate)
                                     val currentCodec = when {
                                         isIncomingOpus -> "OPUS"
                                         isIncomingAac -> "AAC"
@@ -436,9 +444,34 @@ class AudioSinkService : Service() {
                                 val isCompressedPayload = (isIncomingOpus || isIncomingAac) && payloadLen > 0
                                 if ((isPcmPayload || isCompressedPayload) && !isDisconnect && !isControlOnly) {
                                     val pcmOffset = offset + AudioConfig.HEADER_SIZE
-                                    val effectivePayloadLen = payloadLen
-                                    val writeData = data
-                                    val writeOffset = pcmOffset
+                                    val effectivePayloadLen: Int
+                                    val writeData: ByteArray
+                                    val writeOffset: Int
+
+                                    if (isLossless && !isCompressedPayload) {
+                                        val is24 = currentIsServer24Bit
+                                        val decompLen = losslessDecoder.decode(
+                                            comp = data,
+                                            offset = pcmOffset,
+                                            length = payloadLen,
+                                            is24Bit = is24,
+                                            out = decompressedPcmBuf,
+                                            outOffset = 0
+                                        )
+                                        if (decompLen > 0) {
+                                            writeData = decompressedPcmBuf
+                                            writeOffset = 0
+                                            effectivePayloadLen = decompLen
+                                        } else {
+                                            writeData = data
+                                            writeOffset = pcmOffset
+                                            effectivePayloadLen = payloadLen
+                                        }
+                                    } else {
+                                        writeData = data
+                                        writeOffset = pcmOffset
+                                        effectivePayloadLen = payloadLen
+                                    }
 
                                     jitterBuffer.write(seq, writeData, writeOffset, effectivePayloadLen)
 
@@ -607,6 +640,7 @@ class AudioSinkService : Service() {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
 
                 val chunk = ByteArray(AudioConfig.MAX_PACKET_SIZE)
+                val pcmTruncateBuf = ByteArray(AudioConfig.MAX_PACKET_SIZE)
                 var lastPlayedSampleLeft16: Short = 0
                 var lastPlayedSampleRight16: Short = 0
                 var wasInSilenceFill = false
@@ -740,7 +774,23 @@ class AudioSinkService : Service() {
                                          track.write(silence, 0, silence.size, AudioTrack.WRITE_BLOCKING)
                                      }
                                 } else {
-                                    track.write(chunk, 0, bytesToPlay, AudioTrack.WRITE_BLOCKING)
+                                     if (currentEncoding == AudioFormat.ENCODING_PCM_16BIT && currentIsServer24Bit && bytesToPlay >= 6) {
+                                         val frames = bytesToPlay / 6
+                                         val outLen = frames * 4
+                                         var srcP = 0
+                                         var dstP = 0
+                                         for (f in 0 until frames) {
+                                             pcmTruncateBuf[dstP] = chunk[srcP + 1]
+                                             pcmTruncateBuf[dstP + 1] = chunk[srcP + 2]
+                                             pcmTruncateBuf[dstP + 2] = chunk[srcP + 4]
+                                             pcmTruncateBuf[dstP + 3] = chunk[srcP + 5]
+                                             srcP += 6
+                                             dstP += 4
+                                         }
+                                         track.write(pcmTruncateBuf, 0, outLen, AudioTrack.WRITE_BLOCKING)
+                                     } else {
+                                         track.write(chunk, 0, bytesToPlay, AudioTrack.WRITE_BLOCKING)
+                                     }
                                 }
                             }
                         }

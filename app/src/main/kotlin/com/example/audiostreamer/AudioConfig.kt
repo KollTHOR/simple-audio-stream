@@ -35,8 +35,18 @@ object AudioConfig {
     const val PACKET_SIZE = PACKET_SIZE_16BIT
 
     fun getFramesPerPacket(sampleRate: Int): Int = when (sampleRate) {
-        SAMPLE_RATE_44100, SAMPLE_RATE_88200, SAMPLE_RATE_176400 -> FRAMES_PER_PACKET_44K
-        else -> FRAMES_PER_PACKET_48K
+        SAMPLE_RATE_44100 -> 220
+        SAMPLE_RATE_48000 -> 240
+        SAMPLE_RATE_88200 -> 441
+        SAMPLE_RATE_96000 -> 480
+        SAMPLE_RATE_176400 -> 441
+        SAMPLE_RATE_192000 -> 480
+        else -> (sampleRate * 5) / 1000
+    }
+
+    fun getPacketDurationMs(sampleRate: Int): Float = when (sampleRate) {
+        SAMPLE_RATE_176400, SAMPLE_RATE_192000 -> 2.5f
+        else -> 5.0f
     }
 
     fun getPacketPayloadSize(sampleRate: Int, is24Bit: Boolean): Int {
@@ -44,6 +54,10 @@ object AudioConfig {
         val bytesPerSample = if (is24Bit) 3 else 2
         return frames * CHANNELS * bytesPerSample
     }
+
+    // Packet Header Byte 4 (Volume & Lossless flag)
+    const val FLAG_BYTE4_LOSSLESS: Int = 0x80
+    const val BYTE4_VOLUME_MASK: Int = 0x7F
 
     // Packet Header
     const val HEADER_SIZE = 8
@@ -208,9 +222,9 @@ object AudioConfig {
     const val SOCKET_SEND_BUFFER_BYTES = 524288 // 512 KB
     const val SOCKET_RECEIVE_BUFFER_BYTES = 1048576 // 1 MB
 
-    // AudioRecord buffer capacity (500ms)
-    const val CAPTURE_BUFFER_BYTES_16BIT = SAMPLE_RATE * CHANNELS * 2 / 2 // 500ms = 96,000 bytes
-    const val CAPTURE_BUFFER_BYTES_24BIT = SAMPLE_RATE * CHANNELS * 3 / 2 // 500ms = 144,000 bytes
+    // AudioRecord buffer capacity (500ms headroom for up to 192kHz)
+    const val CAPTURE_BUFFER_BYTES_16BIT = SAMPLE_RATE_192000 * CHANNELS * 2 / 2 // 384 KB
+    const val CAPTURE_BUFFER_BYTES_24BIT = SAMPLE_RATE_192000 * CHANNELS * 3 / 2 // 576 KB
     const val CAPTURE_BUFFER_BYTES = CAPTURE_BUFFER_BYTES_24BIT
 
     const val CHANNEL_IN_MASK = AudioFormat.CHANNEL_IN_STEREO

@@ -34,10 +34,17 @@ class JitterBuffer(
     private var wasConcealed = false
     private var isCompressedStream = false
     private var is24BitStream = false
+    private var packetDurationMs: Float = 5.0f
 
     fun set24Bit(is24: Boolean) {
         lock.withLock {
             is24BitStream = is24
+        }
+    }
+
+    fun setSampleRate(sampleRate: Int) {
+        lock.withLock {
+            packetDurationMs = AudioConfig.getPacketDurationMs(sampleRate)
         }
     }
 
@@ -105,11 +112,17 @@ class JitterBuffer(
                 targetWatermarkMs = 40.0f
             } else {
                 slotCount = AudioConfig.getJitterBufferSlots(profile)
-                preRollThreshold = AudioConfig.getPreRollPackets(profile)
+                val nominalDuration = packetDurationMs
+                val nominalSlots = kotlin.math.ceil(200.0f / nominalDuration).toInt()
+                preRollThreshold = if (profile == AudioConfig.PROFILE_AUTO) {
+                    kotlin.math.ceil(50.0f / nominalDuration).toInt().coerceIn(2, slotCount / 4)
+                } else {
+                    nominalSlots.coerceIn(4, slotCount / 4)
+                }
                 maxUnderrunFrames = AudioConfig.getMaxUnderrunFrames(profile)
                 waitTimeoutMs = AudioConfig.getReceiverWaitTimeoutMs(profile)
-                targetWatermarkSlots = AudioConfig.getTargetWatermarkSlots(profile)
                 targetWatermarkMs = if (profile == AudioConfig.PROFILE_AUTO) 50.0f else 200.0f
+                targetWatermarkSlots = kotlin.math.ceil(targetWatermarkMs / nominalDuration).toInt().coerceIn(2, slotCount - 4)
             }
             cleanPlaybackFramesCount = 0
             smoothBufferFill = preRollThreshold.toFloat()
@@ -117,7 +130,7 @@ class JitterBuffer(
             while (availableCount > slotCount) {
                 dropOldestSlot()
             }
-            AppLogger.i("JitterBuffer", "Buffer profile updated: profile=$profile, compressed=$isCompressed, slots=$slotCount, preRoll=$preRollThreshold, timeout=${waitTimeoutMs}ms")
+            AppLogger.i("JitterBuffer", "Buffer profile updated: profile=$profile, compressed=$isCompressed, slots=$slotCount, preRoll=$preRollThreshold, timeout=${waitTimeoutMs}ms, packetDuration=${packetDurationMs}ms")
         }
     }
 
@@ -191,7 +204,7 @@ class JitterBuffer(
             if (lastArrivalNanos > 0L && lastPacketSeq != -1) {
                 val deltaSeq = seqDiff(sequence, lastPacketSeq)
                 if (deltaSeq in 1..50) {
-                    val nominalDurationMs = if (isCompressedStream) 20.0 else 5.0
+                    val nominalDurationMs = if (isCompressedStream) 20.0 else packetDurationMs.toDouble()
                     val sendTimeDelta = deltaSeq * nominalDurationMs
                     val arrivalDelta = (nowNanos - lastArrivalNanos) / 1_000_000.0
                     val transitDiff = arrivalDelta - sendTimeDelta
@@ -386,7 +399,7 @@ class JitterBuffer(
 
                 if (wasConcealed) {
                     wasConcealed = false
-                    val is24 = is24BitStream || (len == AudioConfig.PACKET_SIZE_24BIT_44K || len == AudioConfig.PACKET_SIZE_24BIT_48K || (len % 6 == 0 && len % 4 != 0))
+                    val is24 = is24BitStream
                     val frameBytes = if (is24) 6 else 4
                     val totalFrames = len / frameBytes
                     val fadeFrames = minOf(20, totalFrames)
@@ -430,7 +443,7 @@ class JitterBuffer(
                         val baselineTarget = (estimatedJitterMs * 3.5).toFloat().coerceIn(35.0f, 400.0f)
                         if (targetWatermarkMs > baselineTarget) {
                             targetWatermarkMs = (targetWatermarkMs - 2.0f).coerceAtLeast(baselineTarget)
-                            val nominalDurationMs = if (isCompressedStream) 20.0f else 5.0f
+                            val nominalDurationMs = if (isCompressedStream) 20.0f else packetDurationMs
                             targetWatermarkSlots = kotlin.math.ceil(targetWatermarkMs / nominalDurationMs).toInt().coerceIn(2, slotCount - 4)
                         }
                     }
@@ -458,7 +471,7 @@ class JitterBuffer(
                 }
 
                 // Cache last samples for smooth concealment if needed
-                val is24Sample = is24BitStream || (len % 6 == 0 && (len % 4 != 0 || len >= 1320))
+                val is24Sample = is24BitStream
                 if (is24Sample && len >= 6) {
                     val idxL = len - 6
                     val idxR = len - 3
@@ -479,7 +492,7 @@ class JitterBuffer(
                 consecutiveUnderruns++
                 if (currentProfile == AudioConfig.PROFILE_AUTO) {
                     targetWatermarkMs = (targetWatermarkMs + 30.0f).coerceAtMost(400.0f)
-                    val nominalDurationMs = if (isCompressedStream) 20.0f else 5.0f
+                    val nominalDurationMs = if (isCompressedStream) 20.0f else packetDurationMs
                     targetWatermarkSlots = kotlin.math.ceil(targetWatermarkMs / nominalDurationMs).toInt().coerceIn(2, slotCount - 4)
                     cleanPlaybackFramesCount = 0
                 }
@@ -499,7 +512,7 @@ class JitterBuffer(
                 }
 
                 wasConcealed = true
-                val is24Conceal = is24BitStream || (len == AudioConfig.PACKET_SIZE_24BIT_44K || len == AudioConfig.PACKET_SIZE_24BIT_48K || (len % 6 == 0 && len % 4 != 0))
+                val is24Conceal = is24BitStream
                 if (is24Conceal) {
                     val numFrames = len / 6
                     val initL = lastSampleLeft24
@@ -575,7 +588,7 @@ class JitterBuffer(
     }
 
     private fun applyZeroCrossingFrameDrop(output: ByteArray, len: Int) {
-        val is24 = is24BitStream || (len == AudioConfig.PACKET_SIZE_24BIT_48K || len == AudioConfig.PACKET_SIZE_24BIT_44K || (len % 6 == 0 && len % 4 != 0))
+        val is24 = is24BitStream
         val frameBytes = if (is24) 6 else 4
         val totalFrames = len / frameBytes
         val searchStart = totalFrames / 4
@@ -619,7 +632,7 @@ class JitterBuffer(
     }
 
     private fun applyZeroCrossingFrameDuplicate(output: ByteArray, len: Int) {
-        val is24 = is24BitStream || (len == AudioConfig.PACKET_SIZE_24BIT_48K || len == AudioConfig.PACKET_SIZE_24BIT_44K || (len % 6 == 0 && len % 4 != 0))
+        val is24 = is24BitStream
         val frameBytes = if (is24) 6 else 4
         val totalFrames = len / frameBytes
         val searchStart = totalFrames / 4
