@@ -4,37 +4,59 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
+/**
+ * High-definition Audio Transport (HAT) Jitter Buffer.
+ *
+ * Architecture and Component Responsibilities:
+ * - [PacketBuffer]: Manages circular ring buffer slots for packets, slot occupancy, and available count.
+ * - [SequenceTracker]: Owns 16-bit sequence arithmetic, discontinuity/leap detection, and read sequence cursor.
+ * - [JitterEstimator]: Owns RFC 3550 inter-arrival jitter estimation and floating target watermark adaptation.
+ * - [PlaybackScheduler]: Owns buffering vs active playback state, pre-roll cushions, timeouts, and timeline timestamps.
+ * - [DriftController]: Owns smoothed fill level filtering, catch-up drops, and zero-crossing micro-resampling.
+ * - [PacketLossConcealment]: Owns end-of-packet sample caching, fade-to-zero synthesis, and resumption crossfading.
+ * - [FecHistoryBuffer]: Owns secondary circular history for robust FEC recovery of previously read packets.
+ *
+ * Timing Model:
+ * 1. Monotonic Audio Timeline: Timestamps represent continuous audio frames from stream inception.
+ *    Frame sizing is derived dynamically from negotiated bit depth, channels, and sample rate.
+ * 2. Pre-roll and Readout Cursor: Playback begins only after availableCount reaches preRollThreshold.
+ *    Before readout begins, startup packets arriving up to 32 slots earlier adjust the read cursor.
+ * 3. Jitter and Floating Watermark: RFC 3550 exponential moving average J = J + (|D| - J) / 16 adapts
+ *    the target watermark in Auto mode between 35ms and 400ms.
+ * 4. Micro-Drift Zero-Crossing Compensation: Slight clock differences between sender and receiver crystal
+ *    oscillators are compensated by dropping or duplicating one frame (20-22 microseconds) at a zero-crossing
+ *    minimum, rate-limited to >= 300-600 packets to eliminate audible comb filtering or DC clicks.
+ * 5. Deterministic Concealment: When packets are delayed beyond timeout, a smooth linear decay to zero
+ *    is synthesized; upon packet resumption, a 20-frame crossfade is applied.
+ */
 class JitterBuffer(
     initialProfile: String = AudioConfig.PROFILE_MUSIC
 ) {
     private val maxSlots = AudioConfig.MUSIC_JITTER_BUFFER_SLOTS
-    private val buffer = Array(maxSlots) { ByteArray(AudioConfig.MAX_PACKET_SIZE) }
-    private val packetLengths = IntArray(maxSlots) { AudioConfig.PACKET_SIZE_16BIT }
     private val lock = ReentrantLock()
     private val notEmptyCondition = lock.newCondition()
+
+    // Subcomponents
+    private val packetBuffer = PacketBuffer(maxSlots)
+    private val sequenceTracker = SequenceTracker()
+    private val jitterEstimator = JitterEstimator(initialProfile)
+    private val playbackScheduler = PlaybackScheduler(AudioConfig.getPreRollPackets(initialProfile))
+    private val driftController = DriftController(AudioConfig.getPreRollPackets(initialProfile).toFloat())
+    private val plc = PacketLossConcealment()
+    private val fecHistory = FecHistoryBuffer(32)
 
     private var currentProfile: String = initialProfile
     private var slotCount: Int = AudioConfig.getJitterBufferSlots(initialProfile)
     private var preRollThreshold: Int = AudioConfig.getPreRollPackets(initialProfile)
     private var maxUnderrunFrames: Int = AudioConfig.getMaxUnderrunFrames(initialProfile)
     private var waitTimeoutMs: Long = AudioConfig.getReceiverWaitTimeoutMs(initialProfile)
-    private var targetWatermarkSlots: Int = AudioConfig.getTargetWatermarkSlots(initialProfile)
-
-    private var availableCount = 0
-    private var isBuffering = true
-    private var hasReadStarted = false
-    private var consecutiveUnderruns = 0
-    private var lastSampleLeft16: Short = 0
-    private var lastSampleRight16: Short = 0
-    private var lastSampleLeft24: Int = 0
-    private var lastSampleRight24: Int = 0
     private var lastPacketSize: Int = AudioConfig.PACKET_SIZE_16BIT
-    private var smoothBufferFill: Float = preRollThreshold.toFloat()
-    private var isTransmitterSilent = false
-    private var wasConcealed = false
     private var isCompressedStream = false
     private var is24BitStream = false
     private var packetDurationMs: Float = 5.0f
+    private var lastSampleRate: Int = AudioConfig.SAMPLE_RATE_48000
+
+    private val internalFecDecoder by lazy { FecDecoder(this) }
 
     fun set24Bit(is24: Boolean) {
         lock.withLock {
@@ -42,43 +64,11 @@ class JitterBuffer(
         }
     }
 
-    private var lastSampleRate: Int = AudioConfig.SAMPLE_RATE_48000
-
     fun setSampleRate(sampleRate: Int) {
         lock.withLock {
             lastSampleRate = sampleRate
             packetDurationMs = AudioConfig.getPacketDurationMs(sampleRate)
         }
-    }
-
-    // RFC 3550 Inter-Arrival Jitter Estimation & Floating Target Watermark
-    private var lastArrivalNanos: Long = 0L
-    private var lastPacketSeq: Int = -1
-    private var lastReceivedTimestamp: Long = -1L
-    private var expectedReadTimestamp: Long = -1L
-    private var estimatedJitterMs: Double = 0.0
-    private var targetWatermarkMs: Float = if (initialProfile == AudioConfig.PROFILE_AUTO) 50.0f else 40.0f
-    private var cleanPlaybackFramesCount: Int = 0
-
-    // History buffer for robust FEC recovery even if preceding packets were already read
-    private val historySize = 32
-    private val historyBuffer = Array(historySize) { ByteArray(AudioConfig.MAX_PACKET_SIZE) }
-    private val historyLengths = IntArray(historySize)
-    private val historySeq = IntArray(historySize) { -1 }
-    private val historyTimestamp = LongArray(historySize) { -1L }
-
-    private val isSlotFilled = BooleanArray(maxSlots)
-    private val slotSeq = IntArray(maxSlots) { -1 }
-    private val slotTimestamp = LongArray(maxSlots) { -1L }
-    private var expectedReadSeq = -1
-    private var syntheticSeq = 0
-    private var syntheticTimestamp = 0L
-    private var packetsSinceCatchUp = 0
-    private var packetsSinceDriftAdjust = 0
-
-    private fun seqDiff(s1: Int, s2: Int): Int {
-        val diff = (s1 - s2) and 0xFFFF
-        return if (diff > 32767) diff - 65536 else diff
     }
 
     fun calculateFramesForPayload(length: Int): Int {
@@ -95,25 +85,21 @@ class JitterBuffer(
     }
 
     private fun dropOldestSlot() {
-        if (expectedReadSeq == -1) return
+        val expSeq = sequenceTracker.expectedReadSeq
+        if (expSeq == -1) return
         var checked = 0
+        var currSeq = expSeq
         while (checked < maxSlots) {
-            val slot = expectedReadSeq and (maxSlots - 1)
-            val wasFilled = isSlotFilled[slot] && slotSeq[slot] == expectedReadSeq
-            val len = packetLengths[slot]
-            val ts = slotTimestamp[slot]
-            isSlotFilled[slot] = false
-            slotSeq[slot] = -1
-            slotTimestamp[slot] = -1L
-            expectedReadSeq = (expectedReadSeq + 1) and 0xFFFF
+            val slot = packetBuffer.getSlot(currSeq)
+            val wasFilled = packetBuffer.isSlotOccupiedBy(slot, currSeq)
+            val len = packetBuffer.getSlotPacketLength(slot)
+            val ts = packetBuffer.getSlotTimestamp(slot)
+            packetBuffer.clearSlot(slot)
+            sequenceTracker.advanceExpectedReadSeq()
+            currSeq = sequenceTracker.expectedReadSeq
             if (wasFilled) {
                 val frames = calculateFramesForPayload(len)
-                if (ts >= 0L) {
-                    expectedReadTimestamp = ts + frames
-                } else if (expectedReadTimestamp >= 0L) {
-                    expectedReadTimestamp += frames
-                }
-                if (availableCount > 0) availableCount--
+                playbackScheduler.advanceExpectedReadTimestamp(frames, ts)
                 break
             }
             checked++
@@ -122,16 +108,13 @@ class JitterBuffer(
 
     fun onSilenceHeartbeat() {
         lock.withLock {
-            isTransmitterSilent = true
-            consecutiveUnderruns = 0
-            hasReadStarted = false
+            playbackScheduler.onSilence()
             notEmptyCondition.signal()
         }
     }
 
     fun applyConfiguration(config: NegotiatedStreamConfig) {
         lock.withLock {
-            hasReadStarted = false
             is24BitStream = config.is24Bit
             lastSampleRate = config.sampleRateHz
             packetDurationMs = config.packetDurationMs
@@ -143,13 +126,12 @@ class JitterBuffer(
             preRollThreshold = params.preRollPackets
             maxUnderrunFrames = params.maxUnderrunFrames
             waitTimeoutMs = params.waitTimeoutMs
-            targetWatermarkSlots = params.targetWatermarkSlots
-            targetWatermarkMs = params.targetWatermarkMs
 
-            cleanPlaybackFramesCount = 0
-            smoothBufferFill = preRollThreshold.toFloat()
+            jitterEstimator.configure(params.targetWatermarkSlots, params.targetWatermarkMs)
+            playbackScheduler.onStreamReset(playbackScheduler.expectedReadTimestamp, preRollThreshold)
+            driftController.reset(preRollThreshold.toFloat())
 
-            while (availableCount > slotCount) {
+            while (packetBuffer.availableCount > slotCount) {
                 dropOldestSlot()
             }
             AppLogger.i("JitterBuffer", "Applied negotiated config: format=${config.sampleRateHz}Hz/${if (config.is24Bit) 24 else 16}b, codec=${config.codec.name}, profile=${config.transportProfile.latencyTarget.name}, slots=$slotCount")
@@ -166,8 +148,9 @@ class JitterBuffer(
                 preRollThreshold = AudioConfig.LOW_LATENCY_PRE_ROLL_PACKETS
                 maxUnderrunFrames = AudioConfig.LOW_LATENCY_MAX_UNDERRUN_FRAMES
                 waitTimeoutMs = AudioConfig.LOW_LATENCY_WAIT_TIMEOUT_MS
-                targetWatermarkSlots = AudioConfig.LOW_LATENCY_TARGET_WATERMARK_SLOTS
-                targetWatermarkMs = 40.0f
+                val targetSlots = AudioConfig.LOW_LATENCY_TARGET_WATERMARK_SLOTS
+                val targetMs = 40.0f
+                jitterEstimator.configure(targetSlots, targetMs)
             } else {
                 slotCount = AudioConfig.getJitterBufferSlots(profile)
                 val nominalDuration = packetDurationMs
@@ -179,13 +162,14 @@ class JitterBuffer(
                 }
                 maxUnderrunFrames = AudioConfig.getMaxUnderrunFrames(profile)
                 waitTimeoutMs = AudioConfig.getReceiverWaitTimeoutMs(profile)
-                targetWatermarkMs = if (profile == AudioConfig.PROFILE_AUTO) 50.0f else 200.0f
-                targetWatermarkSlots = kotlin.math.ceil(targetWatermarkMs / nominalDuration).toInt().coerceIn(2, slotCount - 4)
+                val targetMs = if (profile == AudioConfig.PROFILE_AUTO) 50.0f else 200.0f
+                val targetSlots = kotlin.math.ceil(targetMs / nominalDuration).toInt().coerceIn(2, slotCount - 4)
+                jitterEstimator.configure(targetSlots, targetMs)
             }
-            cleanPlaybackFramesCount = 0
-            smoothBufferFill = preRollThreshold.toFloat()
+            playbackScheduler.reset(preRollThreshold)
+            driftController.reset(preRollThreshold.toFloat())
 
-            while (availableCount > slotCount) {
+            while (packetBuffer.availableCount > slotCount) {
                 dropOldestSlot()
             }
             AppLogger.i("JitterBuffer", "Buffer profile updated: profile=$profile, compressed=$isCompressed, slots=$slotCount, preRoll=$preRollThreshold, timeout=${waitTimeoutMs}ms, packetDuration=${packetDurationMs}ms")
@@ -199,140 +183,86 @@ class JitterBuffer(
             val nominalFramesPerPacket = calculateFramesForPayload(length)
             val maxTolerableFrameDrift = slotCount * nominalFramesPerPacket
 
-            val isFirstPacket = (expectedReadSeq == -1 || expectedReadTimestamp == -1L)
-            val isSequenceReset = (expectedReadSeq != -1 && kotlin.math.abs(seqDiff(sequence, expectedReadSeq)) > slotCount / 2)
-            val isBackwardTimestampJump = (expectedReadTimestamp != -1L && timestamp < expectedReadTimestamp - maxTolerableFrameDrift)
-            val isForwardTimestampDiscontinuity = (expectedReadTimestamp != -1L && timestamp > expectedReadTimestamp + maxTolerableFrameDrift)
+            val expSeq = sequenceTracker.expectedReadSeq
+            val expTs = playbackScheduler.expectedReadTimestamp
 
-            if (isTransmitterSilent || (isBuffering && availableCount == 0) || isFirstPacket || isSequenceReset || isBackwardTimestampJump || isForwardTimestampDiscontinuity) {
-                isTransmitterSilent = false
-                wasConcealed = false
-                hasReadStarted = false
-                expectedReadSeq = sequence
-                expectedReadTimestamp = timestamp
-                isBuffering = (preRollThreshold > 1)
-                availableCount = 0
-                for (i in 0 until maxSlots) {
-                    isSlotFilled[i] = false
-                    slotSeq[i] = -1
-                    slotTimestamp[i] = -1L
-                }
+            val isFirstPacket = (expSeq == -1 || expTs == -1L)
+            val isSequenceReset = SequenceTracker.isSequenceReset(sequence, expSeq, slotCount)
+            val isBackwardTimestampJump = (expTs != -1L && timestamp < expTs - maxTolerableFrameDrift)
+            val isForwardTimestampDiscontinuity = (expTs != -1L && timestamp > expTs + maxTolerableFrameDrift)
+
+            if (playbackScheduler.isTransmitterSilent ||
+                (playbackScheduler.isBuffering && packetBuffer.availableCount == 0) ||
+                isFirstPacket || isSequenceReset || isBackwardTimestampJump || isForwardTimestampDiscontinuity) {
+
+                plc.clearConcealed()
+                sequenceTracker.setExpectedReadSeq(sequence)
+                playbackScheduler.onStreamReset(timestamp, preRollThreshold)
+                packetBuffer.clear()
             }
 
-            val diff = seqDiff(sequence, expectedReadSeq)
+            val currentExpSeq = sequenceTracker.expectedReadSeq
+            val diff = SequenceTracker.diff(sequence, currentExpSeq)
             if (diff < 0) {
-                if ((!hasReadStarted || isBuffering) && diff >= -32) {
-                    // During initial pre-roll before playback has started, adjust read cursor
-                    // to the earliest packet received to preserve out-of-order startup packets.
-                    expectedReadSeq = sequence
-                    expectedReadTimestamp = timestamp
+                if (playbackScheduler.canAcceptStartupPacket(diff)) {
+                    sequenceTracker.setExpectedReadSeq(sequence)
+                    playbackScheduler.setExpectedReadTimestamp(timestamp)
                 } else {
                     // Outdated packet already passed playback point
                     return
                 }
             }
-            if (diff >= maxSlots) {
+            if (SequenceTracker.isAheadOfCapacity(sequence, currentExpSeq, maxSlots)) {
                 // Sequence leap / reconnection
-                expectedReadSeq = sequence
-                expectedReadTimestamp = timestamp
-                isBuffering = true
-                availableCount = 0
-                for (i in 0 until maxSlots) {
-                    isSlotFilled[i] = false
-                    slotSeq[i] = -1
-                    slotTimestamp[i] = -1L
-                }
+                sequenceTracker.setExpectedReadSeq(sequence)
+                playbackScheduler.onStreamReset(timestamp, preRollThreshold)
+                packetBuffer.clear()
             }
 
-            val slot = sequence and (maxSlots - 1)
-            if (isSlotFilled[slot] && slotSeq[slot] == sequence) {
+            val slot = packetBuffer.getSlot(sequence)
+            if (packetBuffer.isSlotOccupiedBy(slot, sequence)) {
                 // Duplicate packet
                 return
             }
 
-            while (availableCount >= slotCount) {
+            while (packetBuffer.availableCount >= slotCount) {
                 dropOldestSlot()
             }
 
-            System.arraycopy(data, offset, buffer[slot], 0, length)
-            packetLengths[slot] = length
-            slotSeq[slot] = sequence
-            slotTimestamp[slot] = timestamp
-            if (!isSlotFilled[slot]) {
-                isSlotFilled[slot] = true
-                availableCount++
-            }
+            packetBuffer.insert(sequence, timestamp, data, offset, length)
+            fecHistory.record(sequence, timestamp, data, offset, length)
 
-            // Keep packet in circular history for robust FEC recovery
-            val hSlot = sequence and (historySize - 1)
-            System.arraycopy(data, offset, historyBuffer[hSlot], 0, length)
-            historyLengths[hSlot] = length
-            historySeq[hSlot] = sequence
-            historyTimestamp[hSlot] = timestamp
+            driftController.updateFill(packetBuffer.availableCount)
 
-            smoothBufferFill = smoothBufferFill * 0.998f + availableCount * 0.002f
+            jitterEstimator.onPacketArrived(
+                nowNanos = System.nanoTime(),
+                sequence = sequence,
+                timestamp = timestamp,
+                sampleRate = lastSampleRate,
+                isCompressed = isCompressedStream,
+                packetDurationMs = packetDurationMs,
+                currentProfile = currentProfile,
+                slotCount = slotCount
+            )
 
-            // RFC 3550 Inter-Arrival Jitter Estimation using audio timeline
-            val nowNanos = System.nanoTime()
-            if (lastArrivalNanos > 0L && lastReceivedTimestamp >= 0L && lastPacketSeq != -1) {
-                val deltaSeq = seqDiff(sequence, lastPacketSeq)
-                if (deltaSeq in 1..50) {
-                    val deltaFrames = timestamp - lastReceivedTimestamp
-                    val currentRate = if (lastSampleRate > 0) lastSampleRate else AudioConfig.SAMPLE_RATE_48000
-                    val sendTimeDeltaMs = if (deltaFrames in 1..100000) {
-                        (deltaFrames * 1000.0) / currentRate
-                    } else {
-                        deltaSeq * (if (isCompressedStream) 20.0 else packetDurationMs.toDouble())
-                    }
-                    val arrivalDeltaMs = (nowNanos - lastArrivalNanos) / 1_000_000.0
-                    val transitDiff = arrivalDeltaMs - sendTimeDeltaMs
-                    val absD = kotlin.math.abs(transitDiff)
-                    // RFC 3550: J = J + (|D| - J) / 16.0
-                    estimatedJitterMs += (absD - estimatedJitterMs) / 16.0
-
-                    // Dynamic floating watermark for Auto Mode (35ms - 400ms)
-                    if (currentProfile == AudioConfig.PROFILE_AUTO) {
-                        val dynamicTargetMs = (estimatedJitterMs * 3.5).toFloat().coerceIn(35.0f, 400.0f)
-                        if (dynamicTargetMs > targetWatermarkMs) {
-                            targetWatermarkMs = targetWatermarkMs * 0.9f + dynamicTargetMs * 0.1f
-                        }
-                        val nominalSlots = kotlin.math.ceil(targetWatermarkMs / (if (isCompressedStream) 20.0f else packetDurationMs)).toInt().coerceIn(2, slotCount - 4)
-                        targetWatermarkSlots = nominalSlots
-                    }
-                }
-            }
-            lastArrivalNanos = nowNanos
-            lastPacketSeq = sequence
-            lastReceivedTimestamp = timestamp
-
-            // Smooth catch-up only on extreme sustained network backlog
             val isLowLat = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY || currentProfile == AudioConfig.PROFILE_VIDEO)
-            if (isLowLat && smoothBufferFill > targetWatermarkSlots + 12) {
-                packetsSinceCatchUp++
-                if (packetsSinceCatchUp >= 100) {
-                    dropOldestSlot()
-                    packetsSinceCatchUp = 0
-                    smoothBufferFill -= 1.0f
-                }
-            } else {
-                packetsSinceCatchUp = 0
+            if (driftController.checkCatchUpDrop(isLowLat, jitterEstimator.targetWatermarkSlots)) {
+                dropOldestSlot()
             }
 
-            if (isBuffering && availableCount >= preRollThreshold) {
-                isBuffering = false
-                consecutiveUnderruns = 0
-                AppLogger.d("JitterBuffer", "Pre-roll satisfied: available=$availableCount, threshold=$preRollThreshold, profile=$currentProfile")
-            }
+            playbackScheduler.onPacketArrived(packetBuffer.availableCount, preRollThreshold)
 
             notEmptyCondition.signal()
         }
     }
 
     fun write(sequence: Int, data: ByteArray, offset: Int, length: Int) {
-        val inferredTs = if (lastReceivedTimestamp >= 0L && lastPacketSeq != -1) {
-            val deltaSeq = seqDiff(sequence, lastPacketSeq)
+        val lastTs = jitterEstimator.lastReceivedTimestamp
+        val lastSeq = jitterEstimator.lastPacketSeq
+        val inferredTs = if (lastTs >= 0L && lastSeq != -1) {
+            val deltaSeq = SequenceTracker.diff(sequence, lastSeq)
             val framesPerPacket = calculateFramesForPayload(length)
-            lastReceivedTimestamp + (deltaSeq * framesPerPacket)
+            lastTs + (deltaSeq * framesPerPacket)
         } else {
             0L
         }
@@ -340,48 +270,29 @@ class JitterBuffer(
     }
 
     fun write(data: ByteArray, offset: Int, length: Int) {
-        val s = syntheticSeq
-        syntheticSeq = (syntheticSeq + 1) and 0xFFFF
-        val ts = syntheticTimestamp
-        syntheticTimestamp += calculateFramesForPayload(length)
+        val s = sequenceTracker.nextSyntheticSeq()
+        val frames = calculateFramesForPayload(length)
+        val ts = playbackScheduler.nextSyntheticTimestamp(frames)
         write(s, ts, data, offset, length)
     }
 
-    private val internalFecDecoder by lazy { FecDecoder(this) }
-
     fun hasPacket(seq: Int): Boolean = lock.withLock {
-        val slot = seq and (maxSlots - 1)
-        val hSlot = seq and (historySize - 1)
-        (isSlotFilled[slot] && slotSeq[slot] == seq) || (historySeq[hSlot] == seq)
+        packetBuffer.hasPacket(seq) || fecHistory.hasPacket(seq)
     }
 
     fun getPacketLength(seq: Int): Int = lock.withLock {
-        val slot = seq and (maxSlots - 1)
-        val hSlot = seq and (historySize - 1)
-        if (isSlotFilled[slot] && slotSeq[slot] == seq) {
-            packetLengths[slot]
-        } else if (historySeq[hSlot] == seq) {
-            historyLengths[hSlot]
-        } else {
-            0
-        }
+        val len = packetBuffer.getPacketLength(seq)
+        if (len > 0) len else fecHistory.getPacketLength(seq)
     }
 
     fun getPacketTimestamp(seq: Int): Long = lock.withLock {
-        val slot = seq and (maxSlots - 1)
-        val hSlot = seq and (historySize - 1)
-        if (isSlotFilled[slot] && slotSeq[slot] == seq) {
-            slotTimestamp[slot]
-        } else if (historySeq[hSlot] == seq) {
-            historyTimestamp[hSlot]
-        } else {
-            -1L
-        }
+        val ts = packetBuffer.getPacketTimestamp(seq)
+        if (ts >= 0L) ts else fecHistory.getPacketTimestamp(seq)
     }
 
-    fun getExpectedReadTimestamp(): Long = lock.withLock { expectedReadTimestamp }
+    fun getExpectedReadTimestamp(): Long = lock.withLock { playbackScheduler.expectedReadTimestamp }
 
-    fun getLastReceivedTimestamp(): Long = lock.withLock { lastReceivedTimestamp }
+    fun getLastReceivedTimestamp(): Long = lock.withLock { jitterEstimator.lastReceivedTimestamp }
 
     fun findBlockTimestamp(baseSeq: Int, blockSize: Int, missingSeq: Int): Triple<Int, Long, Int>? = lock.withLock {
         for (i in 0 until blockSize) {
@@ -397,61 +308,41 @@ class JitterBuffer(
     }
 
     fun copyPacketData(seq: Int, dest: ByteArray): Int = lock.withLock {
-        val slot = seq and (maxSlots - 1)
-        val hSlot = seq and (historySize - 1)
-        if (isSlotFilled[slot] && slotSeq[slot] == seq) {
-            val len = packetLengths[slot]
-            System.arraycopy(buffer[slot], 0, dest, 0, len)
-            len
-        } else if (historySeq[hSlot] == seq) {
-            val len = historyLengths[hSlot]
-            System.arraycopy(historyBuffer[hSlot], 0, dest, 0, len)
-            len
-        } else {
-            0
-        }
+        val copied = packetBuffer.copyPacketData(seq, dest)
+        if (copied > 0) copied else fecHistory.copyPacketData(seq, dest)
     }
 
     fun isPacketPastPlayback(seq: Int): Boolean = lock.withLock {
-        if (expectedReadSeq == -1) return false
-        if (!hasReadStarted || isBuffering) {
-            return seqDiff(seq, expectedReadSeq) < -32
+        val expSeq = sequenceTracker.expectedReadSeq
+        if (expSeq == -1) return false
+        val diff = SequenceTracker.diff(seq, expSeq)
+        if (!playbackScheduler.hasReadStarted || playbackScheduler.isBuffering) {
+            return diff < -32
         }
-        seqDiff(seq, expectedReadSeq) < 0
+        diff < 0
     }
 
     fun putRecoveredPacket(sequence: Int, timestamp: Long, data: ByteArray, offset: Int, length: Int, overwrite: Boolean = false): Boolean = lock.withLock {
-        if (expectedReadSeq == -1) {
+        val expSeq = sequenceTracker.expectedReadSeq
+        if (expSeq == -1) {
             return false
         }
-        val diff = seqDiff(sequence, expectedReadSeq)
+        val diff = SequenceTracker.diff(sequence, expSeq)
         if (diff < 0) {
-            if ((!hasReadStarted || isBuffering) && diff >= -32) {
-                expectedReadSeq = sequence
-                expectedReadTimestamp = timestamp
+            if (playbackScheduler.canAcceptStartupPacket(diff)) {
+                sequenceTracker.setExpectedReadSeq(sequence)
+                playbackScheduler.setExpectedReadTimestamp(timestamp)
             } else {
                 return false
             }
         }
-        val slot = sequence and (maxSlots - 1)
-        if (!overwrite && isSlotFilled[slot] && slotSeq[slot] == sequence) {
+        val slot = packetBuffer.getSlot(sequence)
+        if (!overwrite && packetBuffer.isSlotOccupiedBy(slot, sequence)) {
             return false
         }
 
-        System.arraycopy(data, offset, buffer[slot], 0, length)
-        packetLengths[slot] = length
-        slotSeq[slot] = sequence
-        slotTimestamp[slot] = timestamp
-        if (!isSlotFilled[slot]) {
-            isSlotFilled[slot] = true
-            availableCount++
-        }
-
-        val hSlot = sequence and (historySize - 1)
-        System.arraycopy(data, offset, historyBuffer[hSlot], 0, length)
-        historyLengths[hSlot] = length
-        historySeq[hSlot] = sequence
-        historyTimestamp[hSlot] = timestamp
+        packetBuffer.insert(sequence, timestamp, data, offset, length)
+        fecHistory.record(sequence, timestamp, data, offset, length)
 
         notEmptyCondition.signal()
         return true
@@ -480,16 +371,15 @@ class JitterBuffer(
      */
     fun read(output: ByteArray): Int {
         lock.withLock {
-            if (expectedReadSeq == -1) {
+            if (sequenceTracker.expectedReadSeq == -1) {
                 val fillLen = minOf(output.size, lastPacketSize)
                 output.fill(0, 0, fillLen)
                 return fillLen
             }
 
-            if (isBuffering) {
-                if (availableCount >= preRollThreshold) {
-                    isBuffering = false
-                    consecutiveUnderruns = 0
+            if (playbackScheduler.isBuffering) {
+                if (packetBuffer.availableCount >= preRollThreshold) {
+                    playbackScheduler.onPacketArrived(packetBuffer.availableCount, preRollThreshold)
                 } else {
                     val fillLen = minOf(output.size, lastPacketSize)
                     output.fill(0, 0, fillLen)
@@ -497,11 +387,12 @@ class JitterBuffer(
                 }
             }
 
-            var slot = expectedReadSeq and (maxSlots - 1)
-            var hasPacket = isSlotFilled[slot] && (slotSeq[slot] == expectedReadSeq)
+            var expSeq = sequenceTracker.expectedReadSeq
+            var slot = packetBuffer.getSlot(expSeq)
+            var hasPacket = packetBuffer.isSlotOccupiedBy(slot, expSeq)
 
             if (!hasPacket) {
-                if (isTransmitterSilent) {
+                if (playbackScheduler.isTransmitterSilent) {
                     val fillLen = minOf(output.size, lastPacketSize)
                     output.fill(0, 0, fillLen)
                     return fillLen
@@ -511,8 +402,9 @@ class JitterBuffer(
                 try {
                     while (!hasPacket && nanosLeft > 0L) {
                         nanosLeft = notEmptyCondition.awaitNanos(nanosLeft)
-                        slot = expectedReadSeq and (maxSlots - 1)
-                        hasPacket = isSlotFilled[slot] && (slotSeq[slot] == expectedReadSeq)
+                        expSeq = sequenceTracker.expectedReadSeq
+                        slot = packetBuffer.getSlot(expSeq)
+                        hasPacket = packetBuffer.isSlotOccupiedBy(slot, expSeq)
                     }
                 } catch (ignored: InterruptedException) {
                     val fillLen = minOf(output.size, lastPacketSize)
@@ -521,184 +413,59 @@ class JitterBuffer(
                 }
             }
 
-            hasReadStarted = true
+            playbackScheduler.markReadStarted()
 
             if (hasPacket) {
-                val len = packetLengths[slot]
-                val ts = slotTimestamp[slot]
-                System.arraycopy(buffer[slot], 0, output, 0, len)
-                isSlotFilled[slot] = false
-                slotSeq[slot] = -1
-                slotTimestamp[slot] = -1L
-                if (availableCount > 0) availableCount--
-                expectedReadSeq = (expectedReadSeq + 1) and 0xFFFF
+                val len = packetBuffer.getSlotPacketLength(slot)
+                val ts = packetBuffer.getSlotTimestamp(slot)
+                packetBuffer.readPacket(slot, output)
+                sequenceTracker.advanceExpectedReadSeq()
                 val framesRead = calculateFramesForPayload(len)
-                expectedReadTimestamp = if (ts >= 0L) ts + framesRead else (if (expectedReadTimestamp >= 0L) expectedReadTimestamp + framesRead else -1L)
-                consecutiveUnderruns = 0
+                playbackScheduler.advanceExpectedReadTimestamp(framesRead, ts)
+                playbackScheduler.resetConsecutiveUnderruns()
                 lastPacketSize = len
 
                 val isAdts = (len >= 7 && (output[0].toInt() and 0xFF) == 0xFF && (output[1].toInt() and 0xF0) == 0xF0)
                 if (isCompressedStream || isAdts) {
-                    wasConcealed = false
-                    // Never perform PCM micro-resampling or sample crossfade on compressed bitstreams
+                    plc.clearConcealed()
                     return len
                 }
 
-                if (wasConcealed) {
-                    wasConcealed = false
-                    val is24 = is24BitStream
-                    val frameBytes = if (is24) 6 else 4
-                    val totalFrames = len / frameBytes
-                    val fadeFrames = minOf(20, totalFrames)
-                    if (is24) {
-                        for (f in 0 until fadeFrames) {
-                            val factor = (f + 1).toFloat() / fadeFrames
-                            val i = f * 6
-                            val rawL = (output[i].toInt() and 0xFF) or ((output[i + 1].toInt() and 0xFF) shl 8) or ((output[i + 2].toInt() and 0xFF) shl 16)
-                            var sL = if (rawL and 0x800000 != 0) rawL or 0xFF000000.toInt() else rawL
-                            val rawR = (output[i + 3].toInt() and 0xFF) or ((output[i + 4].toInt() and 0xFF) shl 8) or ((output[i + 5].toInt() and 0xFF) shl 16)
-                            var sR = if (rawR and 0x800000 != 0) rawR or 0xFF000000.toInt() else rawR
-                            sL = (sL * factor).toInt()
-                            sR = (sR * factor).toInt()
-                            output[i] = (sL and 0xFF).toByte()
-                            output[i + 1] = ((sL shr 8) and 0xFF).toByte()
-                            output[i + 2] = ((sL shr 16) and 0xFF).toByte()
-                            output[i + 3] = (sR and 0xFF).toByte()
-                            output[i + 4] = ((sR shr 8) and 0xFF).toByte()
-                            output[i + 5] = ((sR shr 16) and 0xFF).toByte()
-                        }
-                    } else {
-                        for (f in 0 until fadeFrames) {
-                            val factor = (f + 1).toFloat() / fadeFrames
-                            val i = f * 4
-                            var sL = ((output[i].toInt() and 0xFF) or (output[i + 1].toInt() shl 8)).toShort().toInt()
-                            var sR = ((output[i + 2].toInt() and 0xFF) or (output[i + 3].toInt() shl 8)).toShort().toInt()
-                            sL = (sL * factor).toInt()
-                            sR = (sR * factor).toInt()
-                            output[i] = (sL and 0xFF).toByte()
-                            output[i + 1] = ((sL shr 8) and 0xFF).toByte()
-                            output[i + 2] = (sR and 0xFF).toByte()
-                            output[i + 3] = ((sR shr 8) and 0xFF).toByte()
-                        }
-                    }
+                if (plc.wasConcealed) {
+                    plc.applyCrossfadeOnResumption(output, len, is24BitStream)
                 }
 
-                if (currentProfile == AudioConfig.PROFILE_AUTO) {
-                    cleanPlaybackFramesCount++
-                    if (cleanPlaybackFramesCount >= 100) {
-                        cleanPlaybackFramesCount = 0
-                        val baselineTarget = (estimatedJitterMs * 3.5).toFloat().coerceIn(35.0f, 400.0f)
-                        if (targetWatermarkMs > baselineTarget) {
-                            targetWatermarkMs = (targetWatermarkMs - 2.0f).coerceAtLeast(baselineTarget)
-                            val nominalDurationMs = if (isCompressedStream) 20.0f else packetDurationMs
-                            targetWatermarkSlots = kotlin.math.ceil(targetWatermarkMs / nominalDurationMs).toInt().coerceIn(2, slotCount - 4)
-                        }
-                    }
-                }
+                jitterEstimator.onCleanPlayback(currentProfile, isCompressedStream, packetDurationMs, slotCount)
 
-                // Audio Clock Drift Management:
-                // Smooth zero-crossing micro-resampling (1 frame = 20-22 microseconds)
-                // Rate-limited to prevent bass modulation comb filtering while holding tight sync across independent crystal clocks
-                packetsSinceDriftAdjust++
-                val driftDelta = smoothBufferFill - targetWatermarkSlots
-                val isLowLat = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY || currentProfile == AudioConfig.PROFILE_VIDEO)
-                val isAuto = (currentProfile == AudioConfig.PROFILE_AUTO)
-                val driftThreshold = if (isLowLat) 8f else if (isAuto) 10f else 16f
-                val minInterval = if (isLowLat) 300 else if (isAuto) 350 else 600
-                if (packetsSinceDriftAdjust >= minInterval && len >= 12) {
-                    if (driftDelta > driftThreshold) {
-                        applyZeroCrossingFrameDrop(output, len)
-                        packetsSinceDriftAdjust = 0
-                        smoothBufferFill -= 0.5f
-                    } else if (driftDelta < -driftThreshold) {
-                        applyZeroCrossingFrameDuplicate(output, len)
-                        packetsSinceDriftAdjust = 0
-                        smoothBufferFill += 0.5f
-                    }
-                }
+                driftController.checkAndApplyDriftAdjustment(
+                    output = output,
+                    len = len,
+                    currentProfile = currentProfile,
+                    targetWatermarkSlots = jitterEstimator.targetWatermarkSlots,
+                    is24Bit = is24BitStream
+                )
 
-                // Cache last samples for smooth concealment if needed
-                val is24Sample = is24BitStream
-                if (is24Sample && len >= 6) {
-                    val idxL = len - 6
-                    val idxR = len - 3
-                    val rawL = (output[idxL].toInt() and 0xFF) or ((output[idxL + 1].toInt() and 0xFF) shl 8) or ((output[idxL + 2].toInt() and 0xFF) shl 16)
-                    lastSampleLeft24 = if (rawL and 0x800000 != 0) rawL or 0xFF000000.toInt() else rawL
-                    val rawR = (output[idxR].toInt() and 0xFF) or ((output[idxR + 1].toInt() and 0xFF) shl 8) or ((output[idxR + 2].toInt() and 0xFF) shl 16)
-                    lastSampleRight24 = if (rawR and 0x800000 != 0) rawR or 0xFF000000.toInt() else rawR
-                } else if (len >= 4) {
-                    val lastIdx = len - 4
-                    lastSampleLeft16 = ((output[lastIdx].toInt() and 0xFF) or (output[lastIdx + 1].toInt() shl 8)).toShort()
-                    lastSampleRight16 = ((output[lastIdx + 2].toInt() and 0xFF) or (output[lastIdx + 3].toInt() shl 8)).toShort()
-                }
+                plc.cacheLastSamples(output, len, is24BitStream)
 
                 return len
             } else {
-                // Still empty after waiting: increment underrun count and advance expectedReadSeq
-                expectedReadSeq = (expectedReadSeq + 1) and 0xFFFF
+                // Underrun
+                sequenceTracker.advanceExpectedReadSeq()
                 val len = minOf(output.size, lastPacketSize)
                 val nominalFrames = calculateFramesForPayload(len)
-                if (expectedReadTimestamp >= 0L) {
-                    expectedReadTimestamp += nominalFrames
-                }
-                consecutiveUnderruns++
-                if (currentProfile == AudioConfig.PROFILE_AUTO) {
-                    targetWatermarkMs = (targetWatermarkMs + 30.0f).coerceAtMost(400.0f)
-                    val nominalDurationMs = if (isCompressedStream) 20.0f else packetDurationMs
-                    targetWatermarkSlots = kotlin.math.ceil(targetWatermarkMs / nominalDurationMs).toInt().coerceIn(2, slotCount - 4)
-                    cleanPlaybackFramesCount = 0
-                }
-                if (consecutiveUnderruns >= maxUnderrunFrames || isCompressedStream) {
-                    // Sustained drop or compressed stream: enter buffering
-                    if (consecutiveUnderruns >= maxUnderrunFrames) {
-                        isBuffering = true
-                    }
-                    wasConcealed = true
-                    lastSampleLeft16 = 0
-                    lastSampleRight16 = 0
-                    lastSampleLeft24 = 0
-                    lastSampleRight24 = 0
+                playbackScheduler.advanceExpectedReadTimestamp(nominalFrames)
+
+                jitterEstimator.onUnderrun(currentProfile, isCompressedStream, packetDurationMs, slotCount)
+
+                val enteredBuffering = playbackScheduler.onUnderrun(maxUnderrunFrames, isCompressedStream)
+                if (enteredBuffering) {
+                    plc.markConcealed()
+                    plc.clearCachedSamples()
                     output.fill(0, 0, len)
                     return len
                 }
 
-                wasConcealed = true
-                val is24Conceal = is24BitStream
-                if (is24Conceal) {
-                    val numFrames = len / 6
-                    val initL = lastSampleLeft24
-                    val initR = lastSampleRight24
-                    for (f in 0 until numFrames) {
-                        val factor = (numFrames - f).toFloat() / numFrames
-                        val sL = (initL * factor).toInt()
-                        val sR = (initR * factor).toInt()
-                        val i = f * 6
-                        output[i] = (sL and 0xFF).toByte()
-                        output[i + 1] = ((sL shr 8) and 0xFF).toByte()
-                        output[i + 2] = ((sL shr 16) and 0xFF).toByte()
-                        output[i + 3] = (sR and 0xFF).toByte()
-                        output[i + 4] = ((sR shr 8) and 0xFF).toByte()
-                        output[i + 5] = ((sR shr 16) and 0xFF).toByte()
-                    }
-                    lastSampleLeft24 = 0
-                    lastSampleRight24 = 0
-                } else {
-                    val numFrames = len / 4
-                    val initL = lastSampleLeft16.toInt()
-                    val initR = lastSampleRight16.toInt()
-                    for (f in 0 until numFrames) {
-                        val factor = (numFrames - f).toFloat() / numFrames
-                        val sL = (initL * factor).toInt()
-                        val sR = (initR * factor).toInt()
-                        val i = f * 4
-                        output[i] = (sL and 0xFF).toByte()
-                        output[i + 1] = ((sL shr 8) and 0xFF).toByte()
-                        output[i + 2] = (sR and 0xFF).toByte()
-                        output[i + 3] = ((sR shr 8) and 0xFF).toByte()
-                    }
-                    lastSampleLeft16 = 0
-                    lastSampleRight16 = 0
-                }
+                plc.synthesizeLossConcealment(output, len, is24BitStream)
                 return len
             }
         }
@@ -706,137 +473,28 @@ class JitterBuffer(
 
     fun reset() {
         lock.withLock {
-            expectedReadSeq = -1
-            expectedReadTimestamp = -1L
-            lastReceivedTimestamp = -1L
-            lastPacketSeq = -1
-            syntheticSeq = 0
-            syntheticTimestamp = 0L
-            availableCount = 0
-            isBuffering = true
-            consecutiveUnderruns = 0
-            for (i in 0 until maxSlots) {
-                isSlotFilled[i] = false
-                slotSeq[i] = -1
-                slotTimestamp[i] = -1L
-            }
-            for (i in 0 until historySize) {
-                historySeq[i] = -1
-                historyLengths[i] = 0
-                historyTimestamp[i] = -1L
-            }
-            lastSampleLeft16 = 0
-            lastSampleRight16 = 0
-            lastSampleLeft24 = 0
-            lastSampleRight24 = 0
-            packetsSinceCatchUp = 0
-            packetsSinceDriftAdjust = 0
+            sequenceTracker.reset()
+            playbackScheduler.reset(preRollThreshold)
+            jitterEstimator.reset(currentProfile)
+            driftController.reset(preRollThreshold.toFloat())
+            plc.reset()
+            packetBuffer.clear()
+            fecHistory.clear()
             isCompressedStream = false
             notEmptyCondition.signalAll()
         }
     }
 
-    fun getFillLevel(): Int {
-        lock.withLock {
-            return (availableCount * 100) / slotCount
-        }
+    fun getFillLevel(): Int = lock.withLock {
+        (packetBuffer.availableCount * 100) / slotCount
     }
 
-    fun getAvailableCount(): Int {
-        lock.withLock {
-            return availableCount
-        }
+    fun getAvailableCount(): Int = lock.withLock {
+        packetBuffer.availableCount
     }
 
-    private fun applyZeroCrossingFrameDrop(output: ByteArray, len: Int) {
-        val is24 = is24BitStream
-        val frameBytes = if (is24) 6 else 4
-        val totalFrames = len / frameBytes
-        val searchStart = totalFrames / 4
-        val searchEnd = (3 * totalFrames) / 4
-
-        var bestFrame = searchStart
-        var minAbs = Int.MAX_VALUE
-
-        for (f in searchStart until searchEnd) {
-            val idx = f * frameBytes
-            val sampleL = if (is24) {
-                val raw = (output[idx].toInt() and 0xFF) or
-                    ((output[idx + 1].toInt() and 0xFF) shl 8) or
-                    ((output[idx + 2].toInt() and 0xFF) shl 16)
-                if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw
-            } else {
-                ((output[idx].toInt() and 0xFF) or (output[idx + 1].toInt() shl 8)).toShort().toInt()
-            }
-            val sampleR = if (is24) {
-                val raw = (output[idx + 3].toInt() and 0xFF) or
-                    ((output[idx + 4].toInt() and 0xFF) shl 8) or
-                    ((output[idx + 5].toInt() and 0xFF) shl 16)
-                if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw
-            } else {
-                ((output[idx + 2].toInt() and 0xFF) or (output[idx + 3].toInt() shl 8)).toShort().toInt()
-            }
-            val absVal = kotlin.math.abs(sampleL) + kotlin.math.abs(sampleR)
-            if (absVal < minAbs) {
-                minAbs = absVal
-                bestFrame = f
-                if (absVal == 0) break
-            }
-        }
-
-        val dropIdx = bestFrame * frameBytes
-        val remaining = len - dropIdx - frameBytes
-        if (remaining > 0) {
-            System.arraycopy(output, dropIdx + frameBytes, output, dropIdx, remaining)
-            System.arraycopy(output, len - 2 * frameBytes, output, len - frameBytes, frameBytes)
-        }
-    }
-
-    private fun applyZeroCrossingFrameDuplicate(output: ByteArray, len: Int) {
-        val is24 = is24BitStream
-        val frameBytes = if (is24) 6 else 4
-        val totalFrames = len / frameBytes
-        val searchStart = totalFrames / 4
-        val searchEnd = (3 * totalFrames) / 4
-
-        var bestFrame = searchStart
-        var minAbs = Int.MAX_VALUE
-
-        for (f in searchStart until searchEnd) {
-            val idx = f * frameBytes
-            val sampleL = if (is24) {
-                val raw = (output[idx].toInt() and 0xFF) or
-                    ((output[idx + 1].toInt() and 0xFF) shl 8) or
-                    ((output[idx + 2].toInt() and 0xFF) shl 16)
-                if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw
-            } else {
-                ((output[idx].toInt() and 0xFF) or (output[idx + 1].toInt() shl 8)).toShort().toInt()
-            }
-            val sampleR = if (is24) {
-                val raw = (output[idx + 3].toInt() and 0xFF) or
-                    ((output[idx + 4].toInt() and 0xFF) shl 8) or
-                    ((output[idx + 5].toInt() and 0xFF) shl 16)
-                if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw
-            } else {
-                ((output[idx + 2].toInt() and 0xFF) or (output[idx + 3].toInt() shl 8)).toShort().toInt()
-            }
-            val absVal = kotlin.math.abs(sampleL) + kotlin.math.abs(sampleR)
-            if (absVal < minAbs) {
-                minAbs = absVal
-                bestFrame = f
-                if (absVal == 0) break
-            }
-        }
-
-        val insertIdx = bestFrame * frameBytes
-        val shiftLen = len - insertIdx - frameBytes
-        if (shiftLen > 0) {
-            System.arraycopy(output, insertIdx, output, insertIdx + frameBytes, shiftLen)
-        }
-    }
-
-    fun getSlotCount(): Int = slotCount
-    fun getCurrentProfile(): String = currentProfile
-    fun getEstimatedJitterMs(): Double = estimatedJitterMs
-    fun getTargetWatermarkMs(): Float = targetWatermarkMs
+    fun getSlotCount(): Int = lock.withLock { slotCount }
+    fun getCurrentProfile(): String = lock.withLock { currentProfile }
+    fun getEstimatedJitterMs(): Double = lock.withLock { jitterEstimator.estimatedJitterMs }
+    fun getTargetWatermarkMs(): Float = lock.withLock { jitterEstimator.targetWatermarkMs }
 }
