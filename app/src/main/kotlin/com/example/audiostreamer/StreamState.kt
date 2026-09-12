@@ -18,13 +18,16 @@ data class Telemetry(
     val bufferSlotsTotal: Int = AudioConfig.MUSIC_JITTER_BUFFER_SLOTS,
     val streamProfileName: String = "Music Mode",
     val sampleRate: Int = AudioConfig.SAMPLE_RATE,
-    val bitDepth: Int = 16,
+    val bitDepth: Int = 24,
     val channels: Int = AudioConfig.CHANNELS,
-    val bitrateKbps: Int = 1536,
+    val bitrateKbps: Int = 2304,
     val isSilenceSuppressed: Boolean = false,
     val fecRecoveredTotal: Long = 0L,
     val activeReceiversCount: Int = 1,
-    val remoteVolumePercent: Int = 100
+    val remoteVolumePercent: Int = 100,
+    val sourceCapabilityDesc: String = "24-bit • 48.0 kHz Stereo",
+    val receiverCapabilityDesc: String = "Unknown",
+    val negotiatedFormatDesc: String = "48.0 kHz • 24-bit Stereo PCM"
 )
 
 object StreamState {

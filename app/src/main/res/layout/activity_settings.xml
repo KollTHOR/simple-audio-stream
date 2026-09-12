@@ -262,7 +262,57 @@
                             android:contentDescription="Refresh audio stats" />
                     </LinearLayout>
 
-                    <!-- Row 1: Active App / Source -->
+                    <!-- Row 1: Source / Capture Capability -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:layout_marginBottom="8dp">
+
+                        <TextView
+                            android:layout_width="120dp"
+                            android:layout_height="wrap_content"
+                            android:text="Source Capability:"
+                            android:textSize="13sp"
+                            android:textColor="@color/text_secondary" />
+
+                        <TextView
+                            android:id="@+id/tv_source_capability"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Android HAL: 24-bit • 48.0 kHz Stereo"
+                            android:textSize="13sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_primary" />
+                    </LinearLayout>
+
+                    <!-- Row 2: Receiver / Output Capability -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:layout_marginBottom="8dp">
+
+                        <TextView
+                            android:layout_width="120dp"
+                            android:layout_height="wrap_content"
+                            android:text="Receiver Capability:"
+                            android:textSize="13sp"
+                            android:textColor="@color/text_secondary" />
+
+                        <TextView
+                            android:id="@+id/tv_receiver_capability"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Pending receiver discovery"
+                            android:textSize="13sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_secondary" />
+                    </LinearLayout>
+
+                    <!-- Row 3: Active App / Source -->
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -287,7 +337,7 @@
                             android:textColor="@color/status_green" />
                     </LinearLayout>
 
-                    <!-- Row 2: Detected Format -->
+                    <!-- Row 4: Detected Media Format -->
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -312,7 +362,7 @@
                             android:textColor="@color/text_primary" />
                     </LinearLayout>
 
-                    <!-- Row 3: Active Transmission Pipeline -->
+                    <!-- Row 5: Active Transmission Pipeline -->
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"

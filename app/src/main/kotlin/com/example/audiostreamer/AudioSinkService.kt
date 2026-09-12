@@ -238,7 +238,12 @@ class AudioSinkService : Service() {
             currentProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
             jitterBuffer = JitterBuffer(currentProfile)
 
-            configureAudioTrack(AudioConfig.SAMPLE_RATE_48000, AudioConfig.ENCODING, currentProfile, currentRemoteVolume)
+            val initialEncoding = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                AudioFormat.ENCODING_PCM_24BIT_PACKED
+            } else {
+                AudioConfig.ENCODING
+            }
+            configureAudioTrack(AudioConfig.SAMPLE_RATE_48000, initialEncoding, currentProfile, currentRemoteVolume)
             jitterBuffer.reset()
             registerLocalVolumeObserver()
 
@@ -251,13 +256,20 @@ class AudioSinkService : Service() {
             }
             datagramSocket = socket
 
+            val localRxCaps = AudioCapabilities.getLocalPlaybackCapabilitiesMask()
+            val rxCapDesc = "Android HAL: ${AudioCapabilities.describeCapabilities(localRxCaps)}"
+            val initialBit = if (initialEncoding == AudioFormat.ENCODING_PCM_24BIT_PACKED) "24-bit" else "16-bit"
+
             val localIp = NetworkUtils.getLocalIpAddress() ?: "0.0.0.0"
             StreamState.update {
                 it.copy(
                     isActive = true,
                     isTransmitter = false,
                     remoteEndpoint = "Listening on $localIp:$port",
-                    statusDetail = "Waiting for incoming UDP packets..."
+                    statusDetail = "Waiting for incoming UDP packets...",
+                    sourceCapabilityDesc = "Pending incoming stream...",
+                    receiverCapabilityDesc = rxCapDesc,
+                    negotiatedFormatDesc = "48.0 kHz • $initialBit Stereo PCM"
                 )
             }
 
@@ -562,6 +574,17 @@ class AudioSinkService : Service() {
                                 "Receiving (Silent)"
                             }
 
+                            val negotiatedDesc = if (currentIsOpus) {
+                                "Opus • 320 kbps • 48.0 kHz Stereo"
+                            } else if (currentIsAac) {
+                                "AAC • 192 kbps • 48.0 kHz Stereo"
+                            } else {
+                                "${currentSampleRate / 1000.0} kHz • ${bitDepth}-bit Stereo PCM"
+                            }
+                            val sourceCap = "Transmitter: ${currentSampleRate / 1000.0} kHz / ${bitDepth}-bit"
+                            val currentRxCaps = AudioCapabilities.getLocalPlaybackCapabilitiesMask()
+                            val currentRxCapDesc = "Android HAL: ${AudioCapabilities.describeCapabilities(currentRxCaps)}"
+
                             StreamState.update {
                                 it.copy(
                                     isActive = true,
@@ -580,7 +603,10 @@ class AudioSinkService : Service() {
                                     bitDepth = bitDepth,
                                     bitrateKbps = bitrate,
                                     isSilenceSuppressed = isSilenceSuppressed,
-                                    fecRecoveredTotal = fecRecoveredTotal
+                                    fecRecoveredTotal = fecRecoveredTotal,
+                                    sourceCapabilityDesc = sourceCap,
+                                    receiverCapabilityDesc = currentRxCapDesc,
+                                    negotiatedFormatDesc = negotiatedDesc
                                 )
                             }
 

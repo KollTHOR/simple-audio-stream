@@ -1066,8 +1066,13 @@ class MainActivity : AppCompatActivity() {
             }
         }
         tvPipelineProfile.text = activeProfileName
-        val codecDesc = if (activeProfileName.contains("Opus")) "Opus VBR" else if (activeProfileName.contains("AAC")) "AAC" else "${t.bitDepth}-bit Stereo PCM"
-        tvPipelineFormat.text = "${t.sampleRate / 1000.0} kHz • $codecDesc • ${t.bitrateKbps} kbps"
+        if (isSinkRunning || isSenderRunning) {
+            tvPipelineFormat.text = "${t.negotiatedFormatDesc} • ${t.bitrateKbps} kbps"
+        } else {
+            val bitStr = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) "24-bit" else "16-bit"
+            val defaultBitrate = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) 2304 else 1536
+            tvPipelineFormat.text = "48.0 kHz • $bitStr Stereo PCM • $defaultBitrate kbps"
+        }
 
         if (!isSenderRunning && !isSinkRunning) {
             tvBadgeStatus.text = "IDLE"

@@ -72,6 +72,8 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var btnBit24: MaterialButton
     private lateinit var tvBitDescription: TextView
     private lateinit var cardAudioStats: com.google.android.material.card.MaterialCardView
+    private lateinit var tvSourceCapability: TextView
+    private lateinit var tvReceiverCapability: TextView
     private lateinit var tvDetectedMediaApp: TextView
     private lateinit var tvDetectedMediaFormat: TextView
     private lateinit var tvDetectedStreamStatus: TextView
@@ -145,6 +147,8 @@ class SettingsActivity : AppCompatActivity() {
         tvBitDescription = findViewById(R.id.tv_bit_description)
 
         cardAudioStats = findViewById(R.id.card_audio_stats)
+        tvSourceCapability = findViewById(R.id.tv_source_capability)
+        tvReceiverCapability = findViewById(R.id.tv_receiver_capability)
         tvDetectedMediaApp = findViewById(R.id.tv_detected_media_app)
         tvDetectedMediaFormat = findViewById(R.id.tv_detected_media_format)
         tvDetectedStreamStatus = findViewById(R.id.tv_detected_stream_status)
@@ -176,12 +180,17 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
 
-        val currentRate = prefs.getString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_AUTO) ?: AudioConfig.SAMPLE_RATE_AUTO
+        val rawRate = prefs.getString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_AUTO) ?: AudioConfig.SAMPLE_RATE_AUTO
+        // Sanitize legacy 96k/192k settings to native 48 kHz
+        val currentRate = if (rawRate == AudioConfig.SAMPLE_RATE_96K || rawRate == AudioConfig.SAMPLE_RATE_192K) {
+            prefs.edit().putString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_48K).apply()
+            AudioConfig.SAMPLE_RATE_48K
+        } else {
+            rawRate
+        }
         when (currentRate) {
             AudioConfig.SAMPLE_RATE_44K -> toggleRateGroup.check(R.id.btn_rate_44k)
             AudioConfig.SAMPLE_RATE_48K -> toggleRateGroup.check(R.id.btn_rate_48k)
-            AudioConfig.SAMPLE_RATE_96K -> toggleRateGroup.check(R.id.btn_rate_96k)
-            AudioConfig.SAMPLE_RATE_192K -> toggleRateGroup.check(R.id.btn_rate_192k)
             else -> toggleRateGroup.check(R.id.btn_rate_auto)
         }
         updateRateUi(currentRate)
@@ -191,8 +200,6 @@ class SettingsActivity : AppCompatActivity() {
                 val selected = when (checkedId) {
                     R.id.btn_rate_44k -> AudioConfig.SAMPLE_RATE_44K
                     R.id.btn_rate_48k -> AudioConfig.SAMPLE_RATE_48K
-                    R.id.btn_rate_96k -> AudioConfig.SAMPLE_RATE_96K
-                    R.id.btn_rate_192k -> AudioConfig.SAMPLE_RATE_192K
                     else -> AudioConfig.SAMPLE_RATE_AUTO
                 }
                 prefs.edit().putString(AudioConfig.PREF_KEY_SAMPLE_RATE, selected).apply()
@@ -365,12 +372,24 @@ class SettingsActivity : AppCompatActivity() {
 
         tvProfileDescription.text = when {
             isVideo -> "Low Latency (Opus): Locked to 16-bit / 48 kHz with pure compressed Opus (320 kbps VBR) and 40ms cushion. Instantaneous response, 80-85% less Wi-Fi airtime for video lip-sync and gaming."
-            isMusic -> "Unlocked Music Mode: Bit-perfect lossless PCM with studio-grade clock drift synchronization. Unlocks sample rate and bit depth controls (with Auto media detection or manual override up to 192 kHz / 24-bit)."
-            else -> "Auto Adaptive Mode: Fully autoselects sample rate and bit depth based on active Android media playback (Tidal, Spotify, YouTube). Dynamically floats jitter watermark between 35ms and 400ms using RFC 3550 statistical estimation."
+            isMusic -> "Unlocked Music Mode: Bit-perfect lossless PCM locked to Android native rates (48 kHz primary / 44.1 kHz CD audio) with 24-bit studio precision and zero resampling artifacts."
+            else -> "Auto Adaptive Mode: Fully autoselects 24-bit / 48 kHz stereo (or 44.1 kHz for CD audio) based on active Android media playback. Dynamically floats jitter watermark between 35ms and 400ms using RFC 3550 statistical estimation."
         }
     }
 
     private fun updateAudioStatsUi() {
+        val txCaps = AudioCapabilities.getLocalCaptureCapabilitiesMask()
+        tvSourceCapability.text = "Android HAL: ${AudioCapabilities.describeCapabilities(txCaps)}"
+
+        val tel = StreamState.telemetry.value
+        val rxCapsFromPref = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE).getInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, 0)
+        val rxDesc = when {
+            tel.receiverCapabilityDesc != "Unknown" && tel.receiverCapabilityDesc.isNotBlank() -> tel.receiverCapabilityDesc
+            rxCapsFromPref != 0 -> AudioCapabilities.describeCapabilities(rxCapsFromPref)
+            else -> "Pending receiver discovery"
+        }
+        tvReceiverCapability.text = rxDesc
+
         val detected = AudioPlaybackDetector.getActiveMediaFormat(this)
         val appText = if (detected.isPlaying) {
             "${detected.appName} (Playing)"
@@ -388,13 +407,9 @@ class SettingsActivity : AppCompatActivity() {
         val bitStr = if (detected.is24Bit) "24-bit" else "16-bit"
         tvDetectedMediaFormat.text = "$rateKHz kHz • $bitStr"
 
-        val tel = StreamState.telemetry.value
         val isTxRunning = AudioCaptureService.isRunning.get()
         if (isTxRunning && tel.isActive && tel.isTransmitter) {
-            val pipeRate = tel.sampleRate / 1000.0
-            val pipeBit = "${tel.bitDepth}-bit"
-            val pipeMode = tel.streamProfileName
-            tvDetectedStreamStatus.text = "$pipeRate kHz • $pipeBit ($pipeMode)"
+            tvDetectedStreamStatus.text = tel.negotiatedFormatDesc
             tvDetectedStreamStatus.setTextColor(greenColor)
         } else if (isTxRunning) {
             tvDetectedStreamStatus.text = "Transmitter starting..."
@@ -410,20 +425,17 @@ class SettingsActivity : AppCompatActivity() {
         val colorCard = ContextCompat.getColor(this, R.color.card_bg)
         val colorTextSecondary = ContextCompat.getColor(this, R.color.text_secondary)
 
-        val txCaps = AudioCapabilities.getLocalCaptureCapabilitiesMask()
-        val is96kSupported = (txCaps and AudioCapabilities.CAP_FLAG_96000) != 0
-        val is192kSupported = (txCaps and AudioCapabilities.CAP_FLAG_192000) != 0
-
-        btnRate96k.isEnabled = is96kSupported
-        btnRate96k.alpha = if (is96kSupported) 1.0f else 0.4f
-        btnRate192k.isEnabled = is192kSupported
-        btnRate192k.alpha = if (is192kSupported) 1.0f else 0.4f
+        // Disable 96k and 192k on Android - hardware mix bus runs at 48k/44.1k
+        btnRate96k.isEnabled = false
+        btnRate96k.alpha = 0.35f
+        btnRate96k.text = "96.0k (N/A)"
+        btnRate192k.isEnabled = false
+        btnRate192k.alpha = 0.35f
+        btnRate192k.text = "192k (N/A)"
 
         val isAutoSelected = (rate == AudioConfig.SAMPLE_RATE_AUTO)
         val is44Selected = (rate == AudioConfig.SAMPLE_RATE_44K)
         val is48Selected = (rate == AudioConfig.SAMPLE_RATE_48K)
-        val is96Selected = (rate == AudioConfig.SAMPLE_RATE_96K)
-        val is192Selected = (rate == AudioConfig.SAMPLE_RATE_192K)
 
         btnRateAuto.backgroundTintList = ColorStateList.valueOf(if (isAutoSelected) colorPrimary else colorCard)
         btnRateAuto.setTextColor(if (isAutoSelected) Color.WHITE else colorTextSecondary)
@@ -434,18 +446,17 @@ class SettingsActivity : AppCompatActivity() {
         btnRate48k.backgroundTintList = ColorStateList.valueOf(if (is48Selected) colorPrimary else colorCard)
         btnRate48k.setTextColor(if (is48Selected) Color.WHITE else colorTextSecondary)
 
-        btnRate96k.backgroundTintList = ColorStateList.valueOf(if (is96Selected) colorPrimary else colorCard)
-        btnRate96k.setTextColor(if (is96Selected) Color.WHITE else colorTextSecondary)
+        btnRate96k.backgroundTintList = ColorStateList.valueOf(colorCard)
+        btnRate96k.setTextColor(colorTextSecondary)
 
-        btnRate192k.backgroundTintList = ColorStateList.valueOf(if (is192Selected) colorPrimary else colorCard)
-        btnRate192k.setTextColor(if (is192Selected) Color.WHITE else colorTextSecondary)
+        btnRate192k.backgroundTintList = ColorStateList.valueOf(colorCard)
+        btnRate192k.setTextColor(colorTextSecondary)
 
         tvRateDescription.text = when (rate) {
-            AudioConfig.SAMPLE_RATE_44K -> "44.1 kHz: Native CD-quality streaming (880 bytes / chunk). Direct uncompressed PCM."
-            AudioConfig.SAMPLE_RATE_96K -> if (is96kSupported) "96.0 kHz: High-resolution studio master (1920 bytes / chunk). Requires 96k DAC support." else "96.0 kHz: Not supported by local transmitter hardware."
-            AudioConfig.SAMPLE_RATE_192K -> if (is192kSupported) "192.0 kHz: Ultra high-resolution studio master (3840 bytes / chunk). Pure audiophile tier." else "192.0 kHz: Not supported by local transmitter hardware."
-            AudioConfig.SAMPLE_RATE_48K -> "48.0 kHz: Native studio & video rate (960 bytes / chunk). Standard master streaming rate."
-            else -> "Auto: Synchronizes sample rate with active Android media playback (Tidal, Spotify, YouTube). Avoids audio resampler comb filtering and distortion."
+            AudioConfig.SAMPLE_RATE_44K -> "44.1 kHz: Native CD-quality streaming (1320 bytes 24-bit / 880 bytes 16-bit). Direct uncompressed PCM."
+            AudioConfig.SAMPLE_RATE_48K -> "48.0 kHz: Native Android operating point (1440 bytes 24-bit / 960 bytes 16-bit). Direct uncompressed PCM with zero resampler distortion."
+            AudioConfig.SAMPLE_RATE_96K, AudioConfig.SAMPLE_RATE_192K -> "Android HAL natively operates at 48.0 kHz. Capturing >48 kHz induces AudioFlinger resampler distortion."
+            else -> "Auto: Synchronizes sample rate with Android audio engine. Operates natively at 48.0 kHz 24-bit (or 44.1 kHz for CD audio) to completely avoid AudioFlinger comb filtering."
         }
     }
 

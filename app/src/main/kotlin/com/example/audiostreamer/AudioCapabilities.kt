@@ -17,7 +17,13 @@ object AudioCapabilities {
     const val CAP_FLAG_176400: Int = 1 shl 4 // 0x10
     const val CAP_FLAG_192000: Int = 1 shl 5 // 0x20
 
-    private val ORDERED_RATES = listOf(192000, 176400, 96000, 88200, 48000, 44100)
+    // Multi-platform architecture rates (preserved for non-Android platforms)
+    val ALL_PLATFORM_RATES = listOf(192000, 176400, 96000, 88200, 48000, 44100)
+
+    // Android native rates: 48 kHz (primary operating point) and 44.1 kHz (CD fallback).
+    // Higher rates (88.2k/96k/176.4k/192k) are NOT advertised on Android to prevent
+    // AudioFlinger resampler distortion and comb filtering.
+    val ANDROID_NATIVE_RATES = listOf(AudioConfig.SAMPLE_RATE_48000, AudioConfig.SAMPLE_RATE_44100)
 
     @Volatile
     private var cachedPlaybackMask: Int? = null
@@ -35,7 +41,7 @@ object AudioCapabilities {
         else -> CAP_FLAG_48000
     }
 
-    fun isPlaybackSupported(sampleRate: Int, is24Bit: Boolean = false): Boolean {
+    fun isPlaybackSupported(sampleRate: Int, is24Bit: Boolean = true): Boolean {
         return try {
             val encoding = if (is24Bit && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 AudioFormat.ENCODING_PCM_24BIT_PACKED
@@ -76,7 +82,7 @@ object AudioCapabilities {
         }
     }
 
-    fun isCaptureSupported(sampleRate: Int, is24Bit: Boolean = false): Boolean {
+    fun isCaptureSupported(sampleRate: Int, is24Bit: Boolean = true): Boolean {
         return try {
             val encoding = if (is24Bit && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 AudioFormat.ENCODING_PCM_24BIT_PACKED
@@ -99,13 +105,13 @@ object AudioCapabilities {
     fun getLocalPlaybackCapabilitiesMask(): Int {
         cachedPlaybackMask?.let { return it }
         var mask = 0
-        for (rate in ORDERED_RATES) {
-            if (isPlaybackSupported(rate)) {
+        for (rate in ANDROID_NATIVE_RATES) {
+            if (isPlaybackSupported(rate, is24Bit = true) || isPlaybackSupported(rate, is24Bit = false)) {
                 mask = mask or rateToCapFlag(rate)
             }
         }
         if (mask == 0) {
-            mask = CAP_FLAG_44100 or CAP_FLAG_48000
+            mask = CAP_FLAG_48000
         }
         cachedPlaybackMask = mask
         Log.i(TAG, "Local playback capabilities mask: 0x${Integer.toHexString(mask)} (${describeCapabilitiesMask(mask)})")
@@ -116,22 +122,22 @@ object AudioCapabilities {
     fun getLocalCaptureCapabilitiesMask(): Int {
         cachedCaptureMask?.let { return it }
         var mask = 0
-        for (rate in ORDERED_RATES) {
-            if (isCaptureSupported(rate)) {
+        for (rate in ANDROID_NATIVE_RATES) {
+            if (isCaptureSupported(rate, is24Bit = true) || isCaptureSupported(rate, is24Bit = false)) {
                 mask = mask or rateToCapFlag(rate)
             }
         }
         if (mask == 0) {
-            mask = CAP_FLAG_44100 or CAP_FLAG_48000
+            mask = CAP_FLAG_48000
         }
         cachedCaptureMask = mask
         Log.i(TAG, "Local capture capabilities mask: 0x${Integer.toHexString(mask)} (${describeCapabilitiesMask(mask)})")
         return mask
     }
 
-    fun getHighestMutuallySupportedRate(txMask: Int, rxMask: Int, preferredRate: Int): Int {
-        val effectiveTx = if (txMask == 0) (CAP_FLAG_44100 or CAP_FLAG_48000) else txMask
-        val effectiveRx = if (rxMask == 0) (CAP_FLAG_44100 or CAP_FLAG_48000) else rxMask
+    fun getHighestMutuallySupportedRate(txMask: Int, rxMask: Int, preferredRate: Int = AudioConfig.SAMPLE_RATE_48000): Int {
+        val effectiveTx = if (txMask == 0) (CAP_FLAG_48000 or CAP_FLAG_44100) else txMask
+        val effectiveRx = if (rxMask == 0) (CAP_FLAG_48000 or CAP_FLAG_44100) else rxMask
         val common = effectiveTx and effectiveRx
 
         val prefFlag = rateToCapFlag(preferredRate)
@@ -139,15 +145,16 @@ object AudioCapabilities {
             return preferredRate
         }
 
-        // Clamp to highest mutually supported rate <= preferredRate
-        for (rate in ORDERED_RATES) {
-            if (rate <= preferredRate && (common and rateToCapFlag(rate)) != 0) {
-                return rate
-            }
+        // On Android, 48 kHz is the rock-solid primary operating point.
+        if ((common and CAP_FLAG_48000) != 0) {
+            return AudioConfig.SAMPLE_RATE_48000
+        }
+        if ((common and CAP_FLAG_44100) != 0) {
+            return AudioConfig.SAMPLE_RATE_44100
         }
 
-        // Fallback to highest common rate overall
-        for (rate in ORDERED_RATES) {
+        // Fallback for multi-platform connections preserving higher rates
+        for (rate in ALL_PLATFORM_RATES) {
             if ((common and rateToCapFlag(rate)) != 0) {
                 return rate
             }
@@ -158,8 +165,8 @@ object AudioCapabilities {
 
     fun describeCapabilitiesMask(mask: Int): String {
         val list = mutableListOf<String>()
+        if ((mask and CAP_FLAG_48000) != 0) list.add("48.0kHz (Primary)")
         if ((mask and CAP_FLAG_44100) != 0) list.add("44.1kHz")
-        if ((mask and CAP_FLAG_48000) != 0) list.add("48.0kHz")
         if ((mask and CAP_FLAG_88200) != 0) list.add("88.2kHz")
         if ((mask and CAP_FLAG_96000) != 0) list.add("96.0kHz")
         if ((mask and CAP_FLAG_176400) != 0) list.add("176.4kHz")
@@ -167,17 +174,14 @@ object AudioCapabilities {
         return if (list.isEmpty()) "None" else list.joinToString(", ")
     }
 
-    fun getMaxSampleRate(mask: Int): Int {
-        for (rate in ORDERED_RATES) {
-            if ((mask and rateToCapFlag(rate)) != 0) return rate
-        }
-        return 48000
-    }
-
     fun describeCapabilities(mask: Int): String {
-        if (mask == 0) return "Standard (up to 48kHz • 16-bit)"
-        val maxRate = getMaxSampleRate(mask)
-        val rateStr = if (maxRate % 1000 == 0) "${maxRate / 1000}kHz" else String.format(java.util.Locale.US, "%.1fkHz", maxRate / 1000.0)
-        return "Up to $rateStr • 24-bit PCM"
+        val bitStr = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) "24-bit" else "16-bit"
+        val rates = mutableListOf<String>()
+        if ((mask and CAP_FLAG_48000) != 0) rates.add("48.0 kHz")
+        if ((mask and CAP_FLAG_44100) != 0) rates.add("44.1 kHz")
+        if ((mask and CAP_FLAG_96000) != 0) rates.add("96.0 kHz")
+        if ((mask and CAP_FLAG_192000) != 0) rates.add("192.0 kHz")
+        val rateDesc = if (rates.isEmpty()) "48.0 kHz" else rates.joinToString("/")
+        return "$bitStr • $rateDesc Stereo"
     }
 }

@@ -686,7 +686,7 @@
                                 android:id="@+id/tv_pipeline_format"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:text="48.0 kHz • 16-bit Stereo PCM • 1536 kbps"
+                                android:text="48.0 kHz • 24-bit Stereo PCM • 2304 kbps"
                                 android:textSize="12sp"
                                 android:textStyle="bold"
                                 android:textColor="@color/text_primary"

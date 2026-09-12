@@ -444,30 +444,32 @@ class AudioCaptureService : Service() {
             targetRate = AudioConfig.SAMPLE_RATE_48000
             target24Bit = false
         } else if (isAuto) {
-            // Auto Adaptive Mode: capture at the Android hardware output mix bus rate to eliminate
-            // resampling artifacts. AudioPlaybackCaptureConfiguration reads from AudioFlinger's mix bus,
-            // which operates at hwOutputRate. Capturing at any rate higher than hwOutputRate causes
-            // Android to upsample the mix bus internally, producing mushy/boxy sound at the receiver.
+            // Auto Adaptive Mode: 24-bit / 48 kHz stereo is the primary Android operating point.
+            // When media is CD audio (44.1 kHz) and hardware mix bus operates at 44.1 kHz, match 44.1 kHz.
+            // Otherwise, 48.0 kHz native mix bus avoids AudioFlinger resampler distortion.
             val hwOutputRate = AudioPlaybackDetector.getHardwareOutputRate(this)
-            // If detected rate is a standard rate at or below the hw mix bus rate, use it (e.g. 44.1kHz when hw is 44.1kHz)
-            // Otherwise cap at hwOutputRate to avoid double-resampling
-            targetRate = if (detectedMedia.sampleRate in listOf(44100, 48000) && detectedMedia.sampleRate <= hwOutputRate) {
-                detectedMedia.sampleRate
+            targetRate = if (detectedMedia.sampleRate == AudioConfig.SAMPLE_RATE_44100 && hwOutputRate == AudioConfig.SAMPLE_RATE_44100) {
+                AudioConfig.SAMPLE_RATE_44100
             } else {
-                hwOutputRate
+                AudioConfig.SAMPLE_RATE_48000
             }
-            target24Bit = detectedMedia.is24Bit
+            target24Bit = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) && (rawBitPref != AudioConfig.BIT_DEPTH_16)
         } else {
-            // Unlocked Music Mode: Honors manual settings or autoselects from media report
-            targetRate = if (rawRatePref == AudioConfig.SAMPLE_RATE_AUTO) {
-                detectedMedia.sampleRate
+            // Unlocked Music Mode: 24-bit / 48 kHz stereo primary operating point on Android.
+            // Android capture is clamped to native rates (48k / 44.1k) to avoid AudioFlinger internal distortion.
+            val requestedRate = if (rawRatePref == AudioConfig.SAMPLE_RATE_AUTO) {
+                if (detectedMedia.sampleRate == AudioConfig.SAMPLE_RATE_44100) AudioConfig.SAMPLE_RATE_44100 else AudioConfig.SAMPLE_RATE_48000
             } else {
                 rawRatePref.toIntOrNull() ?: AudioConfig.SAMPLE_RATE_48000
             }
+            targetRate = when (requestedRate) {
+                AudioConfig.SAMPLE_RATE_44100 -> AudioConfig.SAMPLE_RATE_44100
+                else -> AudioConfig.SAMPLE_RATE_48000
+            }
             target24Bit = when (rawBitPref) {
                 AudioConfig.BIT_DEPTH_16 -> false
-                AudioConfig.BIT_DEPTH_24 -> true
-                else -> detectedMedia.is24Bit || (targetRate >= 88200)
+                AudioConfig.BIT_DEPTH_24 -> (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+                else -> (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
             }
         }
 
@@ -488,6 +490,9 @@ class AudioCaptureService : Service() {
             AudioCapabilities.getHighestMutuallySupportedRate(txCaps, txCaps, targetRate)
         }
 
+        val sourceCapDesc = "Android HAL: ${AudioCapabilities.describeCapabilities(txCaps)}"
+        val rxCapDesc = if (rxCaps != 0) AudioCapabilities.describeCapabilities(rxCaps) else "Pending receiver discovery"
+
         if (profile == AudioConfig.PROFILE_MUSIC && negotiatedRate != targetRate) {
             Log.i(TAG, "Uncapped Music: requested $targetRate Hz clamped to mutually supported $negotiatedRate Hz (TX: ${AudioCapabilities.describeCapabilitiesMask(txCaps)}, RX: ${AudioCapabilities.describeCapabilitiesMask(rxCaps)})")
         }
@@ -495,9 +500,10 @@ class AudioCaptureService : Service() {
         val candidateRates = if (isCompressedActive) {
             mutableListOf(AudioConfig.SAMPLE_RATE_48000)
         } else {
+            // Android native operating rates: 48 kHz (primary) and 44.1 kHz (fallback)
             val list = mutableListOf(negotiatedRate)
-            if (!list.contains(44100)) list.add(44100)
-            if (!list.contains(48000)) list.add(48000)
+            if (!list.contains(AudioConfig.SAMPLE_RATE_48000)) list.add(AudioConfig.SAMPLE_RATE_48000)
+            if (!list.contains(AudioConfig.SAMPLE_RATE_44100)) list.add(AudioConfig.SAMPLE_RATE_44100)
             list
         }
 
@@ -810,6 +816,12 @@ class AudioCaptureService : Service() {
                     "Transmitting to $initialEndpointLabel"
                 }
 
+                val initialNegotiatedFormat = if (isCompressedActive) {
+                    "${if (isOpusActive) "Opus" else "AAC"} • ${initialBitrate} kbps • ${captureSampleRate / 1000.0} kHz"
+                } else {
+                    "${captureSampleRate / 1000.0} kHz • ${initialBitDepth}-bit Stereo PCM"
+                }
+
                 StreamState.update {
                     it.copy(
                         isActive = true,
@@ -821,7 +833,10 @@ class AudioCaptureService : Service() {
                         bitDepth = initialBitDepth,
                         bitrateKbps = initialBitrate,
                         isSilenceSuppressed = false,
-                        activeReceiversCount = initialEndpointCount
+                        activeReceiversCount = initialEndpointCount,
+                        sourceCapabilityDesc = sourceCapDesc,
+                        receiverCapabilityDesc = rxCapDesc,
+                        negotiatedFormatDesc = initialNegotiatedFormat
                     )
                 }
 
@@ -1131,6 +1146,14 @@ class AudioCaptureService : Service() {
                                 "$targetIp:$targetPort (DAP Vol: ${remoteVolumePercent.get()}%)"
                             }
 
+                            val periodicNegotiatedFormat = if (isCompressedActive) {
+                                "${if (isOpusActive) "Opus" else "AAC"} • ${bitrate} kbps • ${captureSampleRate / 1000.0} kHz"
+                            } else {
+                                "${captureSampleRate / 1000.0} kHz • ${bitDepth}-bit Stereo PCM"
+                            }
+                            val currentRxCap = clientCapabilities.values.firstOrNull { it != 0 } ?: rxCaps
+                            val currentRxCapDesc = if (currentRxCap != 0) AudioCapabilities.describeCapabilities(currentRxCap) else rxCapDesc
+
                             StreamState.update {
                                 it.copy(
                                     isActive = true,
@@ -1146,7 +1169,10 @@ class AudioCaptureService : Service() {
                                     bitDepth = bitDepth,
                                     bitrateKbps = bitrate,
                                     isSilenceSuppressed = isSilenceSuppressed,
-                                    activeReceiversCount = receiverCount
+                                    activeReceiversCount = receiverCount,
+                                    sourceCapabilityDesc = sourceCapDesc,
+                                    receiverCapabilityDesc = currentRxCapDesc,
+                                    negotiatedFormatDesc = periodicNegotiatedFormat
                                 )
                             }
 
