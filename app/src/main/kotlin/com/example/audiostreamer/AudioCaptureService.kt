@@ -794,7 +794,7 @@ class AudioCaptureService : Service() {
                 var intervalPackets = 0
                 var intervalBytes = 0
                 var lastStatsTime = SystemClock.elapsedRealtime()
-                var maxSampleInInterval = 0
+                val audioMeter = AudioLevelMeter(AudioConfig.CHANNELS)
                 var silentPacketsCount = 0
                 var isSilenceSuppressed = false
                 var lastHeartbeatTime = 0L
@@ -869,15 +869,8 @@ class AudioCaptureService : Service() {
                         val pcmBytesRead = record.read(pcmReadBuffer, 0, targetReadBytes, AudioRecord.READ_BLOCKING)
                         lastReadDurationNs = SystemClock.elapsedRealtimeNanos() - tRead0
                         if (pcmBytesRead > 0) {
-                            var chunkPeak = 0
-                            var pi = 0
-                            while (pi < pcmBytesRead - 1) {
-                                val sample = (pcmReadBuffer[pi].toInt() and 0xFF) or (pcmReadBuffer[pi + 1].toInt() shl 8)
-                                val abs = kotlin.math.abs(sample.toShort().toInt())
-                                if (abs > chunkPeak) chunkPeak = abs
-                                pi += 16
-                            }
-                            if (chunkPeak > maxSampleInInterval) maxSampleInInterval = chunkPeak
+                            val metrics = audioMeter.analyze(pcmReadBuffer, 0, pcmBytesRead, is24Bit = false)
+                            val chunkPeak = metrics.peak
 
                             val isChunkSilent = (chunkPeak <= AudioConfig.SILENCE_AMPLITUDE_THRESHOLD_16BIT)
                             if (isChunkSilent) {
@@ -995,29 +988,9 @@ class AudioCaptureService : Service() {
                         val currentTimestamp = streamTimelineFrames
                         streamTimelineFrames += framesRead
 
-                        // Compute peak amplitude of current chunk
-                        var chunkPeak = 0
-                        if (isEffective24) {
-                            var i = 0
-                            while (i < bytesRead - 2) {
-                                val raw = (rawPcmBuffer[i].toInt() and 0xFF) or
-                                    ((rawPcmBuffer[i + 1].toInt() and 0xFF) shl 8) or
-                                    ((rawPcmBuffer[i + 2].toInt() and 0xFF) shl 16)
-                                val sample = if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw
-                                val abs = kotlin.math.abs(sample)
-                                if (abs > chunkPeak) chunkPeak = abs
-                                i += 24
-                            }
-                        } else {
-                            var i = 0
-                            while (i < bytesRead - 1) {
-                                val sample = (rawPcmBuffer[i].toInt() and 0xFF) or (rawPcmBuffer[i + 1].toInt() shl 8)
-                                val abs = kotlin.math.abs(sample.toShort().toInt())
-                                if (abs > chunkPeak) chunkPeak = abs
-                                i += 16
-                            }
-                        }
-                        if (chunkPeak > maxSampleInInterval) maxSampleInInterval = chunkPeak
+                        // Compute peak amplitude and RMS of current chunk
+                        val metrics = audioMeter.analyze(rawPcmBuffer, 0, bytesRead, is24Bit = isEffective24)
+                        val chunkPeak = metrics.peak
 
                         // Silence suppression evaluation
                         val isChunkSilent = if (isEffective24) {
@@ -1139,11 +1112,8 @@ class AudioCaptureService : Service() {
                             smoothBps = if (smoothBps == 0f) instantBps else (smoothBps * 0.7f + instantBps * 0.3f)
                             val pps = smoothPps.toInt()
                             val bps = smoothBps.toInt()
-                            val peakPercent = if (is24Now) {
-                                ((maxSampleInInterval * 100L) / 8388608L).toInt().coerceIn(0, 100)
-                            } else {
-                                ((maxSampleInInterval * 100) / 32768).coerceIn(0, 100)
-                            }
+                            val intervalPeak = audioMeter.getAndResetIntervalPeak()
+                            val peakPercent = AudioLevelMeter.calculatePeakPercent(intervalPeak, is24Now)
                             val bitDepth = if (isCompressedActive) 16 else if (is24Now) 24 else 16
                             val bitrate = when {
                                 isOpusActive -> 320
@@ -1218,7 +1188,6 @@ class AudioCaptureService : Service() {
 
                             intervalPackets = 0
                             intervalBytes = 0
-                            maxSampleInInterval = 0
                             lastStatsTime = now
                         }
                     } else if (bytesRead == 0) {

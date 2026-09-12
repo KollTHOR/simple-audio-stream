@@ -82,7 +82,7 @@ class AudioSinkService : Service() {
     @Volatile private var opusDecoderSampleRate: Int = AudioConfig.SAMPLE_RATE_48000
     @Volatile private var currentStreamConfig: NegotiatedStreamConfig? = null
     @Volatile private var lastConfiguredCodec: String? = null
-    @Volatile private var sinkAudioPeakSample = 0
+    private val audioLevelMeter = AudioLevelMeter(AudioConfig.CHANNELS)
     @Volatile private var currentBufferSizeInBytes = 0
     @Volatile private var currentTrackProfile: String = ""
     @Volatile private var lastDecodeDurationNs: Long = 0L
@@ -288,7 +288,6 @@ class AudioSinkService : Service() {
                 var intervalPackets = 0
                 var intervalBytes = 0
                 var lastStatsTime = SystemClock.elapsedRealtime()
-                var maxSampleInInterval = 0
                 var lastSilencePacketTime = 0L
                 var fecRecoveredTotal = 0L
                 var smoothPps = 0f
@@ -486,31 +485,6 @@ class AudioSinkService : Service() {
                                 }
 
                                 jitterBuffer.write(header.sequenceNumber, header.timestamp, writeData, writeOffset, effectivePayloadLen)
-
-                                // Compute audio peak level (for PCM payloads)
-                                if (!isCompressedPayload) {
-                                    var i = writeOffset
-                                    val end = writeOffset + effectivePayloadLen
-                                    val isEffective24 = currentIsServer24Bit
-                                    if (isEffective24) {
-                                        while (i < end - 2) {
-                                            val raw = (writeData[i].toInt() and 0xFF) or
-                                                ((writeData[i + 1].toInt() and 0xFF) shl 8) or
-                                                ((writeData[i + 2].toInt() and 0xFF) shl 16)
-                                            val sample = if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw
-                                            val abs = kotlin.math.abs(sample)
-                                            if (abs > maxSampleInInterval) maxSampleInInterval = abs
-                                            i += 24
-                                        }
-                                    } else {
-                                        while (i < end - 1) {
-                                            val sample = (writeData[i].toInt() and 0xFF) or (writeData[i + 1].toInt() shl 8)
-                                            val abs = kotlin.math.abs(sample.toShort().toInt())
-                                            if (abs > maxSampleInInterval) maxSampleInInterval = abs
-                                            i += 16
-                                        }
-                                    }
-                                }
                             }
 
                             totalPackets++
@@ -529,13 +503,8 @@ class AudioSinkService : Service() {
                             smoothBps = if (smoothBps == 0f) instantBps else (smoothBps * 0.7f + instantBps * 0.3f)
                             val pps = smoothPps.toInt()
                             val bps = smoothBps.toInt()
-                            val effectivePeakSample = maxOf(maxSampleInInterval, sinkAudioPeakSample)
-                            sinkAudioPeakSample = 0
-                            val peakPercent = if (is24) {
-                                ((effectivePeakSample * 100L) / 8388608L).toInt().coerceIn(0, 100)
-                            } else {
-                                ((effectivePeakSample * 100) / 32768).coerceIn(0, 100)
-                            }
+                            val intervalPeak = audioLevelMeter.getAndResetIntervalPeak()
+                            val peakPercent = AudioLevelMeter.calculatePeakPercent(intervalPeak, is24)
                             val fill = jitterBuffer.getFillLevel()
                             val usedSlots = jitterBuffer.getAvailableCount()
                             val totalSlots = jitterBuffer.getSlotCount()
@@ -643,7 +612,6 @@ class AudioSinkService : Service() {
 
                             intervalPackets = 0
                             intervalBytes = 0
-                            maxSampleInInterval = 0
                             lastStatsTime = now
                         }
 
@@ -701,13 +669,7 @@ class AudioSinkService : Service() {
                                                  }
 
                                                  track.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
-                                                 var p = 0
-                                                 while (p < pcm.size - 1) {
-                                                     val sample = (pcm[p].toInt() and 0xFF) or (pcm[p + 1].toInt() shl 8)
-                                                     val abs = kotlin.math.abs(sample.toShort().toInt())
-                                                     if (abs > sinkAudioPeakSample) sinkAudioPeakSample = abs
-                                                     p += 2
-                                                 }
+                                                 audioLevelMeter.analyze(pcm, 0, pcm.size, is24Bit = false)
                                              }
                                          }
                                          val lastPcm = pcmList.lastOrNull { it.size >= 4 }
@@ -762,13 +724,7 @@ class AudioSinkService : Service() {
                                                      wasInSilenceFill = false
                                                  }
                                                  track.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
-                                                 var p = 0
-                                                 while (p < pcm.size - 1) {
-                                                     val sample = (pcm[p].toInt() and 0xFF) or (pcm[p + 1].toInt() shl 8)
-                                                     val abs = kotlin.math.abs(sample.toShort().toInt())
-                                                     if (abs > sinkAudioPeakSample) sinkAudioPeakSample = abs
-                                                     p += 2
-                                                 }
+                                                 audioLevelMeter.analyze(pcm, 0, pcm.size, is24Bit = false)
                                              }
                                          }
                                          val lastPcm = pcmList.lastOrNull { it.size >= 4 }
@@ -799,6 +755,7 @@ class AudioSinkService : Service() {
                                          track.write(silence, 0, silence.size, AudioTrack.WRITE_BLOCKING)
                                      }
                                 } else {
+                                     audioLevelMeter.analyze(chunk, 0, bytesToPlay, is24Bit = currentIsServer24Bit)
                                      if (currentEncoding == AudioFormat.ENCODING_PCM_16BIT && currentIsServer24Bit && bytesToPlay >= 6) {
                                          val frames = bytesToPlay / 6
                                          val outLen = frames * 4
@@ -1060,7 +1017,7 @@ class AudioSinkService : Service() {
         currentStreamConfig = null
         currentIsOpus = false
         currentIsAac = false
-        sinkAudioPeakSample = 0
+        audioLevelMeter.resetInterval()
 
         jitterBuffer.reset()
         releaseLocks()
