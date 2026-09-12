@@ -13,6 +13,8 @@ class HatPacketTest {
             version = 1,
             packetType = HatPacket.TYPE_AUDIO,
             sequenceNumber = 42000,
+            payloadLength = 1440,
+            timestamp = 960000L,
             codec = HatPacket.CODEC_RAW_PCM,
             profile = HatPacket.PROFILE_MUSIC,
             sampleRateCode = HatPacket.RATE_48000,
@@ -20,8 +22,7 @@ class HatPacketTest {
             channels = HatPacket.CHANNELS_STEREO,
             volumeOrCaps = 85,
             fecBlockSize = 0,
-            flags = HatPacket.FLAG_NONE,
-            payloadLength = 1440
+            flags = HatPacket.FLAG_NONE
         )
 
         val buffer = ByteArray(HatPacket.HEADER_SIZE + 1440)
@@ -31,15 +32,21 @@ class HatPacketTest {
         assertEquals(0xA4.toByte(), buffer[4])
         assertEquals(0x10.toByte(), buffer[5])
 
-        // Verify Big-Endian payload length: 1440 = 0x05A0
-        assertEquals(0x05.toByte(), buffer[14])
-        assertEquals(0xA0.toByte(), buffer[15])
+        // Verify Big-Endian payload length: 1440 = 0x05A0 at offset 6..7
+        assertEquals(0x05.toByte(), buffer[6])
+        assertEquals(0xA0.toByte(), buffer[7])
+
+        // Verify Big-Endian timestamp: 960000L = 0x00000000000EA600L at offset 8..15
+        assertEquals(0x0E.toByte(), buffer[13])
+        assertEquals(0xA6.toByte(), buffer[14])
+        assertEquals(0x00.toByte(), buffer[15])
 
         val parsed = HatPacket.parseHeader(buffer, 0, buffer.size)
         assertNotNull(parsed)
         assertEquals(1.toByte(), parsed?.version)
         assertEquals(HatPacket.TYPE_AUDIO, parsed?.packetType)
         assertEquals(42000, parsed?.sequenceNumber)
+        assertEquals(960000L, parsed?.timestamp)
         assertEquals(HatPacket.CODEC_RAW_PCM, parsed?.codec)
         assertEquals(HatPacket.PROFILE_MUSIC, parsed?.profile)
         assertEquals(HatPacket.RATE_48000, parsed?.sampleRateCode)
@@ -214,8 +221,8 @@ class HatPacketTest {
         buffer[1] = HatPacket.MAGIC_BYTE_1
         buffer[2] = HatPacket.PROTOCOL_VERSION
         buffer[3] = HatPacket.TYPE_AUDIO
-        // Set payload length to 10000 (> MAX_PACKET_SIZE)
-        HatPacket.writeUInt16BE(buffer, 14, 10000)
+        // Set payload length to 10000 (> MAX_PACKET_SIZE) at offset 6
+        HatPacket.writeUInt16BE(buffer, 6, 10000)
 
         val parsed = HatPacket.parseHeader(buffer, 0, buffer.size)
         assertNull(parsed)

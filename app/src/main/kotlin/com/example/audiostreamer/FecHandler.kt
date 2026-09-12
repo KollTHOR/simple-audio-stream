@@ -10,10 +10,13 @@ class FecEncoder(val blockSize: Int = AudioConfig.FEC_BLOCK_SIZE) {
     private val parityPacket = ByteArray(AudioConfig.HEADER_SIZE + AudioConfig.MAX_PACKET_SIZE)
     private var blockCount = 0
     private var baseSeq = 0
+    private var baseTimestamp = 0L
     private var maxPayloadLen = 0
 
     fun reset() {
         blockCount = 0
+        baseSeq = 0
+        baseTimestamp = 0L
         maxPayloadLen = 0
     }
 
@@ -23,6 +26,7 @@ class FecEncoder(val blockSize: Int = AudioConfig.FEC_BLOCK_SIZE) {
      */
     fun encode(
         seq: Int,
+        timestamp: Long = 0L,
         payload: ByteArray,
         offset: Int,
         len: Int,
@@ -38,6 +42,7 @@ class FecEncoder(val blockSize: Int = AudioConfig.FEC_BLOCK_SIZE) {
 
         if (blockCount == 0) {
             baseSeq = seq
+            baseTimestamp = timestamp
             maxPayloadLen = len
             System.arraycopy(payload, offset, parityPayload, 0, len)
             blockCount = 1
@@ -60,14 +65,15 @@ class FecEncoder(val blockSize: Int = AudioConfig.FEC_BLOCK_SIZE) {
                 header = HatPacket.Header(
                     packetType = HatPacket.TYPE_FEC_PARITY,
                     sequenceNumber = baseSeq,
+                    payloadLength = maxPayloadLen,
+                    timestamp = baseTimestamp,
                     codec = codec,
                     profile = profile,
                     sampleRateCode = sampleRateCode,
                     bitDepth = bitDepth,
                     channels = HatPacket.CHANNELS_STEREO,
                     volumeOrCaps = volume.coerceIn(0, 100).toByte(),
-                    fecBlockSize = blockSize.toByte(),
-                    payloadLength = maxPayloadLen
+                    fecBlockSize = blockSize.toByte()
                 )
             )
 
@@ -78,6 +84,7 @@ class FecEncoder(val blockSize: Int = AudioConfig.FEC_BLOCK_SIZE) {
             System.arraycopy(parityPacket, 0, result, 0, totalLen)
 
             blockCount = 0
+            baseTimestamp = 0L
             maxPayloadLen = 0
             return result
         }
@@ -101,6 +108,7 @@ class FecDecoder(private val jitterBuffer: JitterBuffer) {
      */
     fun decode(
         baseSeq: Int,
+        baseTimestamp: Long = 0L,
         blockSize: Int,
         parityPayload: ByteArray,
         parityOffset: Int,
@@ -110,6 +118,7 @@ class FecDecoder(private val jitterBuffer: JitterBuffer) {
         if (blockSize !in 2..16) return false
 
         var missingSeq = -1
+        var missingIndex = -1
         var missingCount = 0
         var maxLen = parityLen
 
@@ -120,6 +129,7 @@ class FecDecoder(private val jitterBuffer: JitterBuffer) {
                 if (len > maxLen) maxLen = len
             } else {
                 missingSeq = seq
+                missingIndex = i
                 missingCount++
             }
         }
@@ -155,7 +165,25 @@ class FecDecoder(private val jitterBuffer: JitterBuffer) {
             }
         }
 
+        // Determine timestamp for the recovered packet
+        val recoveredTimestamp: Long = if (missingIndex == 0 && baseTimestamp >= 0L) {
+            baseTimestamp
+        } else {
+            val existingBlockPacket = jitterBuffer.findBlockTimestamp(baseSeq, blockSize, missingSeq)
+            if (existingBlockPacket != null) {
+                val (existingSeq, existingTs, existingLen) = existingBlockPacket
+                val deltaPackets = (missingSeq - existingSeq)
+                val frames = jitterBuffer.calculateFramesForPayload(existingLen)
+                existingTs + (deltaPackets * frames)
+            } else if (baseTimestamp >= 0L) {
+                val frames = jitterBuffer.calculateFramesForPayload(maxLen)
+                baseTimestamp + (missingIndex * frames)
+            } else {
+                0L
+            }
+        }
+
         // Write recovered packet into missing slot in JitterBuffer
-        return jitterBuffer.putRecoveredPacket(missingSeq, recoveredPayload, 0, maxLen)
+        return jitterBuffer.putRecoveredPacket(missingSeq, recoveredTimestamp, recoveredPayload, 0, maxLen)
     }
 }

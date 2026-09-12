@@ -314,6 +314,7 @@ class AudioSinkService : Service() {
                                 if (parityLen > 0 && length >= HatPacket.HEADER_SIZE + parityLen) {
                                     val recovered = fecDecoder.decode(
                                         baseSeq = baseSeq,
+                                        baseTimestamp = header.timestamp,
                                         blockSize = blockSize,
                                         parityPayload = data,
                                         parityOffset = offset + HatPacket.HEADER_SIZE,
@@ -478,7 +479,7 @@ class AudioSinkService : Service() {
                                     effectivePayloadLen = payloadLen
                                 }
 
-                                jitterBuffer.write(header.sequenceNumber, writeData, writeOffset, effectivePayloadLen)
+                                jitterBuffer.write(header.sequenceNumber, header.timestamp, writeData, writeOffset, effectivePayloadLen)
 
                                 // Compute audio peak level (for PCM payloads)
                                 if (!isCompressedPayload) {
