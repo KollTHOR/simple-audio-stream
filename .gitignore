@@ -3,8 +3,10 @@
 build/
 .kotlin/
 
-# Local configuration
+# Local configuration & signing secrets
 local.properties
+keystore.properties
+signing.properties
 
 # Log files
 *.log
@@ -23,10 +25,14 @@ captures/
 *.dex
 *.class
 
-# Keystore
+# Keystores & Certificates
+keystore/
 *.jks
 *.keystore
-!keystore/release.keystore
+*.p12
+*.bks
+*.pem
+*.pk8
 
 # OS files
 .DS_Store

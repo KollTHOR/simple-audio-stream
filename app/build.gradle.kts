@@ -1,3 +1,6 @@
+import java.util.Properties
+import java.io.File
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -15,12 +18,56 @@ android {
         versionName = "1.8.5"
     }
 
+    val keystorePropsFile = rootProject.file("keystore.properties")
+    val keystoreProps = Properties().apply {
+        if (keystorePropsFile.exists()) {
+            keystorePropsFile.inputStream().use { load(it) }
+        }
+    }
+    val localPropsFile = rootProject.file("local.properties")
+    val localProps = Properties().apply {
+        if (localPropsFile.exists()) {
+            localPropsFile.inputStream().use { load(it) }
+        }
+    }
+
+    fun findSigningProp(vararg names: String): String? {
+        for (name in names) {
+            val envVal = System.getenv(name)
+            if (!envVal.isNullOrBlank()) return envVal
+            val ksVal = keystoreProps.getProperty(name)
+            if (!ksVal.isNullOrBlank()) return ksVal
+            val locVal = localProps.getProperty(name)
+            if (!locVal.isNullOrBlank()) return locVal
+            val projVal = project.findProperty(name) as? String
+            if (!projVal.isNullOrBlank()) return projVal
+        }
+        return null
+    }
+
+    val storeFilePath = findSigningProp("RELEASE_KEYSTORE_PATH", "KEYSTORE_PATH", "releaseKeystorePath")
+    val storePassword = findSigningProp("RELEASE_KEYSTORE_PASSWORD", "KEYSTORE_PASSWORD", "releaseKeystorePassword")
+    val keyAlias = findSigningProp("RELEASE_KEY_ALIAS", "KEY_ALIAS", "releaseKeyAlias")
+    val keyPassword = findSigningProp("RELEASE_KEY_PASSWORD", "KEY_PASSWORD", "releaseKeyPassword")
+
+    val resolvedKeystoreFile = storeFilePath?.let {
+        val f = file(it)
+        if (f.exists()) f else rootProject.file(it).takeIf { rf -> rf.exists() }
+    }
+
+    val hasReleaseSigning = resolvedKeystoreFile != null &&
+        !storePassword.isNullOrBlank() &&
+        !keyAlias.isNullOrBlank() &&
+        !keyPassword.isNullOrBlank()
+
     signingConfigs {
-        create("release") {
-            storeFile = file("${rootDir}/keystore/release.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+        if (hasReleaseSigning) {
+            create("release") {
+                this.storeFile = resolvedKeystoreFile
+                this.storePassword = storePassword
+                this.keyAlias = keyAlias
+                this.keyPassword = keyPassword
+            }
         }
     }
 
@@ -31,7 +78,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("release")
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

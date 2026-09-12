@@ -63,7 +63,9 @@ Shared via singleton [`AudioConfig`](app/src/main/kotlin/com/example/audiostream
 
 ## Building the Project
 
-Compile the unified APK using Gradle:
+### Debug Build
+
+Compile the debug APK using Gradle:
 
 ```bash
 ./gradlew assembleDebug
@@ -71,3 +73,76 @@ Compile the unified APK using Gradle:
 
 Output APK:
 - `app/build/outputs/apk/debug/app-debug.apk`
+
+### Release Build & Signing Configuration
+
+By default, running `./gradlew assembleRelease` without signing credentials produces an unsigned release APK (`app/build/outputs/apk/release/app-release-unsigned.apk`).
+
+To sign release builds, configure signing credentials through one of two methods (never committed to Git):
+
+#### Option A: `keystore.properties` (Recommended for local development)
+
+1. Copy `keystore.properties.example` to `keystore.properties` in the project root:
+   ```bash
+   cp keystore.properties.example keystore.properties
+   ```
+2. Fill in your release keystore details:
+   ```properties
+   releaseKeystorePath=/path/to/your/release.keystore
+   releaseKeystorePassword=your_keystore_password
+   releaseKeyAlias=your_key_alias
+   releaseKeyPassword=your_key_password
+   ```
+
+Note: `keystore.properties` and all `*.keystore` / `*.jks` files are ignored in `.gitignore`.
+
+#### Option B: Environment Variables (Recommended for CI/CD)
+
+Export the following environment variables prior to running the build:
+
+```bash
+export RELEASE_KEYSTORE_PATH="/path/to/your/release.keystore"
+export RELEASE_KEYSTORE_PASSWORD="your_keystore_password"
+export RELEASE_KEY_ALIAS="your_key_alias"
+export RELEASE_KEY_PASSWORD="your_key_password"
+
+./gradlew assembleRelease
+```
+
+Output APK:
+- `app/build/outputs/apk/release/app-release.apk`
+
+---
+
+## Security Notice
+
+### Compromised Historical Signing Key Notice (v1.6.3 - v1.8.5)
+
+In releases from v1.6.3 through v1.8.5, an Android debug keystore was committed to the repository at `keystore/release.keystore` with publicly visible credentials (`android` / `androiddebugkey`).
+
+Because this signing key was committed to a public repository:
+- The signing key used for APK releases v1.6.3 through v1.8.5 is considered compromised.
+- Any APK signed with that historical key should not be trusted if obtained from untrusted or third-party sources.
+- The committed keystore and hardcoded credentials have been purged from repository tracking.
+- Moving forward, all official releases must be signed with an independent private release key maintained outside source control.
+- If upgrading from versions v1.6.3 - v1.8.5 to a future release signed with a new private key, Android will require uninstalling the old version first due to the signature mismatch.
+
+For detailed vulnerability disclosure information, see [`SECURITY.md`](SECURITY.md).
+
+---
+
+## Permissions Audit
+
+The application declares the following permissions in `AndroidManifest.xml`, all of which are strictly required for its streaming operations:
+
+- `RECORD_AUDIO`: Required by Android system to capture audio playback via `AudioPlaybackCaptureConfiguration` in `AudioCaptureService`.
+- `INTERNET`: Required for local UDP audio packet transmission and reception across devices.
+- `ACCESS_NETWORK_STATE` & `ACCESS_WIFI_STATE`: Required to inspect local network interfaces and determine local IP addresses.
+- `WAKE_LOCK`: Required to acquire a partial CPU wake lock, ensuring audio streaming continues uninterrupted when the device screen turns off.
+- `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PROJECTION`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK`: Required on Android 10+ (and enforced on Android 14+) to run persistent background capture and playback services.
+- `POST_NOTIFICATIONS`: Required on Android 13+ (API 33+) to display ongoing service status notifications for foreground services.
+- `CHANGE_WIFI_MULTICAST_STATE`: Required on the receiver to acquire a multicast lock for local device discovery packets.
+- `CHANGE_WIFI_STATE`: Required for Wi-Fi Direct (P2P) group creation and peer negotiation.
+- `ACCESS_FINE_LOCATION` & `ACCESS_COARSE_LOCATION`: Required by the Android OS framework on Android 10-12 (API 29-32) and vendor OS skins (e.g. Xiaomi MIUI/HyperOS) for Wi-Fi Direct peer discovery.
+- `NEARBY_WIFI_DEVICES`: Required on Android 13+ (API 33+) for Wi-Fi Direct peer discovery.
+- `REQUEST_INSTALL_PACKAGES`: Required for the in-app updater feature in Settings to launch the system package installer when an update is downloaded from GitHub Releases.

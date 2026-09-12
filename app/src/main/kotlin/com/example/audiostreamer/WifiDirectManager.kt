@@ -149,7 +149,7 @@ object WifiDirectManager {
                                 if (group != null) {
                                     _networkSsid.value = group.networkName
                                     _networkPassphrase.value = group.passphrase
-                                    Log.i(TAG, "P2P Group Info: SSID=${group.networkName}, Passphrase=${group.passphrase}, Clients=${group.clientList.size}")
+                                    Log.i(TAG, "P2P Group Info: SSID=${group.networkName}, Passphrase=******, Clients=${group.clientList.size}")
                                     for (c in group.clientList) {
                                         Log.i(TAG, " -> P2P Client: '${c.deviceName}' (${c.deviceAddress})")
                                     }
@@ -224,7 +224,7 @@ object WifiDirectManager {
                 _networkSsid.value = existingGroup.networkName
                 _networkPassphrase.value = existingGroup.passphrase ?: P2P_DEFAULT_PASSPHRASE
                 _statusMessage.value = "Group Active: ${existingGroup.networkName} (IP: $DEFAULT_GO_IP)"
-                Log.i(TAG, "Reusing existing autonomous group: SSID=${existingGroup.networkName}, Pass=${existingGroup.passphrase}")
+                Log.i(TAG, "Reusing existing autonomous group: SSID=${existingGroup.networkName}, Pass=******")
                 mgr.discoverPeers(ch, null) // ensure discoverable
                 onResult(true, existingGroup.networkName, DEFAULT_GO_IP)
             } else {
@@ -254,7 +254,7 @@ object WifiDirectManager {
                         _networkSsid.value = P2P_DEFAULT_SSID
                         _networkPassphrase.value = P2P_DEFAULT_PASSPHRASE
                         _statusMessage.value = "Group Active: $P2P_DEFAULT_SSID (IP: $DEFAULT_GO_IP)"
-                        Log.i(TAG, "Autonomous group created successfully with SSID: $P2P_DEFAULT_SSID, Pass: $P2P_DEFAULT_PASSPHRASE")
+                        Log.i(TAG, "Autonomous group created successfully with SSID: $P2P_DEFAULT_SSID, Pass=******")
                         mgr.discoverPeers(ch, null)
                         onResult(true, P2P_DEFAULT_SSID, DEFAULT_GO_IP)
                     }
@@ -289,7 +289,7 @@ object WifiDirectManager {
                     _networkSsid.value = ssid
                     _networkPassphrase.value = passphrase
                     _statusMessage.value = "Group Active: $ssid (IP: $DEFAULT_GO_IP)"
-                    Log.i(TAG, "Autonomous group created. SSID: $ssid, Passphrase: $passphrase, IP: $DEFAULT_GO_IP")
+                    Log.i(TAG, "Autonomous group created. SSID: $ssid, Passphrase=******, IP: $DEFAULT_GO_IP")
                     mgr.discoverPeers(ch, null)
                     onResult(true, ssid, DEFAULT_GO_IP)
                 }
@@ -334,7 +334,7 @@ object WifiDirectManager {
                     _networkSsid.value = ssid
                     _networkPassphrase.value = passphrase
                     _statusMessage.value = "Group Active: $ssid (IP: $DEFAULT_GO_IP)"
-                    Log.i(TAG, "Autonomous group created on retry. SSID: $ssid, Passphrase: $passphrase")
+                    Log.i(TAG, "Autonomous group created on retry. SSID: $ssid, Passphrase=******")
                     mgr.discoverPeers(ch, null)
                     onResult(true, ssid, DEFAULT_GO_IP)
                 }
@@ -413,7 +413,7 @@ object WifiDirectManager {
     ) {
         init(context)
         val pass = passphrase ?: P2P_DEFAULT_PASSPHRASE
-        Log.i(TAG, "connectWithCredentials: SSID='$ssid', Pass='$pass'")
+        Log.i(TAG, "connectWithCredentials: SSID='$ssid', Pass=******")
         if (!hasPermissions(context)) {
             _statusMessage.value = "Permissions required for Wi-Fi Direct"
             Log.w(TAG, "connectWithCredentials aborted: missing permissions")

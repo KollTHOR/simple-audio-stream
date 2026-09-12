@@ -249,7 +249,7 @@ class MainActivity : AppCompatActivity() {
                     tvP2pPassphrase.text = "Passphrase: $pass"
                     tvP2pIp.text = "Direct IP: $goIp (Port 50005)"
                     tvReceiverP2pStatus.text = "Broadcasting & Listening for Transmitter Connections"
-                    AppLogger.i("MainActivity", "Autonomous Wi-Fi Direct Active: SSID=$ssid, Passphrase=$pass, IP=$goIp")
+                    AppLogger.i("MainActivity", "Autonomous Wi-Fi Direct Active: SSID=$ssid, Passphrase=******, IP=$goIp")
                     Toast.makeText(this, "Wi-Fi Direct Active: $ssid", Toast.LENGTH_SHORT).show()
                 } else {
                     switchReceiverP2p.isChecked = false
