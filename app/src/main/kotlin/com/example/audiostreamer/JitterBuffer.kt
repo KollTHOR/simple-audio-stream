@@ -232,7 +232,7 @@ class JitterBuffer(
             packetBuffer.insert(sequence, timestamp, data, offset, length)
             fecHistory.record(sequence, timestamp, data, offset, length)
 
-            driftController.updateFill(packetBuffer.availableCount)
+            driftController.updateFill(packetBuffer.availableCount, jitterEstimator.targetWatermarkSlots)
 
             jitterEstimator.onPacketArrived(
                 nowNanos = System.nanoTime(),
@@ -437,19 +437,24 @@ class JitterBuffer(
 
                 jitterEstimator.onCleanPlayback(currentProfile, isCompressedStream, packetDurationMs, slotCount)
 
-                driftController.checkAndApplyDriftAdjustment(
+                // Primary: Continuous fractional resampling
+                val effectiveLen = driftController.resamplePcmChunk(output, len, is24BitStream)
+
+                // Fallback: Emergency zero-crossing adjustment only under extreme backlog/depletion
+                driftController.checkAndApplyEmergencyDriftFallback(
                     output = output,
-                    len = len,
+                    len = effectiveLen,
                     currentProfile = currentProfile,
                     targetWatermarkSlots = jitterEstimator.targetWatermarkSlots,
                     is24Bit = is24BitStream
                 )
 
-                plc.cacheLastSamples(output, len, is24BitStream)
+                plc.cacheLastSamples(output, effectiveLen, is24BitStream)
 
-                return len
+                return effectiveLen
             } else {
                 // Underrun
+                driftController.onUnderrun()
                 sequenceTracker.advanceExpectedReadSeq()
                 val len = minOf(output.size, lastPacketSize)
                 val nominalFrames = calculateFramesForPayload(len)
