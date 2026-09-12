@@ -476,11 +476,23 @@ class AudioCaptureService : Service() {
             else -> 0
         }
 
-        val negotiatedRate = if (rxCaps != 0) {
-            AudioCapabilities.getHighestMutuallySupportedRate(txCaps, rxCaps, targetRate)
-        } else {
-            AudioCapabilities.getHighestMutuallySupportedRate(txCaps, txCaps, targetRate)
-        }
+        val negotiatedSession = StreamNegotiator.negotiate(
+            StreamNegotiator.NegotiationRequest(
+                preferredProfile = LatencyTarget.fromString(profile),
+                preferredCodec = when {
+                    isOpusActive -> AudioCodec.OPUS
+                    isAacActive -> AudioCodec.AAC
+                    else -> AudioCodec.PCM
+                },
+                preferredSampleRateHz = targetRate,
+                preferred24Bit = target24Bit,
+                txCapabilitiesMask = txCaps,
+                rxCapabilitiesMask = rxCaps,
+                fecEnabled = prefs.getBoolean(AudioConfig.PREF_KEY_FEC_ENABLED, true),
+                isOpusEncoderAvailable = isOpusSupported
+            )
+        )
+        val negotiatedRate = negotiatedSession.sampleRateHz
 
         val sourceCapDesc = "Android HAL: ${AudioCapabilities.describeCapabilities(txCaps)}"
         val rxCapDesc = if (rxCaps != 0) AudioCapabilities.describeCapabilities(rxCaps) else "Pending receiver discovery"
@@ -752,6 +764,29 @@ class AudioCaptureService : Service() {
                 record.startRecording()
                 Log.i(TAG, "AudioRecord recording started. Streaming at $captureSampleRate Hz to ${clientRegistry.size} target(s) (Profile: $initialProfileDisplayName, Payload: $initialPayload bytes, FEC: $isFecEnabled)")
 
+                val activeAudioFormat = AudioFormatConfig(
+                    sampleRate = AudioSampleRate.fromHz(captureSampleRate),
+                    bitDepth = if (is24BitActive && !isCompressedActive) AudioBitDepth.BIT_24 else AudioBitDepth.BIT_16,
+                    channelLayout = AudioChannelLayout.STEREO
+                )
+                val baseCodec = when {
+                    isOpusActive -> AudioCodec.OPUS
+                    isAacActive -> AudioCodec.AAC
+                    else -> AudioCodec.PCM
+                }
+                val latencyTarget = LatencyTarget.fromString(activeProfile)
+                val activeTransportProfile = TransportProfile.create(
+                    target = latencyTarget,
+                    fecEnabled = isFecEnabled,
+                    isCompressedCodec = isCompressedActive,
+                    sampleRateHz = captureSampleRate
+                )
+                val negotiatedStreamConfig = NegotiatedStreamConfig(
+                    audioFormat = activeAudioFormat,
+                    codec = baseCodec,
+                    transportProfile = activeTransportProfile
+                )
+
                 var sequence = 0
                 var streamTimelineFrames = 0L
                 var totalPackets = 0L
@@ -877,24 +912,15 @@ class AudioCaptureService : Service() {
                                         streamTimelineFrames += framesInChunk
 
                                         val volByte = remoteVolumePercent.get().coerceIn(0, 100).toByte()
-                                        val codecType = if (isOpusActive) HatPacket.CODEC_OPUS else HatPacket.CODEC_AAC
 
-                                        HatPacket.writeHeader(
-                                            buffer = sendBuffer,
-                                            offset = 0,
-                                            header = HatPacket.Header(
-                                                packetType = HatPacket.TYPE_AUDIO,
-                                                sequenceNumber = currentSeq,
-                                                payloadLength = frameLen,
-                                                timestamp = currentTimestamp,
-                                                codec = codecType,
-                                                profile = HatPacket.PROFILE_LOW_LATENCY,
-                                                sampleRateCode = HatPacket.sampleRateToCode(captureSampleRate),
-                                                bitDepth = HatPacket.BIT_DEPTH_16,
-                                                channels = HatPacket.CHANNELS_STEREO,
-                                                volumeOrCaps = volByte
-                                            )
+                                        val header = negotiatedStreamConfig.createHeader(
+                                            packetType = HatPacket.TYPE_AUDIO,
+                                            sequenceNumber = currentSeq,
+                                            payloadLength = frameLen,
+                                            timestamp = currentTimestamp,
+                                            volumeOrCaps = volByte
                                         )
+                                        HatPacket.writeHeader(sendBuffer, 0, header)
                                         System.arraycopy(frame, 0, sendBuffer, HatPacket.HEADER_SIZE, frameLen)
                                         packet.length = HatPacket.HEADER_SIZE + frameLen
 
@@ -912,10 +938,10 @@ class AudioCaptureService : Service() {
                                                 payload = sendBuffer,
                                                 offset = HatPacket.HEADER_SIZE,
                                                 len = frameLen,
-                                                codec = codecType,
-                                                profile = HatPacket.PROFILE_LOW_LATENCY,
-                                                sampleRateCode = HatPacket.sampleRateToCode(captureSampleRate),
-                                                bitDepth = HatPacket.BIT_DEPTH_16,
+                                                codec = negotiatedStreamConfig.codec.wireCode,
+                                                profile = negotiatedStreamConfig.transportProfile.latencyTarget.wireCode,
+                                                sampleRateCode = negotiatedStreamConfig.audioFormat.sampleRate.wireCode,
+                                                bitDepth = negotiatedStreamConfig.audioFormat.bitDepth.wireCode,
                                                 volume = volByte.toInt() and 0xFF
                                             )
                                             if (parityBytes != null) {
@@ -935,24 +961,15 @@ class AudioCaptureService : Service() {
                                     val currentSeq = sequence
                                     sequence = (sequence + 1) and 0xFFFF
                                     val volByte = remoteVolumePercent.get().coerceIn(0, 100).toByte()
-                                    val codecType = if (isOpusActive) HatPacket.CODEC_OPUS else HatPacket.CODEC_AAC
 
-                                    HatPacket.writeHeader(
-                                        buffer = sendBuffer,
-                                        offset = 0,
-                                        header = HatPacket.Header(
-                                            packetType = HatPacket.TYPE_SILENCE_HEARTBEAT,
-                                            sequenceNumber = currentSeq,
-                                            payloadLength = 0,
-                                            timestamp = currentTimestamp,
-                                            codec = codecType,
-                                            profile = HatPacket.PROFILE_LOW_LATENCY,
-                                            sampleRateCode = HatPacket.sampleRateToCode(captureSampleRate),
-                                            bitDepth = HatPacket.BIT_DEPTH_16,
-                                            channels = HatPacket.CHANNELS_STEREO,
-                                            volumeOrCaps = volByte
-                                        )
+                                    val header = negotiatedStreamConfig.createHeader(
+                                        packetType = HatPacket.TYPE_SILENCE_HEARTBEAT,
+                                        sequenceNumber = currentSeq,
+                                        payloadLength = 0,
+                                        timestamp = currentTimestamp,
+                                        volumeOrCaps = volByte
                                     )
+                                    HatPacket.writeHeader(sendBuffer, 0, header)
                                     packet.length = HatPacket.HEADER_SIZE
                                     lastHeartbeatTime = now
                                     broadcastDatagram(socket, packet)
@@ -1034,30 +1051,18 @@ class AudioCaptureService : Service() {
                             sequence = (sequence + 1) and 0xFFFF
 
                             val volByte = remoteVolumePercent.get().coerceIn(0, 100).toByte()
-                            val profileCode = HatPacket.profileStringToCode(activeProfile)
-                            val rateCode = HatPacket.sampleRateToCode(captureSampleRate)
-                            val bitDepthByte = if (isEffective24) HatPacket.BIT_DEPTH_24 else HatPacket.BIT_DEPTH_16
-
                             var effectivePayloadLen: Int
-                            var activeCodec = HatPacket.CODEC_RAW_PCM
+                            var activeCodec = AudioCodec.PCM
 
                             if (isSilenceSuppressed) {
-                                HatPacket.writeHeader(
-                                    buffer = sendBuffer,
-                                    offset = 0,
-                                    header = HatPacket.Header(
-                                        packetType = HatPacket.TYPE_SILENCE_HEARTBEAT,
-                                        sequenceNumber = currentSeq,
-                                        payloadLength = 0,
-                                        timestamp = currentTimestamp,
-                                        codec = HatPacket.CODEC_RAW_PCM,
-                                        profile = profileCode,
-                                        sampleRateCode = rateCode,
-                                        bitDepth = bitDepthByte,
-                                        channels = HatPacket.CHANNELS_STEREO,
-                                        volumeOrCaps = volByte
-                                    )
+                                val header = negotiatedStreamConfig.createHeader(
+                                    packetType = HatPacket.TYPE_SILENCE_HEARTBEAT,
+                                    sequenceNumber = currentSeq,
+                                    payloadLength = 0,
+                                    timestamp = currentTimestamp,
+                                    volumeOrCaps = volByte
                                 )
+                                HatPacket.writeHeader(sendBuffer, 0, header)
                                 packet.length = HatPacket.HEADER_SIZE
                                 lastHeartbeatTime = now
                                 effectivePayloadLen = 0
@@ -1072,30 +1077,22 @@ class AudioCaptureService : Service() {
                                 )
                                 val isLossless = (compBytes < bytesRead) && (sendBuffer[HatPacket.HEADER_SIZE] != LosslessAudioCodec.MODE_RAW)
                                 if (isLossless) {
-                                    activeCodec = HatPacket.CODEC_LOSSLESS_PCM
+                                    activeCodec = AudioCodec.LOSSLESS
                                     effectivePayloadLen = compBytes
                                 } else {
-                                    activeCodec = HatPacket.CODEC_RAW_PCM
+                                    activeCodec = AudioCodec.PCM
                                     System.arraycopy(rawPcmBuffer, 0, sendBuffer, HatPacket.HEADER_SIZE, bytesRead)
                                     effectivePayloadLen = bytesRead
                                 }
 
-                                HatPacket.writeHeader(
-                                    buffer = sendBuffer,
-                                    offset = 0,
-                                    header = HatPacket.Header(
-                                        packetType = HatPacket.TYPE_AUDIO,
-                                        sequenceNumber = currentSeq,
-                                        payloadLength = effectivePayloadLen,
-                                        timestamp = currentTimestamp,
-                                        codec = activeCodec,
-                                        profile = profileCode,
-                                        sampleRateCode = rateCode,
-                                        bitDepth = bitDepthByte,
-                                        channels = HatPacket.CHANNELS_STEREO,
-                                        volumeOrCaps = volByte
-                                    )
+                                val header = negotiatedStreamConfig.copy(codec = activeCodec).createHeader(
+                                    packetType = HatPacket.TYPE_AUDIO,
+                                    sequenceNumber = currentSeq,
+                                    payloadLength = effectivePayloadLen,
+                                    timestamp = currentTimestamp,
+                                    volumeOrCaps = volByte
                                 )
+                                HatPacket.writeHeader(sendBuffer, 0, header)
                                 packet.length = HatPacket.HEADER_SIZE + effectivePayloadLen
                             }
 
@@ -1115,10 +1112,10 @@ class AudioCaptureService : Service() {
                                     payload = sendBuffer,
                                     offset = HatPacket.HEADER_SIZE,
                                     len = effectivePayloadLen,
-                                    codec = activeCodec,
-                                    profile = profileCode,
-                                    sampleRateCode = rateCode,
-                                    bitDepth = bitDepthByte,
+                                    codec = activeCodec.wireCode,
+                                    profile = negotiatedStreamConfig.transportProfile.latencyTarget.wireCode,
+                                    sampleRateCode = negotiatedStreamConfig.audioFormat.sampleRate.wireCode,
+                                    bitDepth = negotiatedStreamConfig.audioFormat.bitDepth.wireCode,
                                     volume = volByte.toInt() and 0xFF
                                 )
                                 if (parityBytes != null) {

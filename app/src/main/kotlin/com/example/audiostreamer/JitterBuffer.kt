@@ -127,6 +127,32 @@ class JitterBuffer(
         }
     }
 
+    fun applyConfiguration(config: NegotiatedStreamConfig) {
+        lock.withLock {
+            is24BitStream = config.is24Bit
+            lastSampleRate = config.sampleRateHz
+            packetDurationMs = config.packetDurationMs
+            isCompressedStream = config.isCompressed
+            currentProfile = config.transportProfile.latencyTarget.name
+
+            val params = config.transportProfile.jitter
+            slotCount = params.slotCount
+            preRollThreshold = params.preRollPackets
+            maxUnderrunFrames = params.maxUnderrunFrames
+            waitTimeoutMs = params.waitTimeoutMs
+            targetWatermarkSlots = params.targetWatermarkSlots
+            targetWatermarkMs = params.targetWatermarkMs
+
+            cleanPlaybackFramesCount = 0
+            smoothBufferFill = preRollThreshold.toFloat()
+
+            while (availableCount > slotCount) {
+                dropOldestSlot()
+            }
+            AppLogger.i("JitterBuffer", "Applied negotiated config: format=${config.sampleRateHz}Hz/${if (config.is24Bit) 24 else 16}b, codec=${config.codec.name}, profile=${config.transportProfile.latencyTarget.name}, slots=$slotCount")
+        }
+    }
+
     fun setProfile(profile: String, isCompressed: Boolean = false) {
         lock.withLock {
             if (currentProfile == profile && (isCompressed == isCompressedStream)) return

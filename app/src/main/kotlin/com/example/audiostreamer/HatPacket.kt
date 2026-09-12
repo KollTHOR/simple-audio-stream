@@ -293,6 +293,14 @@ object HatPacket {
                     bitDepth != BIT_DEPTH_16 && bitDepth != BIT_DEPTH_24) {
                     return null
                 }
+                if (codec == CODEC_OPUS) {
+                    if (sampleRateCode != RATE_48000) return null
+                    if (bitDepth != BIT_DEPTH_16 && bitDepth != BIT_DEPTH_NONE) return null
+                }
+                if (codec == CODEC_AAC) {
+                    if (sampleRateCode != RATE_48000 && sampleRateCode != RATE_44100) return null
+                    if (bitDepth != BIT_DEPTH_16 && bitDepth != BIT_DEPTH_NONE) return null
+                }
                 if (channels != CHANNELS_STEREO) return null
                 if (payloadLength == 0) return null
             }
