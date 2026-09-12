@@ -37,6 +37,30 @@ object DiscoveryManager {
     private val _discoveredDevices = MutableStateFlow<List<DiscoveredDevice>>(emptyList())
     val discoveredDevices: StateFlow<List<DiscoveredDevice>> = _discoveredDevices.asStateFlow()
 
+    private val _discoveredStreams = MutableStateFlow<List<DiscoveredStream>>(emptyList())
+    val discoveredStreams: StateFlow<List<DiscoveredStream>> = _discoveredStreams.asStateFlow()
+
+    @Volatile
+    var activePublishedStream: PublishedStream? = null
+        private set
+
+    fun publishStream(stream: PublishedStream) {
+        activePublishedStream = stream
+        Log.i(TAG, "Published stream: ${stream.name} (${stream.id}) at ${stream.endpoint}")
+        val sock = activeSocket ?: receiverResponderSocket
+        if (sock != null && !sock.isClosed) {
+            sendStreamAnnouncement(sock, stream)
+        }
+    }
+
+    fun unpublishStream(id: StreamId? = null) {
+        if (id == null || activePublishedStream?.id == id) {
+            val prev = activePublishedStream
+            activePublishedStream = null
+            Log.i(TAG, "Unpublished stream: ${prev?.name} (${prev?.id})")
+        }
+    }
+
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
 
@@ -88,7 +112,7 @@ object DiscoveryManager {
                 // Send initial probe
                 sendProbe(socket)
 
-                val buffer = ByteArray(256)
+                val buffer = ByteArray(1500)
                 val packet = DatagramPacket(buffer, buffer.size)
 
                 var lastProbeTime = SystemClock.elapsedRealtime()
@@ -100,57 +124,76 @@ object DiscoveryManager {
 
                         val data = packet.data
                         val header = HatPacket.parseHeader(data, 0, packet.length)
-                        if (header != null && header.packetType == HatPacket.TYPE_DISCOVERY_ANNOUNCE) {
-                            val rxCaps = header.volumeOrCaps.toInt() and 0xFF
-                            if (rxCaps != 0) {
-                                lastDiscoveredReceiverCapabilities = rxCaps
-                            }
-                            val isP2pFlag = (header.flags.toInt() and HatPacket.FLAG_P2P_ACTIVE.toInt()) != 0
-                            val rawPayload = if (header.payloadLength > 0) {
-                                String(data, HatPacket.HEADER_SIZE, header.payloadLength, Charsets.UTF_8).trim()
-                            } else {
-                                "Audio Receiver"
-                            }
+                        if (header != null) {
+                            when (header.packetType) {
+                                HatPacket.TYPE_DISCOVERY_ANNOUNCE -> {
+                                    val rxCaps = header.volumeOrCaps.toInt() and 0xFF
+                                    if (rxCaps != 0) {
+                                        lastDiscoveredReceiverCapabilities = rxCaps
+                                    }
+                                    val isP2pFlag = (header.flags.toInt() and HatPacket.FLAG_P2P_ACTIVE.toInt()) != 0
+                                    val rawPayload = if (header.payloadLength > 0) {
+                                        String(data, HatPacket.HEADER_SIZE, header.payloadLength, Charsets.UTF_8).trim()
+                                    } else {
+                                        "Audio Receiver"
+                                    }
 
-                                var devName = rawPayload
-                                var isP2pActive = isP2pFlag
-                                var p2pSsid: String? = null
-                                var p2pPass: String? = null
-                                var p2pGoIp: String? = null
-                                var p2pMac: String? = null
-                                var modelName: String? = null
+                                    var devName = rawPayload
+                                    var isP2pActive = isP2pFlag
+                                    var p2pSsid: String? = null
+                                    var p2pPass: String? = null
+                                    var p2pGoIp: String? = null
+                                    var p2pMac: String? = null
+                                    var modelName: String? = null
 
-                                if (rawPayload.startsWith("{") && rawPayload.endsWith("}")) {
-                                    try {
-                                        val json = org.json.JSONObject(rawPayload)
-                                        devName = json.optString("name", devName)
-                                        isP2pActive = json.optBoolean("p2p", isP2pFlag)
-                                        p2pSsid = json.optString("ssid").takeIf { it.isNotEmpty() }
-                                        p2pPass = json.optString("pass").takeIf { it.isNotEmpty() }
-                                        p2pGoIp = json.optString("goIp").takeIf { it.isNotEmpty() }
-                                        p2pMac = json.optString("p2pMac").takeIf { it.isNotEmpty() }
-                                        modelName = json.optString("model").takeIf { it.isNotEmpty() }
-                                    } catch (ignored: Exception) {}
-                                }
+                                    if (rawPayload.startsWith("{") && rawPayload.endsWith("}")) {
+                                        try {
+                                            val json = org.json.JSONObject(rawPayload)
+                                            devName = json.optString("name", devName)
+                                            isP2pActive = json.optBoolean("p2p", isP2pFlag)
+                                            p2pSsid = json.optString("ssid").takeIf { it.isNotEmpty() }
+                                            p2pPass = json.optString("pass").takeIf { it.isNotEmpty() }
+                                            p2pGoIp = json.optString("goIp").takeIf { it.isNotEmpty() }
+                                            p2pMac = json.optString("p2pMac").takeIf { it.isNotEmpty() }
+                                            modelName = json.optString("model").takeIf { it.isNotEmpty() }
+                                        } catch (ignored: Exception) {}
+                                    }
 
-                                val senderIp = packet.address.hostAddress
-                                if (senderIp != null) {
-                                    addDiscoveredDevice(
-                                        DiscoveredDevice(
-                                            name = devName,
-                                            ip = senderIp,
-                                            port = AudioConfig.DEFAULT_PORT,
-                                            capabilitiesMask = rxCaps,
-                                            isP2pActive = isP2pActive,
-                                            p2pSsid = p2pSsid,
-                                            p2pPassphrase = p2pPass,
-                                            p2pGoIp = p2pGoIp,
-                                            p2pMac = p2pMac,
-                                            modelName = modelName
+                                    val senderIp = packet.address.hostAddress
+                                    if (senderIp != null) {
+                                        addDiscoveredDevice(
+                                            DiscoveredDevice(
+                                                name = devName,
+                                                ip = senderIp,
+                                                port = AudioConfig.DEFAULT_PORT,
+                                                capabilitiesMask = rxCaps,
+                                                isP2pActive = isP2pActive,
+                                                p2pSsid = p2pSsid,
+                                                p2pPassphrase = p2pPass,
+                                                p2pGoIp = p2pGoIp,
+                                                p2pMac = p2pMac,
+                                                modelName = modelName
+                                            )
                                         )
-                                    )
+                                    }
+                                }
+                                HatPacket.TYPE_STREAM_ANNOUNCE -> {
+                                    if (header.payloadLength > 0) {
+                                        val rawPayload = String(data, HatPacket.HEADER_SIZE, header.payloadLength, Charsets.UTF_8).trim()
+                                        val stream = PublishedStream.fromJson(rawPayload)
+                                        if (stream != null) {
+                                            val senderIp = packet.address.hostAddress ?: stream.endpoint.host
+                                            val effectiveHost = if (stream.endpoint.host.isBlank() || stream.endpoint.host == "0.0.0.0") {
+                                                senderIp
+                                            } else {
+                                                stream.endpoint.host
+                                            }
+                                            addDiscoveredStream(stream.copy(endpoint = stream.endpoint.copy(host = effectiveHost)))
+                                        }
+                                    }
                                 }
                             }
+                        }
                     } catch (ignored: Exception) {
                         // SocketTimeoutException expected
                     }
@@ -161,6 +204,7 @@ object DiscoveryManager {
                         sendProbe(socket)
                         lastProbeTime = now
                         pruneStaleDevices()
+                        pruneStaleStreams()
                     }
                 }
             } catch (e: Exception) {
@@ -184,15 +228,13 @@ object DiscoveryManager {
     fun triggerScan(scope: CoroutineScope) {
         _isScanning.value = true
         _lastScanTimeMs.value = System.currentTimeMillis()
-        if (discoveryJob?.isActive != true) {
-            startDiscovery(scope)
-        } else {
+        val sock = activeSocket ?: receiverResponderSocket
+        if (sock != null && !sock.isClosed) {
             scope.launch(Dispatchers.IO) {
-                val sock = activeSocket
-                if (sock != null && !sock.isClosed) {
-                    sendProbe(sock)
-                }
+                sendProbe(sock)
             }
+        } else if (discoveryJob?.isActive != true) {
+            startDiscovery(scope)
         }
         scope.launch {
             kotlinx.coroutines.delay(2500)
@@ -226,7 +268,7 @@ object DiscoveryManager {
                 // Broadcast initial announcement across all active interfaces
                 sendAnnouncement(socket)
 
-                val buffer = ByteArray(256)
+                val buffer = ByteArray(1500)
                 val packet = DatagramPacket(buffer, buffer.size)
                 var lastAnnounceTime = SystemClock.elapsedRealtime()
 
@@ -237,16 +279,40 @@ object DiscoveryManager {
 
                         val data = packet.data
                         val header = HatPacket.parseHeader(data, 0, packet.length)
-                        if (header != null && header.packetType == HatPacket.TYPE_DISCOVERY_PROBE) {
-                            // Reply with announce directly to probing transmitter
-                            val announceBuf = buildAnnouncePacket()
-                            val replyPacket1 = DatagramPacket(announceBuf, announceBuf.size, packet.address, AudioConfig.DISCOVERY_PORT)
-                            socket.send(replyPacket1)
-                            if (packet.port != AudioConfig.DISCOVERY_PORT) {
-                                val replyPacket2 = DatagramPacket(announceBuf, announceBuf.size, packet.address, packet.port)
-                                try { socket.send(replyPacket2) } catch (ignored: Exception) {}
+                        if (header != null) {
+                            when (header.packetType) {
+                                HatPacket.TYPE_DISCOVERY_PROBE -> {
+                                    // Reply with announce directly to probing transmitter
+                                    val announceBuf = buildAnnouncePacket()
+                                    val replyPacket1 = DatagramPacket(announceBuf, announceBuf.size, packet.address, AudioConfig.DISCOVERY_PORT)
+                                    socket.send(replyPacket1)
+                                    if (packet.port != AudioConfig.DISCOVERY_PORT) {
+                                        val replyPacket2 = DatagramPacket(announceBuf, announceBuf.size, packet.address, packet.port)
+                                        try { socket.send(replyPacket2) } catch (ignored: Exception) {}
+                                    }
+                                    activePublishedStream?.let { pubStream ->
+                                        val streamBuf = buildStreamAnnouncePacket(pubStream)
+                                        val replyStream = DatagramPacket(streamBuf, streamBuf.size, packet.address, packet.port)
+                                        try { socket.send(replyStream) } catch (ignored: Exception) {}
+                                    }
+                                    Log.d(TAG, "Sent discovery announce reply to ${packet.address}")
+                                }
+                                HatPacket.TYPE_STREAM_ANNOUNCE -> {
+                                    if (header.payloadLength > 0) {
+                                        val rawPayload = String(data, HatPacket.HEADER_SIZE, header.payloadLength, Charsets.UTF_8).trim()
+                                        val stream = PublishedStream.fromJson(rawPayload)
+                                        if (stream != null) {
+                                            val senderIp = packet.address.hostAddress ?: stream.endpoint.host
+                                            val effectiveHost = if (stream.endpoint.host.isBlank() || stream.endpoint.host == "0.0.0.0") {
+                                                senderIp
+                                            } else {
+                                                stream.endpoint.host
+                                            }
+                                            addDiscoveredStream(stream.copy(endpoint = stream.endpoint.copy(host = effectiveHost)))
+                                        }
+                                    }
+                                }
                             }
-                            Log.d(TAG, "Sent discovery announce reply to ${packet.address}")
                         }
                     } catch (ignored: Exception) {
                         // SocketTimeoutException expected
@@ -256,7 +322,11 @@ object DiscoveryManager {
                     val now = SystemClock.elapsedRealtime()
                     if (now - lastAnnounceTime >= 3000) {
                         sendAnnouncement(socket)
+                        activePublishedStream?.let { pubStream ->
+                            sendStreamAnnouncement(socket, pubStream)
+                        }
                         lastAnnounceTime = now
+                        pruneStaleStreams()
                     }
                 }
             } catch (e: Exception) {
@@ -335,6 +405,10 @@ object DiscoveryManager {
                     val bcastPacket = DatagramPacket(announceBuf, announceBuf.size, InetAddress.getByName(targetIp), AudioConfig.DISCOVERY_PORT)
                     socket.send(bcastPacket)
                 } catch (ignored: Exception) {}
+            }
+
+            activePublishedStream?.let { pubStream ->
+                sendStreamAnnouncement(socket, pubStream)
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed sending announcements: ${e.message}")
@@ -441,6 +515,80 @@ object DiscoveryManager {
         val filtered = _discoveredDevices.value.filter { now - it.lastSeenMs < 16000 }
         if (filtered.size != _discoveredDevices.value.size) {
             _discoveredDevices.value = filtered
+        }
+    }
+
+    fun buildStreamAnnouncePacket(stream: PublishedStream): ByteArray {
+        val jsonStr = stream.toJson()
+        val jsonBytes = jsonStr.toByteArray(Charsets.UTF_8).take(1000).toByteArray()
+        val announceBuf = ByteArray(HatPacket.HEADER_SIZE + jsonBytes.size)
+        HatPacket.writeHeader(
+            buffer = announceBuf,
+            offset = 0,
+            header = HatPacket.Header(
+                packetType = HatPacket.TYPE_STREAM_ANNOUNCE,
+                codec = stream.codec.wireCode,
+                profile = stream.transportProfile.latencyTarget.wireCode,
+                sampleRateCode = stream.audioFormat.sampleRate.wireCode,
+                bitDepth = stream.audioFormat.bitDepth.wireCode,
+                channels = stream.audioFormat.channelLayout.wireCode,
+                volumeOrCaps = 0,
+                flags = if (WifiDirectManager.isGroupCreated.value) HatPacket.FLAG_P2P_ACTIVE else HatPacket.FLAG_NONE,
+                payloadLength = jsonBytes.size
+            )
+        )
+        System.arraycopy(jsonBytes, 0, announceBuf, HatPacket.HEADER_SIZE, jsonBytes.size)
+        return announceBuf
+    }
+
+    fun sendStreamAnnouncement(socket: DatagramSocket, stream: PublishedStream? = null) {
+        val targetStream = stream ?: activePublishedStream ?: return
+        try {
+            val announceBuf = buildStreamAnnouncePacket(targetStream)
+            val targets = mutableSetOf<String>()
+            targets.addAll(NetworkUtils.getAllBroadcastAddresses())
+            for (localIp in NetworkUtils.getAllLocalIpAddresses()) {
+                val parts = localIp.split(".")
+                if (parts.size == 4 && parts[3] != "1") {
+                    targets.add("${parts[0]}.${parts[1]}.${parts[2]}.1")
+                }
+            }
+            targets.addAll(NetworkUtils.getArpClientIps())
+            targets.add("255.255.255.255")
+
+            for (targetIp in targets) {
+                try {
+                    val bcastPacket = DatagramPacket(announceBuf, announceBuf.size, InetAddress.getByName(targetIp), AudioConfig.DISCOVERY_PORT)
+                    socket.send(bcastPacket)
+                } catch (ignored: Exception) {}
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed sending stream announcements: ${e.message}")
+        }
+    }
+
+    @Synchronized
+    fun addDiscoveredStream(stream: PublishedStream) {
+        val current = _discoveredStreams.value.toMutableList()
+        val existingIndex = current.indexOfFirst {
+            it.stream.id == stream.id || (it.stream.endpoint.host == stream.endpoint.host && it.stream.endpoint.port == stream.endpoint.port)
+        }
+        val now = SystemClock.elapsedRealtime()
+        if (existingIndex >= 0) {
+            current[existingIndex] = DiscoveredStream(stream, now)
+        } else {
+            current.add(DiscoveredStream(stream, now))
+            Log.i(TAG, "Discovered published stream: ${stream.name} (${stream.id}) at ${stream.endpoint}")
+        }
+        _discoveredStreams.value = current
+    }
+
+    @Synchronized
+    fun pruneStaleStreams() {
+        val now = SystemClock.elapsedRealtime()
+        val filtered = _discoveredStreams.value.filter { now - it.lastSeenMs < 16000 }
+        if (filtered.size != _discoveredStreams.value.size) {
+            _discoveredStreams.value = filtered
         }
     }
 }

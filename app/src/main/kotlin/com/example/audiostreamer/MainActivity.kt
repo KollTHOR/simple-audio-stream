@@ -342,10 +342,11 @@ class MainActivity : AppCompatActivity() {
 
         btnScanReceivers.setOnClickListener {
             DiscoveryManager.triggerScan(lifecycleScope)
-            if (checkAndRequestP2pPermissions()) {
+            if (currentMode == Mode.TRANSMITTER && checkAndRequestP2pPermissions()) {
                 WifiDirectManager.discoverPeers(this)
             }
-            Toast.makeText(this, "Scanning for nearby receivers...", Toast.LENGTH_SHORT).show()
+            val toastMsg = if (currentMode == Mode.RECEIVER) "Scanning for available streams..." else "Scanning for nearby receivers..."
+            Toast.makeText(this, toastMsg, Toast.LENGTH_SHORT).show()
         }
 
         val initialProfile = ConnectionProfileManager.activeProfileFlow.value
@@ -369,6 +370,11 @@ class MainActivity : AppCompatActivity() {
                 }
                 launch {
                     DiscoveryManager.discoveredDevices.collect {
+                        updateDiscoveredDevicesUi()
+                    }
+                }
+                launch {
+                    DiscoveryManager.discoveredStreams.collect {
                         updateDiscoveredDevicesUi()
                     }
                 }
@@ -474,6 +480,7 @@ class MainActivity : AppCompatActivity() {
                     currentMode = newMode
                     syncDiscoveryMode()
                     updateModeAndButtonUi()
+                    updateDiscoveredDevicesUi()
                 }
             }
         }
@@ -640,6 +647,51 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateDiscoveredDevicesUi() {
         layoutDiscoveredDevicesContainer.removeAllViews()
+
+        if (currentMode == Mode.RECEIVER) {
+            val streams = DiscoveryManager.discoveredStreams.value
+            tvDiscoveryTitle.text = "AVAILABLE AUDIO STREAMS"
+            btnScanReceivers.text = "Scan"
+
+            for (discovered in streams) {
+                val stream = discovered.stream
+                val itemView = layoutInflater.inflate(R.layout.item_discovered_device, layoutDiscoveredDevicesContainer, false)
+                val card = itemView.findViewById<MaterialCardView>(R.id.card_discovered_device)
+                val tvName = itemView.findViewById<TextView>(R.id.tv_discovered_name)
+                val tvDetails = itemView.findViewById<TextView>(R.id.tv_discovered_details)
+                val switchDirect = itemView.findViewById<SwitchMaterial>(R.id.switch_discovered_direct)
+                val btnSave = itemView.findViewById<MaterialButton>(R.id.btn_discovered_save)
+                val btnUse = itemView.findViewById<MaterialButton>(R.id.btn_discovered_use)
+
+                tvName.text = stream.name
+                val codecName = stream.codec.name
+                val rate = "${stream.audioFormat.sampleRateHz / 1000.0} kHz"
+                val bit = "${stream.audioFormat.bitDepth.bits}-bit"
+                val profile = stream.transportProfile.latencyTarget.displayName
+                tvDetails.text = "$rate • $bit $codecName ($profile) • ${stream.endpoint.host}:${stream.endpoint.port}"
+
+                switchDirect.visibility = View.GONE
+                btnSave.visibility = View.GONE
+                btnUse.text = "Tune In"
+                btnUse.setIconResource(R.drawable.ic_play)
+
+                fun performTune() {
+                    tuneInToStream(discovered)
+                }
+
+                btnUse.setOnClickListener { performTune() }
+                card.setOnClickListener { performTune() }
+
+                layoutDiscoveredDevicesContainer.addView(itemView)
+            }
+
+            val hasStreams = streams.isNotEmpty()
+            layoutDiscoverySection.visibility = if (hasStreams) View.VISIBLE else View.GONE
+            return
+        }
+
+        tvDiscoveryTitle.text = "NEARBY RECEIVERS"
+        btnScanReceivers.text = "Scan"
         val devices = getUnifiedDiscoveredDevices()
 
         for (dev in devices) {
@@ -727,6 +779,26 @@ class MainActivity : AppCompatActivity() {
 
         val hasDevices = devices.isNotEmpty()
         layoutDiscoverySection.visibility = if (currentMode == Mode.TRANSMITTER && hasDevices) View.VISIBLE else View.GONE
+    }
+
+    private fun tuneInToStream(discovered: DiscoveredStream) {
+        val stream = discovered.stream
+        etPort.setText(stream.endpoint.port.toString())
+        if (AudioSinkService.isRunning.get()) {
+            stopReceiverService()
+        }
+        val serviceIntent = Intent(this, AudioSinkService::class.java).apply {
+            action = AudioSinkService.ACTION_START
+            putExtra(AudioSinkService.EXTRA_PORT, stream.endpoint.port)
+            putExtra(AudioSinkService.EXTRA_STREAM_ID, stream.id.value)
+            putExtra(AudioSinkService.EXTRA_STREAM_NAME, stream.name)
+            putExtra(AudioSinkService.EXTRA_STREAM_HOST, stream.endpoint.host)
+        }
+        isStarting = true
+        isStopping = false
+        ContextCompat.startForegroundService(this, serviceIntent)
+        updateModeAndButtonUi()
+        Toast.makeText(this, "Tuning into ${stream.name}...", Toast.LENGTH_SHORT).show()
     }
 
     private fun connectToUnifiedDeviceDirect(dev: UnifiedDevice) {
@@ -1328,7 +1400,10 @@ class MainActivity : AppCompatActivity() {
                 btnModeTransmitter.iconTint = ColorStateList.valueOf(colorTextSecondary)
 
                 tvModeGuide.text = "Play raw audio stream received from transmitter"
-                layoutDiscoverySection.visibility = View.GONE
+                tvDiscoveryTitle.text = "AVAILABLE AUDIO STREAMS"
+                btnScanReceivers.text = "Scan"
+                val hasStreams = DiscoveryManager.discoveredStreams.value.isNotEmpty()
+                layoutDiscoverySection.visibility = if (hasStreams) View.VISIBLE else View.GONE
                 layoutSavedProfilesSection.visibility = View.GONE
                 layoutReceiverP2p.visibility = View.VISIBLE
                 layoutVolumeControl.visibility = View.GONE

@@ -45,6 +45,9 @@ class AudioSinkService : Service() {
         const val ACTION_START = "com.example.audiostreamer.ACTION_START_SINK"
         const val ACTION_STOP = "com.example.audiostreamer.ACTION_STOP_SINK"
         const val EXTRA_PORT = "EXTRA_PORT"
+        const val EXTRA_STREAM_ID = "EXTRA_STREAM_ID"
+        const val EXTRA_STREAM_NAME = "EXTRA_STREAM_NAME"
+        const val EXTRA_STREAM_HOST = "EXTRA_STREAM_HOST"
 
         private const val NOTIFICATION_ID = 2001
         private const val CHANNEL_ID = "AudioSinkChannel"
@@ -107,7 +110,10 @@ class AudioSinkService : Service() {
             }
             ACTION_START -> {
                 val port = intent.getIntExtra(EXTRA_PORT, AudioConfig.DEFAULT_PORT)
-                startSink(port)
+                val streamId = intent.getStringExtra(EXTRA_STREAM_ID)
+                val streamName = intent.getStringExtra(EXTRA_STREAM_NAME)
+                val streamHost = intent.getStringExtra(EXTRA_STREAM_HOST)
+                startSink(port, streamId, streamName, streamHost)
             }
         }
         return START_NOT_STICKY
@@ -227,7 +233,7 @@ class AudioSinkService : Service() {
         return track
     }
 
-    private fun startSink(port: Int) {
+    private fun startSink(port: Int, streamId: String? = null, streamName: String? = null, streamHost: String? = null) {
         if (isRunning.getAndSet(true)) {
             Log.w(TAG, "AudioSinkService is already active")
             return
@@ -266,16 +272,44 @@ class AudioSinkService : Service() {
             val rxCapDesc = "Android HAL: ${AudioCapabilities.describeCapabilities(localRxCaps)}"
             val initialBit = if (initialEncoding == AudioFormat.ENCODING_PCM_24BIT_PACKED) "24-bit" else "16-bit"
 
+            if (!streamHost.isNullOrBlank()) {
+                try {
+                    val addr = java.net.InetAddress.getByName(streamHost)
+                    lastSenderAddress = addr
+                    lastSenderPort = port
+                    lastSenderHost = streamName ?: streamHost
+                    val tunePayload = (streamId ?: "").toByteArray(Charsets.UTF_8).take(256).toByteArray()
+                    val tuneBuf = ByteArray(HatPacket.HEADER_SIZE + tunePayload.size)
+                    HatPacket.writeHeader(
+                        buffer = tuneBuf,
+                        offset = 0,
+                        header = HatPacket.Header(
+                            packetType = HatPacket.TYPE_STREAM_TUNE,
+                            volumeOrCaps = localRxCaps.toByte(),
+                            payloadLength = tunePayload.size
+                        )
+                    )
+                    System.arraycopy(tunePayload, 0, tuneBuf, HatPacket.HEADER_SIZE, tunePayload.size)
+                    val tunePacket = DatagramPacket(tuneBuf, tuneBuf.size, addr, port)
+                    socket.send(tunePacket)
+                    Log.i(TAG, "Sent immediate stream tune packet to $streamHost:$port (streamId: $streamId)")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed sending immediate stream tune: ${e.message}")
+                }
+            }
+
             val localIp = NetworkUtils.getLocalIpAddress() ?: "0.0.0.0"
             StreamState.update {
                 it.copy(
                     isActive = true,
                     isTransmitter = false,
-                    remoteEndpoint = "Listening on $localIp:$port",
-                    statusDetail = "Waiting for incoming UDP packets...",
+                    remoteEndpoint = if (!streamHost.isNullOrBlank()) "Tuned to ${streamName ?: streamHost} ($streamHost:$port)" else "Listening on $localIp:$port",
+                    statusDetail = if (!streamHost.isNullOrBlank()) "Tuning to stream..." else "Waiting for incoming UDP packets...",
                     sourceCapabilityDesc = "Pending incoming stream...",
                     receiverCapabilityDesc = rxCapDesc,
-                    negotiatedFormatDesc = "48.0 kHz • $initialBit Stereo PCM"
+                    negotiatedFormatDesc = "48.0 kHz • $initialBit Stereo PCM",
+                    tunedStreamId = streamId,
+                    tunedStreamName = streamName
                 )
             }
 
@@ -1061,7 +1095,9 @@ class AudioSinkService : Service() {
                 packetsPerSec = 0,
                 bytesPerSec = 0,
                 statusDetail = "Stopped",
-                fecRecoveredTotal = 0L
+                fecRecoveredTotal = 0L,
+                tunedStreamId = null,
+                tunedStreamName = null
             )
         }
 

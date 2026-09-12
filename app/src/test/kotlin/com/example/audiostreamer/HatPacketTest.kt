@@ -336,4 +336,68 @@ class HatPacketTest {
         assertEquals(AudioConfig.PROFILE_AUTO, HatPacket.profileCodeToString(HatPacket.PROFILE_AUTO))
         assertEquals(AudioConfig.PROFILE_MUSIC, HatPacket.profileCodeToString(HatPacket.PROFILE_MUSIC))
     }
+
+    @Test
+    fun testStreamAnnouncePacketRoundtrip() {
+        val payload = "{\"id\":\"pixel7-1234\",\"name\":\"Studio Audio\"}".toByteArray(Charsets.UTF_8)
+        val header = HatPacket.Header(
+            packetType = HatPacket.TYPE_STREAM_ANNOUNCE,
+            codec = HatPacket.CODEC_RAW_PCM,
+            profile = HatPacket.PROFILE_MUSIC,
+            sampleRateCode = HatPacket.RATE_48000,
+            bitDepth = HatPacket.BIT_DEPTH_24,
+            channels = HatPacket.CHANNELS_STEREO,
+            payloadLength = payload.size
+        )
+        val buffer = ByteArray(HatPacket.HEADER_SIZE + payload.size)
+        HatPacket.writeHeader(buffer, 0, header)
+        System.arraycopy(payload, 0, buffer, HatPacket.HEADER_SIZE, payload.size)
+
+        val parsed = HatPacket.parseHeader(buffer, 0, buffer.size)
+        assertNotNull(parsed)
+        assertEquals(HatPacket.TYPE_STREAM_ANNOUNCE, parsed?.packetType)
+        assertEquals(payload.size, parsed?.payloadLength)
+        assertEquals(HatPacket.RATE_48000, parsed?.sampleRateCode)
+        assertEquals(HatPacket.BIT_DEPTH_24, parsed?.bitDepth)
+    }
+
+    @Test
+    fun testStreamTunePacketRoundtrip() {
+        val payload = "pixel7-1234".toByteArray(Charsets.UTF_8)
+        val header = HatPacket.Header(
+            packetType = HatPacket.TYPE_STREAM_TUNE,
+            volumeOrCaps = 42,
+            payloadLength = payload.size
+        )
+        val buffer = ByteArray(HatPacket.HEADER_SIZE + payload.size)
+        HatPacket.writeHeader(buffer, 0, header)
+        System.arraycopy(payload, 0, buffer, HatPacket.HEADER_SIZE, payload.size)
+
+        val parsed = HatPacket.parseHeader(buffer, 0, buffer.size)
+        assertNotNull(parsed)
+        assertEquals(HatPacket.TYPE_STREAM_TUNE, parsed?.packetType)
+        assertEquals(42.toByte(), parsed?.volumeOrCaps)
+        assertEquals(payload.size, parsed?.payloadLength)
+    }
+
+    @Test
+    fun testOversizeStreamAnnounceAndTunePacketsRejected() {
+        // Stream announce packet > 1024 bytes payload should be rejected
+        val oversizeAnnounceHeader = HatPacket.Header(
+            packetType = HatPacket.TYPE_STREAM_ANNOUNCE,
+            payloadLength = 1025
+        )
+        val buf1 = ByteArray(HatPacket.HEADER_SIZE + 1025)
+        HatPacket.writeHeader(buf1, 0, oversizeAnnounceHeader)
+        assertNull(HatPacket.parseHeader(buf1, 0, buf1.size))
+
+        // Stream tune packet > 256 bytes payload should be rejected
+        val oversizeTuneHeader = HatPacket.Header(
+            packetType = HatPacket.TYPE_STREAM_TUNE,
+            payloadLength = 257
+        )
+        val buf2 = ByteArray(HatPacket.HEADER_SIZE + 257)
+        HatPacket.writeHeader(buf2, 0, oversizeTuneHeader)
+        assertNull(HatPacket.parseHeader(buf2, 0, buf2.size))
+    }
 }

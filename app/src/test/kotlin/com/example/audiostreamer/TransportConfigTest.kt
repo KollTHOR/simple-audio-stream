@@ -326,4 +326,83 @@ class TransportConfigTest {
         assertEquals(AudioBitDepth.BIT_16, stream4.audioFormat.bitDepth)
         assertEquals(LatencyTarget.RELIABLE, stream4.transportProfile.latencyTarget)
     }
+
+    @Test
+    fun testStreamIdGenerationAndStability() {
+        val id1 = StreamId.generate("pixel7")
+        assertTrue(id1.value.startsWith("pixel7-"))
+        assertEquals(id1.value, id1.toString())
+
+        val id2 = StreamId("custom-stable-stream-id")
+        assertEquals("custom-stable-stream-id", id2.value)
+        assertEquals("custom-stable-stream-id", id2.toString())
+    }
+
+    @Test
+    fun testStreamEndpoint() {
+        val ep1 = StreamEndpoint("192.168.1.50")
+        assertEquals("192.168.1.50", ep1.host)
+        assertEquals(AudioConfig.DEFAULT_PORT, ep1.port)
+        assertEquals("192.168.1.50:${AudioConfig.DEFAULT_PORT}", ep1.toString())
+
+        val ep2 = StreamEndpoint("10.0.0.1", 12349)
+        assertEquals("10.0.0.1:12349", ep2.toString())
+    }
+
+    @Test
+    fun testPublishedStreamJsonRoundtrip() {
+        val original = PublishedStream(
+            id = StreamId("pixel7-abc12345"),
+            name = "Studio Living Room",
+            endpoint = StreamEndpoint("192.168.1.105", 12345),
+            audioFormat = AudioFormatConfig(
+                sampleRate = AudioSampleRate.RATE_96000,
+                bitDepth = AudioBitDepth.BIT_24,
+                channelLayout = AudioChannelLayout.STEREO
+            ),
+            codec = AudioCodec.LOSSLESS,
+            transportProfile = TransportProfile.create(
+                target = LatencyTarget.RELIABLE,
+                fecEnabled = true,
+                isCompressedCodec = false,
+                sampleRateHz = 96000
+            ),
+            isLive = true,
+            publishedAtMs = 1726000000000L
+        )
+
+        val jsonString = original.toJson()
+        assertNotNull(jsonString)
+        assertTrue(jsonString.contains("pixel7-abc12345"))
+        assertTrue(jsonString.contains("Studio Living Room"))
+        assertTrue(jsonString.contains("192.168.1.105"))
+        assertTrue(jsonString.contains("LOSSLESS"))
+
+        val parsed = PublishedStream.fromJson(jsonString)
+        assertNotNull(parsed)
+        assertEquals(original.id, parsed?.id)
+        assertEquals(original.name, parsed?.name)
+        assertEquals(original.endpoint.host, parsed?.endpoint?.host)
+        assertEquals(original.endpoint.port, parsed?.endpoint?.port)
+        assertEquals(original.audioFormat.sampleRate, parsed?.audioFormat?.sampleRate)
+        assertEquals(original.audioFormat.bitDepth, parsed?.audioFormat?.bitDepth)
+        assertEquals(original.audioFormat.channelLayout, parsed?.audioFormat?.channelLayout)
+        assertEquals(original.codec, parsed?.codec)
+        assertEquals(original.transportProfile.latencyTarget, parsed?.transportProfile?.latencyTarget)
+        assertEquals(original.transportProfile.fec.enabled, parsed?.transportProfile?.fec?.enabled)
+        assertEquals(original.isLive, parsed?.isLive)
+
+        // Verify conversion to NegotiatedStreamConfig
+        val negotiated = parsed?.toNegotiatedStreamConfig()
+        assertNotNull(negotiated)
+        assertEquals(96000, negotiated?.sampleRateHz)
+        assertEquals(24, negotiated?.bitDepthBits)
+        assertEquals(AudioCodec.LOSSLESS, negotiated?.codec)
+    }
+
+    @Test
+    fun testPublishedStreamInvalidJson() {
+        assertNull(PublishedStream.fromJson("invalid json string"))
+        assertNull(PublishedStream.fromJson("{}")) // Missing required fields
+    }
 }

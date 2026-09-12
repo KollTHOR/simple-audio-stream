@@ -38,6 +38,8 @@ object HatPacket {
     const val TYPE_DISCONNECT: Byte = 0x07
     const val TYPE_DISCOVERY_PROBE: Byte = 0x08
     const val TYPE_DISCOVERY_ANNOUNCE: Byte = 0x09
+    const val TYPE_STREAM_ANNOUNCE: Byte = 0x0A
+    const val TYPE_STREAM_TUNE: Byte = 0x0B
 
     // Codec Types (Byte 16)
     const val CODEC_RAW_PCM: Byte = 0x00
@@ -243,7 +245,7 @@ object HatPacket {
 
         // 3. Strict Packet Type Check
         val packetType = buffer[offset + 3]
-        if (packetType !in TYPE_AUDIO..TYPE_DISCOVERY_ANNOUNCE) {
+        if (packetType !in TYPE_AUDIO..TYPE_STREAM_TUNE) {
             return null
         }
 
@@ -280,6 +282,13 @@ object HatPacket {
             TYPE_DISCONNECT,
             TYPE_DISCOVERY_PROBE -> {
                 if (payloadLength != 0) return null
+            }
+            TYPE_DISCOVERY_ANNOUNCE,
+            TYPE_STREAM_ANNOUNCE -> {
+                if (payloadLength > 1024) return null
+            }
+            TYPE_STREAM_TUNE -> {
+                if (payloadLength > 256) return null
             }
             TYPE_FEC_PARITY -> {
                 val fecSize = fecBlockSize.toInt() and 0xFF

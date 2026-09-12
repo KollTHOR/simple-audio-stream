@@ -103,6 +103,7 @@ class AudioCaptureService : Service() {
     private var volumeObserver: ContentObserver? = null
     private var activeCaptureSampleRate = AudioConfig.SAMPLE_RATE_48000
     @Volatile private var lastLiveAdaptTime = 0L
+    @Volatile private var currentPublishedStream: PublishedStream? = null
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -684,7 +685,7 @@ class AudioCaptureService : Service() {
 
                 val listenerSocket = socket
                 controlListenerThread = Thread({
-                    val recvBuf = ByteArray(64)
+                    val recvBuf = ByteArray(512)
                     val recvPacket = DatagramPacket(recvBuf, recvBuf.size)
                     while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                         try {
@@ -703,6 +704,7 @@ class AudioCaptureService : Service() {
                                         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                                         notificationManager.notify(NOTIFICATION_ID, buildNotification("Streaming @ Receiver Vol: $incomingVol%"))
                                     }
+                                    HatPacket.TYPE_STREAM_TUNE,
                                     HatPacket.TYPE_RECEIVER_HEARTBEAT -> {
                                         if (byteVal != 0) {
                                             clientCapabilities[endpoint] = byteVal
@@ -712,16 +714,16 @@ class AudioCaptureService : Service() {
                                         clientRegistry[endpoint] = SystemClock.elapsedRealtime()
                                         if (isNew) {
                                             val capsDesc = if (byteVal != 0) AudioCapabilities.describeCapabilitiesMask(byteVal) else "default"
-                                            Log.i(TAG, "Registered new multi-unicast receiver: $endpoint (Caps: $capsDesc)")
+                                            val tuneInfo = if (header.packetType == HatPacket.TYPE_STREAM_TUNE && header.payloadLength > 0) {
+                                                " (tuned: " + String(recvBuf, HatPacket.HEADER_SIZE, header.payloadLength, Charsets.UTF_8).trim() + ")"
+                                            } else ""
+                                            Log.i(TAG, "Registered new stream listener/receiver: $endpoint (Caps: $capsDesc)$tuneInfo")
                                         }
                                     }
                                     HatPacket.TYPE_DISCONNECT -> {
-                                        Log.i(TAG, "Received client disconnect signal from $endpoint. Pausing media.")
+                                        Log.i(TAG, "Received client disconnect signal from $endpoint. Removing subscriber.")
                                         clientRegistry.remove(endpoint)
                                         clientCapabilities.remove(endpoint)
-                                        if (clientRegistry.isEmpty()) {
-                                            pauseSystemMediaPlayback()
-                                        }
                                     }
                                 }
                             }
@@ -790,6 +792,23 @@ class AudioCaptureService : Service() {
                     transportProfile = activeTransportProfile
                 )
 
+                val streamId = StreamId.generate(DiscoveryManager.getLocalDeviceName())
+                val streamName = "${DiscoveryManager.getLocalDeviceName()} Stream"
+                val localIp = matchingLocalIp ?: NetworkUtils.getLocalIpAddress() ?: "0.0.0.0"
+                val streamEndpoint = StreamEndpoint(host = localIp, port = socket.localPort.takeIf { it > 0 } ?: AudioConfig.DEFAULT_PORT)
+                val publishedStream = PublishedStream(
+                    id = streamId,
+                    name = streamName,
+                    endpoint = streamEndpoint,
+                    audioFormat = activeAudioFormat,
+                    codec = baseCodec,
+                    transportProfile = activeTransportProfile,
+                    isLive = true
+                )
+                currentPublishedStream = publishedStream
+                DiscoveryManager.publishStream(publishedStream)
+                var lastStreamAnnounceTime = 0L
+
                 var sequence = 0
                 var streamTimelineFrames = 0L
                 var totalPackets = 0L
@@ -850,7 +869,9 @@ class AudioCaptureService : Service() {
                         activeReceiversCount = initialEndpointCount,
                         sourceCapabilityDesc = sourceCapDesc,
                         receiverCapabilityDesc = rxCapDesc,
-                        negotiatedFormatDesc = initialNegotiatedFormat
+                        negotiatedFormatDesc = initialNegotiatedFormat,
+                        publishedStreamId = streamId.value,
+                        publishedStreamName = streamName
                     )
                 }
 
@@ -1178,8 +1199,15 @@ class AudioCaptureService : Service() {
                                     activeReceiversCount = receiverCount,
                                     sourceCapabilityDesc = sourceCapDesc,
                                     receiverCapabilityDesc = currentRxCapDesc,
-                                    negotiatedFormatDesc = periodicNegotiatedFormat
+                                    negotiatedFormatDesc = periodicNegotiatedFormat,
+                                    publishedStreamId = streamId.value,
+                                    publishedStreamName = streamName
                                 )
+                            }
+
+                            if (now - lastStreamAnnounceTime >= 3000L) {
+                                lastStreamAnnounceTime = now
+                                DiscoveryManager.sendStreamAnnouncement(socket, publishedStream)
                             }
 
                             if (now - lastLatencyLogTime >= 1000L) {
@@ -1311,6 +1339,8 @@ class AudioCaptureService : Service() {
             previousPhoneVolume = null
             clientRegistry.clear()
             clientCapabilities.clear()
+            currentPublishedStream?.let { DiscoveryManager.unpublishStream(it.id) }
+            currentPublishedStream = null
 
             StreamState.update {
                 it.copy(
@@ -1320,7 +1350,9 @@ class AudioCaptureService : Service() {
                     packetsPerSec = 0,
                     bytesPerSec = 0,
                     statusDetail = "Stopped",
-                    activeReceiversCount = 1
+                    activeReceiversCount = 1,
+                    publishedStreamId = null,
+                    publishedStreamName = null
                 )
             }
 

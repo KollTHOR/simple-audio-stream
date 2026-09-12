@@ -462,3 +462,137 @@ object StreamNegotiator {
         )
     }
 }
+
+/**
+ * Stable, typed identifier for a published HAT stream.
+ * Decoupled from transport endpoint and format.
+ */
+data class StreamId(val value: String) {
+    override fun toString(): String = value
+
+    companion object {
+        fun generate(prefix: String = "hat"): StreamId {
+            val rand = java.util.UUID.randomUUID().toString().substring(0, 8)
+            val cleanPrefix = prefix.replace(Regex("[^a-zA-Z0-9_-]"), "").lowercase().take(12)
+            val id = if (cleanPrefix.isNotEmpty()) "$cleanPrefix-$rand" else "stream-$rand"
+            return StreamId(id)
+        }
+    }
+}
+
+/**
+ * Network endpoint where a stream is published / transmitted.
+ * Decoupled from stream identity and codec.
+ */
+data class StreamEndpoint(
+    val host: String,
+    val port: Int = AudioConfig.DEFAULT_PORT
+) {
+    override fun toString(): String = "$host:$port"
+}
+
+/**
+ * Advertisement representation of a published stream.
+ * Explicitly separates:
+ * 1. Stream identity (id)
+ * 2. Network endpoint (endpoint)
+ * 3. Audio format (audioFormat)
+ * 4. Codec (codec)
+ * 5. Transport profile (transportProfile)
+ */
+data class PublishedStream(
+    val id: StreamId,
+    val name: String,
+    val endpoint: StreamEndpoint,
+    val audioFormat: AudioFormatConfig,
+    val codec: AudioCodec,
+    val transportProfile: TransportProfile,
+    val isLive: Boolean = true,
+    val publishedAtMs: Long = System.currentTimeMillis()
+) {
+    fun toNegotiatedStreamConfig(): NegotiatedStreamConfig {
+        return NegotiatedStreamConfig(
+            audioFormat = audioFormat,
+            codec = codec,
+            transportProfile = transportProfile
+        )
+    }
+
+    fun toJson(): String {
+        val json = org.json.JSONObject()
+        json.put("id", id.value)
+        json.put("name", name)
+        json.put("host", endpoint.host)
+        json.put("port", endpoint.port)
+        json.put("sampleRate", audioFormat.sampleRate.sampleRateHz)
+        json.put("bitDepth", audioFormat.bitDepth.bits)
+        json.put("channels", audioFormat.channelLayout.channelCount)
+        json.put("codec", codec.name)
+        json.put("profile", transportProfile.latencyTarget.name)
+        json.put("fecEnabled", transportProfile.fec.enabled)
+        json.put("fecBlockSize", transportProfile.fec.blockSize)
+        json.put("isLive", isLive)
+        json.put("publishedAtMs", publishedAtMs)
+        return json.toString()
+    }
+
+    companion object {
+        fun fromJson(jsonStr: String): PublishedStream? {
+            return try {
+                val json = org.json.JSONObject(jsonStr)
+                val idStr = json.getString("id")
+                val name = json.optString("name", "HAT Stream")
+                val host = json.getString("host")
+                val port = json.optInt("port", AudioConfig.DEFAULT_PORT)
+                val rateHz = json.optInt("sampleRate", 48000)
+                val bits = json.optInt("bitDepth", 24)
+                val codecName = json.optString("codec", "PCM")
+                val profileName = json.optString("profile", "RELIABLE")
+                val fecEnabled = json.optBoolean("fecEnabled", true)
+                val fecBlockSize = json.optInt("fecBlockSize", AudioConfig.FEC_BLOCK_SIZE)
+                val isLive = json.optBoolean("isLive", true)
+                val publishedAtMs = json.optLong("publishedAtMs", System.currentTimeMillis())
+
+                val rate = AudioSampleRate.fromHz(rateHz)
+                val bitDepth = AudioBitDepth.fromBits(bits)
+                val codec = AudioCodec.fromName(codecName) ?: AudioCodec.PCM
+                val target = LatencyTarget.fromString(profileName)
+
+                val format = AudioFormatConfig(
+                    sampleRate = rate,
+                    bitDepth = if (codec.isCompressed) AudioBitDepth.BIT_16 else bitDepth,
+                    channelLayout = AudioChannelLayout.STEREO
+                )
+                val profile = TransportProfile.create(
+                    target = target,
+                    fecEnabled = fecEnabled,
+                    isCompressedCodec = codec.isCompressed,
+                    sampleRateHz = rateHz
+                ).copy(
+                    fec = FecPolicy(enabled = fecEnabled, blockSize = fecBlockSize.coerceIn(2, 16))
+                )
+
+                PublishedStream(
+                    id = StreamId(idStr),
+                    name = name,
+                    endpoint = StreamEndpoint(host, port),
+                    audioFormat = format,
+                    codec = codec,
+                    transportProfile = profile,
+                    isLive = isLive,
+                    publishedAtMs = publishedAtMs
+                )
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+}
+
+/**
+ * Discovered published stream with discovery timestamp for freshness tracking.
+ */
+data class DiscoveredStream(
+    val stream: PublishedStream,
+    val lastSeenMs: Long = System.currentTimeMillis()
+)

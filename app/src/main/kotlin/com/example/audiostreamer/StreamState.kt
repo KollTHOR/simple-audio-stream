@@ -27,7 +27,11 @@ data class Telemetry(
     val remoteVolumePercent: Int = 100,
     val sourceCapabilityDesc: String = "24-bit • 48.0 kHz Stereo",
     val receiverCapabilityDesc: String = "Unknown",
-    val negotiatedFormatDesc: String = "48.0 kHz • 24-bit Stereo PCM"
+    val negotiatedFormatDesc: String = "48.0 kHz • 24-bit Stereo PCM",
+    val publishedStreamId: String? = null,
+    val publishedStreamName: String? = null,
+    val tunedStreamId: String? = null,
+    val tunedStreamName: String? = null
 )
 
 object StreamState {
