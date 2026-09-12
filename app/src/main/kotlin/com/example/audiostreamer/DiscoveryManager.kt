@@ -98,26 +98,19 @@ object DiscoveryManager {
                         packet.length = buffer.size
                         socket.receive(packet)
 
-                        if (packet.length >= AudioConfig.HEADER_SIZE) {
-                            val data = packet.data
-                            val magic = ((data[0].toInt() and 0xFF) shl 8) or (data[1].toInt() and 0xFF)
-                            val flags = data[5]
-
-                            if (magic == AudioConfig.MAGIC_HEADER.toInt() &&
-                                (flags.toInt() and AudioConfig.FLAG_DISCOVERY_ANNOUNCE.toInt()) != 0
-                            ) {
-                                val rxCaps = data[4].toInt() and 0xFF
-                                if (rxCaps != 0) {
-                                    lastDiscoveredReceiverCapabilities = rxCaps
-                                }
-                                val isP2pFlag = (flags.toInt() and AudioConfig.FLAG_DISCOVERY_P2P_ACTIVE.toInt()) != 0
-                                val payloadLen = ((data[6].toInt() and 0xFF) shl 8) or (data[7].toInt() and 0xFF)
-                                val nameBytesLen = minOf(payloadLen, packet.length - AudioConfig.HEADER_SIZE)
-                                val rawPayload = if (nameBytesLen > 0) {
-                                    String(data, AudioConfig.HEADER_SIZE, nameBytesLen, Charsets.UTF_8).trim()
-                                } else {
-                                    "Audio Receiver"
-                                }
+                        val data = packet.data
+                        val header = HatPacket.parseHeader(data, 0, packet.length)
+                        if (header != null && header.packetType == HatPacket.TYPE_DISCOVERY_ANNOUNCE) {
+                            val rxCaps = header.volumeOrCaps.toInt() and 0xFF
+                            if (rxCaps != 0) {
+                                lastDiscoveredReceiverCapabilities = rxCaps
+                            }
+                            val isP2pFlag = (header.flags.toInt() and HatPacket.FLAG_P2P_ACTIVE.toInt()) != 0
+                            val rawPayload = if (header.payloadLength > 0) {
+                                String(data, HatPacket.HEADER_SIZE, header.payloadLength, Charsets.UTF_8).trim()
+                            } else {
+                                "Audio Receiver"
+                            }
 
                                 var devName = rawPayload
                                 var isP2pActive = isP2pFlag
@@ -158,7 +151,6 @@ object DiscoveryManager {
                                     )
                                 }
                             }
-                        }
                     } catch (ignored: Exception) {
                         // SocketTimeoutException expected
                     }
@@ -243,24 +235,18 @@ object DiscoveryManager {
                         packet.length = buffer.size
                         socket.receive(packet)
 
-                        if (packet.length >= AudioConfig.HEADER_SIZE) {
-                            val data = packet.data
-                            val magic = ((data[0].toInt() and 0xFF) shl 8) or (data[1].toInt() and 0xFF)
-                            val flags = data[5]
-
-                            if (magic == AudioConfig.MAGIC_HEADER.toInt() &&
-                                (flags.toInt() and AudioConfig.FLAG_DISCOVERY_PROBE.toInt()) != 0
-                            ) {
-                                // Reply with announce directly to probing transmitter
-                                val announceBuf = buildAnnouncePacket()
-                                val replyPacket1 = DatagramPacket(announceBuf, announceBuf.size, packet.address, AudioConfig.DISCOVERY_PORT)
-                                socket.send(replyPacket1)
-                                if (packet.port != AudioConfig.DISCOVERY_PORT) {
-                                    val replyPacket2 = DatagramPacket(announceBuf, announceBuf.size, packet.address, packet.port)
-                                    try { socket.send(replyPacket2) } catch (ignored: Exception) {}
-                                }
-                                Log.d(TAG, "Sent discovery announce reply to ${packet.address}")
+                        val data = packet.data
+                        val header = HatPacket.parseHeader(data, 0, packet.length)
+                        if (header != null && header.packetType == HatPacket.TYPE_DISCOVERY_PROBE) {
+                            // Reply with announce directly to probing transmitter
+                            val announceBuf = buildAnnouncePacket()
+                            val replyPacket1 = DatagramPacket(announceBuf, announceBuf.size, packet.address, AudioConfig.DISCOVERY_PORT)
+                            socket.send(replyPacket1)
+                            if (packet.port != AudioConfig.DISCOVERY_PORT) {
+                                val replyPacket2 = DatagramPacket(announceBuf, announceBuf.size, packet.address, packet.port)
+                                try { socket.send(replyPacket2) } catch (ignored: Exception) {}
                             }
+                            Log.d(TAG, "Sent discovery announce reply to ${packet.address}")
                         }
                     } catch (ignored: Exception) {
                         // SocketTimeoutException expected
@@ -317,19 +303,18 @@ object DiscoveryManager {
 
         val payloadString = json.toString()
         val nameBytes = payloadString.toByteArray(Charsets.UTF_8).take(220).toByteArray()
-        val announceBuf = ByteArray(AudioConfig.HEADER_SIZE + nameBytes.size)
-        announceBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
-        announceBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
-        announceBuf[4] = AudioCapabilities.getLocalPlaybackCapabilitiesMask().toByte()
-        val flagByte = if (isP2p) {
-            (AudioConfig.FLAG_DISCOVERY_ANNOUNCE.toInt() or AudioConfig.FLAG_DISCOVERY_P2P_ACTIVE.toInt()).toByte()
-        } else {
-            AudioConfig.FLAG_DISCOVERY_ANNOUNCE
-        }
-        announceBuf[5] = flagByte
-        announceBuf[6] = (nameBytes.size shr 8).toByte()
-        announceBuf[7] = (nameBytes.size and 0xFF).toByte()
-        System.arraycopy(nameBytes, 0, announceBuf, AudioConfig.HEADER_SIZE, nameBytes.size)
+        val announceBuf = ByteArray(HatPacket.HEADER_SIZE + nameBytes.size)
+        HatPacket.writeHeader(
+            buffer = announceBuf,
+            offset = 0,
+            header = HatPacket.Header(
+                packetType = HatPacket.TYPE_DISCOVERY_ANNOUNCE,
+                volumeOrCaps = AudioCapabilities.getLocalPlaybackCapabilitiesMask().toByte(),
+                flags = if (isP2p) HatPacket.FLAG_P2P_ACTIVE else HatPacket.FLAG_NONE,
+                payloadLength = nameBytes.size
+            )
+        )
+        System.arraycopy(nameBytes, 0, announceBuf, HatPacket.HEADER_SIZE, nameBytes.size)
         return announceBuf
     }
 
@@ -362,15 +347,15 @@ object DiscoveryManager {
         targets.addAll(NetworkUtils.getArpClientIps())
         targets.add("255.255.255.255")
 
-        val buffer = ByteArray(AudioConfig.HEADER_SIZE)
-        buffer[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
-        buffer[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
-        buffer[2] = 0
-        buffer[3] = 0
-        buffer[4] = 0
-        buffer[5] = AudioConfig.FLAG_DISCOVERY_PROBE
-        buffer[6] = 0
-        buffer[7] = 0
+        val buffer = ByteArray(HatPacket.HEADER_SIZE)
+        HatPacket.writeHeader(
+            buffer = buffer,
+            offset = 0,
+            header = HatPacket.Header(
+                packetType = HatPacket.TYPE_DISCOVERY_PROBE,
+                payloadLength = 0
+            )
+        )
 
         // 1. Send through main discovery socket
         for (targetIp in targets) {

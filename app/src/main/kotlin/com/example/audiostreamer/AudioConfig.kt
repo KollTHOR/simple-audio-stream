@@ -64,9 +64,9 @@ object AudioConfig {
     const val FLAG_BYTE4_LOSSLESS: Int = 0x80
     const val BYTE4_VOLUME_MASK: Int = 0x7F
 
-    // Packet Header
-    const val HEADER_SIZE = 8
-    const val MAGIC_HEADER: Short = 0x5341 // "SA" (Simple Audio)
+    // HAT Packet Header
+    const val HEADER_SIZE = HatPacket.HEADER_SIZE
+    const val MAGIC_HEADER: Short = HatPacket.MAGIC // "HT" (HAT Transport)
 
     // Packet Header Flag Byte 5:
     // Bits 0-2: Sample Rate Signaling (44.1, 48, 88.2, 96, 176.4, 192 kHz)

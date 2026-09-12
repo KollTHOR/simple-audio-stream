@@ -26,7 +26,11 @@ class FecEncoder(val blockSize: Int = AudioConfig.FEC_BLOCK_SIZE) {
         payload: ByteArray,
         offset: Int,
         len: Int,
-        flags: Byte
+        codec: Byte = HatPacket.CODEC_RAW_PCM,
+        profile: Byte = HatPacket.PROFILE_MUSIC,
+        sampleRateCode: Byte = HatPacket.RATE_48000,
+        bitDepth: Byte = HatPacket.BIT_DEPTH_24,
+        volume: Int = 100
     ): ByteArray? {
         if (len <= 0 || len > AudioConfig.MAX_PACKET_SIZE) {
             return null
@@ -50,19 +54,26 @@ class FecEncoder(val blockSize: Int = AudioConfig.FEC_BLOCK_SIZE) {
         blockCount++
 
         if (blockCount == blockSize) {
-            // Header: Magic(2) + BaseSeq(2) + BlockSize(1) + Flags(1) + PayloadLen(2)
-            parityPacket[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
-            parityPacket[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
-            parityPacket[2] = (baseSeq shr 8).toByte()
-            parityPacket[3] = (baseSeq and 0xFF).toByte()
-            parityPacket[4] = blockSize.toByte()
-            parityPacket[5] = (flags.toInt() or AudioConfig.FLAG_FEC_PARITY.toInt()).toByte()
-            parityPacket[6] = (maxPayloadLen shr 8).toByte()
-            parityPacket[7] = (maxPayloadLen and 0xFF).toByte()
+            HatPacket.writeHeader(
+                buffer = parityPacket,
+                offset = 0,
+                header = HatPacket.Header(
+                    packetType = HatPacket.TYPE_FEC_PARITY,
+                    sequenceNumber = baseSeq,
+                    codec = codec,
+                    profile = profile,
+                    sampleRateCode = sampleRateCode,
+                    bitDepth = bitDepth,
+                    channels = HatPacket.CHANNELS_STEREO,
+                    volumeOrCaps = volume.coerceIn(0, 100).toByte(),
+                    fecBlockSize = blockSize.toByte(),
+                    payloadLength = maxPayloadLen
+                )
+            )
 
-            System.arraycopy(parityPayload, 0, parityPacket, AudioConfig.HEADER_SIZE, maxPayloadLen)
+            System.arraycopy(parityPayload, 0, parityPacket, HatPacket.HEADER_SIZE, maxPayloadLen)
 
-            val totalLen = AudioConfig.HEADER_SIZE + maxPayloadLen
+            val totalLen = HatPacket.HEADER_SIZE + maxPayloadLen
             val result = ByteArray(totalLen)
             System.arraycopy(parityPacket, 0, result, 0, totalLen)
 

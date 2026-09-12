@@ -300,224 +300,216 @@ class AudioSinkService : Service() {
                         socket.receive(packet)
 
                         val length = packet.length
-                        if (length >= AudioConfig.HEADER_SIZE) {
+                        if (length >= HatPacket.HEADER_SIZE) {
                             val data = packet.data
                             val offset = packet.offset
 
-                            // Verify magic header "SA"
-                            val magic = ((data[offset].toInt() and 0xFF) shl 8) or (data[offset + 1].toInt() and 0xFF)
-                            if (magic == AudioConfig.MAGIC_HEADER.toInt()) {
-                                val flags = data[offset + 5]
-                                val seq = ((data[offset + 2].toInt() and 0xFF) shl 8) or (data[offset + 3].toInt() and 0xFF)
-                                val rawByte4 = data[offset + 4].toInt() and 0xFF
-                                val isLossless = (rawByte4 and AudioConfig.FLAG_BYTE4_LOSSLESS) != 0
-                                val volume = rawByte4 and AudioConfig.BYTE4_VOLUME_MASK
-                                val payloadLen = ((data[offset + 6].toInt() and 0xFF) shl 8) or (data[offset + 7].toInt() and 0xFF)
+                            val header = HatPacket.parseHeader(data, offset, length) ?: continue
 
-                                // Check for XOR FEC Parity packet
-                                val isFecParity = (flags.toInt() and AudioConfig.FLAG_FEC_PARITY.toInt()) != 0
-                                if (isFecParity) {
-                                    val baseSeq = seq
-                                    val blockSize = if (volume in 2..16) volume else AudioConfig.FEC_BLOCK_SIZE
-                                    val parityLen = payloadLen
-                                    if (parityLen > 0 && length >= AudioConfig.HEADER_SIZE + parityLen) {
-                                        val recovered = fecDecoder.decode(
-                                            baseSeq = baseSeq,
-                                            blockSize = blockSize,
-                                            parityPayload = data,
-                                            parityOffset = offset + AudioConfig.HEADER_SIZE,
-                                            parityLen = parityLen
-                                        )
-                                        if (recovered) {
-                                            fecRecoveredTotal++
-                                        }
+                            // Check for XOR FEC Parity packet
+                            if (header.packetType == HatPacket.TYPE_FEC_PARITY) {
+                                val baseSeq = header.sequenceNumber
+                                val blockSize = header.fecBlockSize.toInt() and 0xFF
+                                val parityLen = header.payloadLength
+                                if (parityLen > 0 && length >= HatPacket.HEADER_SIZE + parityLen) {
+                                    val recovered = fecDecoder.decode(
+                                        baseSeq = baseSeq,
+                                        blockSize = blockSize,
+                                        parityPayload = data,
+                                        parityOffset = offset + HatPacket.HEADER_SIZE,
+                                        parityLen = parityLen
+                                    )
+                                    if (recovered) {
+                                        fecRecoveredTotal++
                                     }
-                                    totalPackets++
-                                    totalBytes += length
-                                    intervalPackets++
-                                    intervalBytes += length
-                                    continue
+                                }
+                                totalPackets++
+                                totalBytes += length
+                                intervalPackets++
+                                intervalBytes += length
+                                continue
+                            }
+
+                            lastSenderAddress = packet.address
+                            lastSenderPort = packet.port
+
+                            val isSilence = header.packetType == HatPacket.TYPE_SILENCE_HEARTBEAT
+                            if (isSilence) {
+                                jitterBuffer.onSilenceHeartbeat()
+                                lastSilencePacketTime = SystemClock.elapsedRealtime()
+                            } else if (header.payloadLength > 0) {
+                                lastSilencePacketTime = 0L
+                            }
+
+                            val isAudio = header.packetType == HatPacket.TYPE_AUDIO
+                            val isIncomingOpus = isAudio && (header.codec == HatPacket.CODEC_OPUS)
+                            val isIncomingAac = isAudio && (header.codec == HatPacket.CODEC_AAC)
+                            val isLossless = isAudio && (header.codec == HatPacket.CODEC_LOSSLESS_PCM)
+                            currentIsAac = isIncomingAac
+                            currentIsOpus = isIncomingOpus
+
+                            val targetSampleRate = if (isIncomingOpus) {
+                                AudioConfig.SAMPLE_RATE_48000
+                            } else {
+                                header.sampleRateHz
+                            }
+
+                            if (isIncomingOpus) {
+                                if (opusDecoder == null || opusDecoderSampleRate != targetSampleRate) {
+                                    try { opusDecoder?.release() } catch (ignored: Exception) {}
+                                    opusDecoder = OpusDecoder(targetSampleRate)
+                                    opusDecoderSampleRate = targetSampleRate
+                                }
+                            } else if (isIncomingAac) {
+                                if (aacDecoder == null || aacDecoderSampleRate != targetSampleRate) {
+                                    try { aacDecoder?.release() } catch (ignored: Exception) {}
+                                    aacDecoder = AacDecoder(targetSampleRate)
+                                    aacDecoderSampleRate = targetSampleRate
+                                }
+                            }
+
+                            // Only adapt profile and reconfigure AudioTrack on audio packets (never on control-only packets)
+                            if (isAudio) {
+                                val isServer24Bit = header.bitDepth.toInt() == 24
+                                currentIsServer24Bit = isServer24Bit
+                                val serverProfile = HatPacket.profileCodeToString(header.profile)
+                                jitterBuffer.set24Bit(isServer24Bit)
+                                jitterBuffer.setSampleRate(targetSampleRate)
+                                val currentCodec = when {
+                                    isIncomingOpus -> "OPUS"
+                                    isIncomingAac -> "AAC"
+                                    isLossless -> "LOSSLESS"
+                                    else -> "PCM"
+                                }
+                                val isCompressed = isIncomingOpus || isIncomingAac
+                                if (serverProfile != currentProfile || currentCodec != lastConfiguredCodec) {
+                                    currentProfile = serverProfile
+                                    lastConfiguredCodec = currentCodec
+                                    jitterBuffer.setProfile(serverProfile, isCompressed)
+                                    audioTrack?.let { applyBufferSizeForProfile(it, serverProfile, currentSampleRate) }
+                                    currentTrackProfile = serverProfile
+                                    Log.i(TAG, "Adapted client buffer to server profile: $serverProfile, codec=$currentCodec")
                                 }
 
-                                lastSenderAddress = packet.address
-                                lastSenderPort = packet.port
-
-                                val isSilence = (flags.toInt() and AudioConfig.FLAG_SILENCE.toInt()) != 0
-                                if (isSilence) {
-                                    jitterBuffer.onSilenceHeartbeat()
-                                    lastSilencePacketTime = SystemClock.elapsedRealtime()
-                                } else if (payloadLen > 0) {
-                                    lastSilencePacketTime = 0L
-                                }
-
-                                val isDisconnect = payloadLen == 0 && ((flags.toInt() and AudioConfig.FLAG_DISCONNECT.toInt()) != 0)
-                                val isControlOnly = payloadLen == 0 && ((flags.toInt() and AudioConfig.FLAG_CONTROL_ONLY.toInt()) != 0)
-                                val isServerLowLatency = (flags.toInt() and AudioConfig.FLAG_PROFILE_LOW_LATENCY.toInt()) != 0
-                                val isIncomingAac = isServerLowLatency && ((flags.toInt() and AudioConfig.FLAG_CODEC_AAC.toInt()) != 0)
-                                val isIncomingOpus = isServerLowLatency && !isIncomingAac
-                                currentIsAac = isIncomingAac
-                                currentIsOpus = isIncomingOpus
-
-                                val targetSampleRate = if (isIncomingOpus) {
-                                    AudioConfig.SAMPLE_RATE_48000
+                                val targetEncoding = if (isServer24Bit && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                    AudioFormat.ENCODING_PCM_24BIT_PACKED
                                 } else {
-                                    AudioConfig.flagBitsToSampleRate(flags)
+                                    AudioConfig.ENCODING
                                 }
-
-                                if (isIncomingOpus) {
-                                    if (opusDecoder == null || opusDecoderSampleRate != targetSampleRate) {
-                                        try { opusDecoder?.release() } catch (ignored: Exception) {}
-                                        opusDecoder = OpusDecoder(targetSampleRate)
-                                        opusDecoderSampleRate = targetSampleRate
-                                    }
-                                } else if (isIncomingAac) {
-                                    if (aacDecoder == null || aacDecoderSampleRate != targetSampleRate) {
-                                        try { aacDecoder?.release() } catch (ignored: Exception) {}
-                                        aacDecoder = AacDecoder(targetSampleRate)
-                                        aacDecoderSampleRate = targetSampleRate
-                                    }
+                                val targetPerfMode = AudioTrack.PERFORMANCE_MODE_NONE
+                                // Fast-path: skip @Synchronized call if nothing has changed
+                                if (targetSampleRate != currentSampleRate || targetEncoding != currentEncoding || targetPerfMode != currentPerformanceMode || serverProfile != currentTrackProfile) {
+                                    configureAudioTrack(targetSampleRate, targetEncoding, serverProfile, currentRemoteVolume)
                                 }
+                            }
 
-                                // Only adapt profile and reconfigure AudioTrack on audio packets (never on control-only packets)
-                                if (!isControlOnly && !isDisconnect && !isSilence) {
-                                    val isServer24Bit = !isIncomingAac && !isIncomingOpus && ((flags.toInt() and AudioConfig.FLAG_24BIT.toInt()) != 0)
-                                    currentIsServer24Bit = isServer24Bit
-                                    val serverProfile = AudioConfig.getProfileFromFlags(flags)
-                                    jitterBuffer.set24Bit(isServer24Bit)
-                                    jitterBuffer.setSampleRate(targetSampleRate)
-                                    val currentCodec = when {
-                                        isIncomingOpus -> "OPUS"
-                                        isIncomingAac -> "AAC"
-                                        else -> "PCM"
-                                    }
-                                    val isCompressed = isIncomingOpus || isIncomingAac
-                                    if (serverProfile != currentProfile || currentCodec != lastConfiguredCodec) {
-                                        currentProfile = serverProfile
-                                        lastConfiguredCodec = currentCodec
-                                        jitterBuffer.setProfile(serverProfile, isCompressed)
-                                        audioTrack?.let { applyBufferSizeForProfile(it, serverProfile, currentSampleRate) }
-                                        currentTrackProfile = serverProfile
-                                        Log.i(TAG, "Adapted client buffer to server profile: $serverProfile, codec=$currentCodec")
-                                    }
+                            val activeTrack = audioTrack ?: configureAudioTrack(
+                                currentSampleRate,
+                                currentEncoding,
+                                currentProfile,
+                                currentRemoteVolume
+                            )
 
-                                    val targetEncoding = if (isServer24Bit && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                        AudioFormat.ENCODING_PCM_24BIT_PACKED
-                                    } else {
-                                        AudioConfig.ENCODING
-                                    }
-                                    val targetPerfMode = AudioTrack.PERFORMANCE_MODE_NONE
-                                    // Fast-path: skip @Synchronized call if nothing has changed
-                                    if (targetSampleRate != currentSampleRate || targetEncoding != currentEncoding || targetPerfMode != currentPerformanceMode || serverProfile != currentTrackProfile) {
-                                        configureAudioTrack(targetSampleRate, targetEncoding, serverProfile, currentRemoteVolume)
-                                    }
-                                }
+                            // Apply remote volume control if changed -- 0ms software scaling, zero IPC, zero cutouts!
+                            val volume = (header.volumeOrCaps.toInt() and 0xFF).coerceIn(0, 100)
+                            if (volume != currentRemoteVolume) {
+                                currentRemoteVolume = volume
+                                lastSentLocalVolume = volume
+                                val floatVol = (volume / 100.0f).coerceIn(0.0f, 1.0f)
+                                activeTrack.setVolume(floatVol)
 
-                                val activeTrack = audioTrack ?: configureAudioTrack(
-                                    currentSampleRate,
-                                    currentEncoding,
-                                    currentProfile,
-                                    currentRemoteVolume
-                                )
-
-                                // Apply remote volume control if changed — 0ms software scaling, zero IPC, zero cutouts!
-                                if (volume != currentRemoteVolume) {
-                                    currentRemoteVolume = volume
-                                    lastSentLocalVolume = volume
-                                    val floatVol = (volume / 100.0f).coerceIn(0.0f, 1.0f)
-                                    activeTrack.setVolume(floatVol)
-
-                                    if (syncDeviceVolume) {
-                                        try {
-                                            val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                                            val minVol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                                                audioManager.getStreamMinVolume(AudioManager.STREAM_MUSIC)
-                                            } else 0
-                                            val targetStep = minVol + ((maxVol - minVol) * (volume / 100.0f)).roundToInt().coerceIn(minVol, maxVol)
-                                            if (audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) != targetStep) {
-                                                ignoreLocalVolumeUntil = SystemClock.elapsedRealtime() + 500L
-                                                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetStep, 0)
-                                            }
-                                        } catch (e: Exception) {
-                                            Log.w(TAG, "Failed syncing receiver hardware volume: ${e.message}")
+                                if (syncDeviceVolume) {
+                                    try {
+                                        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                                        val minVol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                            audioManager.getStreamMinVolume(AudioManager.STREAM_MUSIC)
+                                        } else 0
+                                        val targetStep = minVol + ((maxVol - minVol) * (volume / 100.0f)).roundToInt().coerceIn(minVol, maxVol)
+                                        if (audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) != targetStep) {
+                                            ignoreLocalVolumeUntil = SystemClock.elapsedRealtime() + 500L
+                                            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetStep, 0)
                                         }
+                                    } catch (e: Exception) {
+                                        Log.w(TAG, "Failed syncing receiver hardware volume: ${e.message}")
                                     }
-                                    Log.d(TAG, "Applied remote volume: $volume%")
                                 }
+                                Log.d(TAG, "Applied remote volume: $volume%")
+                            }
 
-                                // Cache sender host string — avoid repeated DNS reverse-lookups
-                                val senderAddr = packet.address
-                                if (senderAddr != null && senderAddr !== lastSenderAddress) {
-                                    lastSenderAddress = senderAddr
-                                    lastSenderHost = senderAddr.hostAddress ?: "Transmitter"
-                                }
+                            // Cache sender host string -- avoid repeated DNS reverse-lookups
+                            val senderAddr = packet.address
+                            if (senderAddr != null && senderAddr !== lastSenderAddress) {
+                                lastSenderAddress = senderAddr
+                                lastSenderHost = senderAddr.hostAddress ?: "Transmitter"
+                            }
 
-                                // Route PCM, Opus, or AAC audio to JitterBuffer
-                                val isPcmPayload = !isIncomingOpus && !isIncomingAac && payloadLen > 0 && payloadLen <= AudioConfig.MAX_PACKET_SIZE
-                                val isCompressedPayload = (isIncomingOpus || isIncomingAac) && payloadLen > 0
-                                if ((isPcmPayload || isCompressedPayload) && !isDisconnect && !isControlOnly) {
-                                    val pcmOffset = offset + AudioConfig.HEADER_SIZE
-                                    val effectivePayloadLen: Int
-                                    val writeData: ByteArray
-                                    val writeOffset: Int
+                            // Route PCM, Opus, or AAC audio to JitterBuffer
+                            val payloadLen = header.payloadLength
+                            val isPcmPayload = isAudio && !isIncomingOpus && !isIncomingAac && payloadLen > 0 && payloadLen <= AudioConfig.MAX_PACKET_SIZE
+                            val isCompressedPayload = isAudio && (isIncomingOpus || isIncomingAac) && payloadLen > 0
+                            if (isPcmPayload || isCompressedPayload) {
+                                val pcmOffset = offset + HatPacket.HEADER_SIZE
+                                val effectivePayloadLen: Int
+                                val writeData: ByteArray
+                                val writeOffset: Int
 
-                                    if (isLossless && !isCompressedPayload) {
-                                        val is24 = currentIsServer24Bit
-                                        val decompLen = losslessDecoder.decode(
-                                            comp = data,
-                                            offset = pcmOffset,
-                                            length = payloadLen,
-                                            is24Bit = is24,
-                                            out = decompressedPcmBuf,
-                                            outOffset = 0
-                                        )
-                                        if (decompLen > 0) {
-                                            writeData = decompressedPcmBuf
-                                            writeOffset = 0
-                                            effectivePayloadLen = decompLen
-                                        } else {
-                                            writeData = data
-                                            writeOffset = pcmOffset
-                                            effectivePayloadLen = payloadLen
-                                        }
+                                if (isLossless && !isCompressedPayload) {
+                                    val is24 = currentIsServer24Bit
+                                    val decompLen = losslessDecoder.decode(
+                                        comp = data,
+                                        offset = pcmOffset,
+                                        length = payloadLen,
+                                        is24Bit = is24,
+                                        out = decompressedPcmBuf,
+                                        outOffset = 0
+                                    )
+                                    if (decompLen > 0) {
+                                        writeData = decompressedPcmBuf
+                                        writeOffset = 0
+                                        effectivePayloadLen = decompLen
                                     } else {
                                         writeData = data
                                         writeOffset = pcmOffset
                                         effectivePayloadLen = payloadLen
                                     }
+                                } else {
+                                    writeData = data
+                                    writeOffset = pcmOffset
+                                    effectivePayloadLen = payloadLen
+                                }
 
-                                    jitterBuffer.write(seq, writeData, writeOffset, effectivePayloadLen)
+                                jitterBuffer.write(header.sequenceNumber, writeData, writeOffset, effectivePayloadLen)
 
-                                    // Compute audio peak level (for PCM payloads)
-                                    if (!isCompressedPayload) {
-                                        var i = writeOffset
-                                        val end = writeOffset + effectivePayloadLen
-                                        val isEffective24 = ((flags.toInt() and AudioConfig.FLAG_24BIT.toInt()) != 0)
-                                        if (isEffective24) {
-                                            while (i < end - 2) {
-                                                val raw = (writeData[i].toInt() and 0xFF) or
-                                                    ((writeData[i + 1].toInt() and 0xFF) shl 8) or
-                                                    ((writeData[i + 2].toInt() and 0xFF) shl 16)
-                                                val sample = if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw
-                                                val abs = kotlin.math.abs(sample)
-                                                if (abs > maxSampleInInterval) maxSampleInInterval = abs
-                                                i += 24
-                                            }
-                                        } else {
-                                            while (i < end - 1) {
-                                                val sample = (writeData[i].toInt() and 0xFF) or (writeData[i + 1].toInt() shl 8)
-                                                val abs = kotlin.math.abs(sample.toShort().toInt())
-                                                if (abs > maxSampleInInterval) maxSampleInInterval = abs
-                                                i += 16
-                                            }
+                                // Compute audio peak level (for PCM payloads)
+                                if (!isCompressedPayload) {
+                                    var i = writeOffset
+                                    val end = writeOffset + effectivePayloadLen
+                                    val isEffective24 = currentIsServer24Bit
+                                    if (isEffective24) {
+                                        while (i < end - 2) {
+                                            val raw = (writeData[i].toInt() and 0xFF) or
+                                                ((writeData[i + 1].toInt() and 0xFF) shl 8) or
+                                                ((writeData[i + 2].toInt() and 0xFF) shl 16)
+                                            val sample = if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw
+                                            val abs = kotlin.math.abs(sample)
+                                            if (abs > maxSampleInInterval) maxSampleInInterval = abs
+                                            i += 24
+                                        }
+                                    } else {
+                                        while (i < end - 1) {
+                                            val sample = (writeData[i].toInt() and 0xFF) or (writeData[i + 1].toInt() shl 8)
+                                            val abs = kotlin.math.abs(sample.toShort().toInt())
+                                            if (abs > maxSampleInInterval) maxSampleInInterval = abs
+                                            i += 16
                                         }
                                     }
                                 }
-
-                                totalPackets++
-                                totalBytes += length
-                                intervalPackets++
-                                intervalBytes += length
                             }
+
+                            totalPackets++
+                            totalBytes += length
+                            intervalPackets++
+                            intervalBytes += length
                         }
 
                         val now = SystemClock.elapsedRealtime()
@@ -832,11 +824,16 @@ class AudioSinkService : Service() {
 
             // 3. Receiver Keep-Alive Heartbeat Thread (every 2.5s)
             heartbeatThread = Thread({
-                val heartbeatBuf = ByteArray(AudioConfig.HEADER_SIZE)
-                heartbeatBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
-                heartbeatBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
-                heartbeatBuf[4] = AudioCapabilities.getLocalPlaybackCapabilitiesMask().toByte()
-                heartbeatBuf[5] = AudioConfig.FLAG_CONTROL_ONLY
+                val heartbeatBuf = ByteArray(HatPacket.HEADER_SIZE)
+                HatPacket.writeHeader(
+                    buffer = heartbeatBuf,
+                    offset = 0,
+                    header = HatPacket.Header(
+                        packetType = HatPacket.TYPE_RECEIVER_HEARTBEAT,
+                        volumeOrCaps = AudioCapabilities.getLocalPlaybackCapabilitiesMask().toByte(),
+                        payloadLength = 0
+                    )
+                )
 
                 val packet = DatagramPacket(heartbeatBuf, heartbeatBuf.size)
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
@@ -1006,10 +1003,15 @@ class AudioSinkService : Service() {
         try {
             lastSenderAddress?.let { addr ->
                 val targetPort = lastSenderPort ?: AudioConfig.DEFAULT_PORT
-                val disconnectBuf = ByteArray(AudioConfig.HEADER_SIZE)
-                disconnectBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
-                disconnectBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
-                disconnectBuf[5] = AudioConfig.FLAG_DISCONNECT
+                val disconnectBuf = ByteArray(HatPacket.HEADER_SIZE)
+                HatPacket.writeHeader(
+                    buffer = disconnectBuf,
+                    offset = 0,
+                    header = HatPacket.Header(
+                        packetType = HatPacket.TYPE_DISCONNECT,
+                        payloadLength = 0
+                    )
+                )
                 val packet = DatagramPacket(disconnectBuf, disconnectBuf.size, addr, targetPort)
                 datagramSocket?.send(packet)
                 Log.i(TAG, "Sent disconnect notification to transmitter $addr:$targetPort")
@@ -1162,15 +1164,16 @@ class AudioSinkService : Service() {
         if (sock.isClosed) return
 
         try {
-            val syncBuf = ByteArray(AudioConfig.HEADER_SIZE)
-            syncBuf[0] = (AudioConfig.MAGIC_HEADER.toInt() shr 8).toByte()
-            syncBuf[1] = (AudioConfig.MAGIC_HEADER.toInt() and 0xFF).toByte()
-            syncBuf[2] = 0.toByte()
-            syncBuf[3] = 0.toByte()
-            syncBuf[4] = volume.coerceIn(0, 100).toByte()
-            syncBuf[5] = AudioConfig.FLAG_VOL_SYNC
-            syncBuf[6] = 0.toByte()
-            syncBuf[7] = 0.toByte()
+            val syncBuf = ByteArray(HatPacket.HEADER_SIZE)
+            HatPacket.writeHeader(
+                buffer = syncBuf,
+                offset = 0,
+                header = HatPacket.Header(
+                    packetType = HatPacket.TYPE_REVERSE_VOLUME_SYNC,
+                    volumeOrCaps = volume.coerceIn(0, 100).toByte(),
+                    payloadLength = 0
+                )
+            )
 
             val packet = DatagramPacket(syncBuf, syncBuf.size, addr, port)
             Thread({
