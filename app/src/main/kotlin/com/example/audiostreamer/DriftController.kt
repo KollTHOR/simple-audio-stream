@@ -121,7 +121,7 @@ class DriftController(initialFill: Float = 2.0f) {
 
         var outFrame = 0
         var p = phase
-        val maxOutFrames = (output.size - 6) / frameBytes
+        val maxOutFrames = minOf(output.size, resampleScratch.size) / frameBytes
 
         while (p < inFrames && outFrame < maxOutFrames) {
             val k = p.toInt()

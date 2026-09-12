@@ -349,7 +349,16 @@ class JitterBuffer(
     }
 
     fun putRecoveredPacket(sequence: Int, data: ByteArray, offset: Int, length: Int): Boolean {
-        val inferredTs = getPacketTimestamp(sequence).takeIf { it >= 0L } ?: (sequence.toLong() * calculateFramesForPayload(length))
+        val inferredTs = getPacketTimestamp(sequence).takeIf { it >= 0L } ?: lock.withLock {
+            val expTs = playbackScheduler.expectedReadTimestamp
+            val expSeq = sequenceTracker.expectedReadSeq
+            if (expTs >= 0L && expSeq != -1) {
+                val delta = SequenceTracker.diff(sequence, expSeq)
+                expTs + (delta * calculateFramesForPayload(length))
+            } else {
+                0L
+            }
+        }
         return putRecoveredPacket(sequence, inferredTs, data, offset, length)
     }
 

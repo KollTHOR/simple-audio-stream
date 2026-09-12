@@ -323,7 +323,7 @@ class FecDecoder(private val jitterBuffer: JitterBuffer) {
             val existingBlockPacket = jitterBuffer.findBlockTimestamp(baseSeq, blockSize, missingSeq)
             if (existingBlockPacket != null) {
                 val (existingSeq, existingTs, existingLen) = existingBlockPacket
-                val deltaPackets = (missingSeq - existingSeq)
+                val deltaPackets = SequenceTracker.diff(missingSeq, existingSeq)
                 val frames = jitterBuffer.calculateFramesForPayload(existingLen)
                 existingTs + (deltaPackets * frames)
             } else if (baseTimestamp >= 0L) {

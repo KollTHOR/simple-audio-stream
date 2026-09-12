@@ -289,7 +289,7 @@ object HatPacket {
                 if (codec !in CODEC_RAW_PCM..CODEC_AAC) return null
                 if (profile !in PROFILE_AUTO..PROFILE_LOW_LATENCY) return null
                 if (sampleRateCode !in RATE_44100..RATE_192000) return null
-                if (codec in listOf(CODEC_RAW_PCM, CODEC_LOSSLESS_PCM) &&
+                if ((codec == CODEC_RAW_PCM || codec == CODEC_LOSSLESS_PCM) &&
                     bitDepth != BIT_DEPTH_16 && bitDepth != BIT_DEPTH_24) {
                     return null
                 }

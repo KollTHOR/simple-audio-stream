@@ -85,7 +85,8 @@ class AudioCaptureService : Service() {
 
     private var mediaProjection: MediaProjection? = null
     private var audioRecord: AudioRecord? = null
-    private var udpSocket: DatagramSocket? = null
+    @Volatile private var udpSocket: DatagramSocket? = null
+    private val socketSendLock = Any()
     private var streamThread: Thread? = null
     private var controlListenerThread: Thread? = null
     private var previousPhoneVolume: Int? = null
@@ -93,7 +94,7 @@ class AudioCaptureService : Service() {
     private var currentTargetPort = AudioConfig.DEFAULT_PORT
     private val clientRegistry = ConcurrentHashMap<ClientEndpoint, Long>()
     private val clientCapabilities = ConcurrentHashMap<ClientEndpoint, Int>()
-    private var lastClientPruneTime = 0L
+    @Volatile private var lastClientPruneTime = 0L
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var aacEncoder: AacEncoder? = null
@@ -101,7 +102,7 @@ class AudioCaptureService : Service() {
     private var volumeReceiver: BroadcastReceiver? = null
     private var volumeObserver: ContentObserver? = null
     private var activeCaptureSampleRate = AudioConfig.SAMPLE_RATE_48000
-    private var lastLiveAdaptTime = 0L
+    @Volatile private var lastLiveAdaptTime = 0L
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -223,13 +224,15 @@ class AudioCaptureService : Service() {
             }
         }
 
-        for (client in clientRegistry.keys) {
-            packet.address = client.address
-            packet.port = client.port
-            try {
-                socket.send(packet)
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed sending datagram to $client: ${e.message}")
+        synchronized(socketSendLock) {
+            for (client in clientRegistry.keys) {
+                packet.address = client.address
+                packet.port = client.port
+                try {
+                    socket.send(packet)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed sending datagram to $client: ${e.message}")
+                }
             }
         }
     }
@@ -1233,11 +1236,13 @@ class AudioCaptureService : Service() {
 
         AudioPlaybackDetector.stopMonitoring(this)
 
-        controlListenerThread?.interrupt()
+        val cThread = controlListenerThread
+        val sThread = streamThread
         controlListenerThread = null
-
-        streamThread?.interrupt()
         streamThread = null
+
+        cThread?.interrupt()
+        sThread?.interrupt()
 
         try {
             udpSocket?.close()
@@ -1250,11 +1255,25 @@ class AudioCaptureService : Service() {
                     if (it.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                         it.stop()
                     }
-                    it.release()
                 }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping AudioRecord", e)
+        }
+
+        try {
+            cThread?.join(300)
+            sThread?.join(500)
+        } catch (ignored: InterruptedException) {}
+
+        try {
+            audioRecord?.let {
+                if (it.state == AudioRecord.STATE_INITIALIZED) {
+                    it.release()
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing AudioRecord", e)
         }
         audioRecord = null
 

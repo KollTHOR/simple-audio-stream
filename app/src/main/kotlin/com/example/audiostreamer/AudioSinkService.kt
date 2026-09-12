@@ -55,7 +55,9 @@ class AudioSinkService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var multicastLock: WifiManager.MulticastLock? = null
-    private var audioTrack: AudioTrack? = null
+    @Volatile private var audioTrack: AudioTrack? = null
+    private val trackLock = Any()
+    private val decoderLock = Any()
     private var datagramSocket: DatagramSocket? = null
     private var receiverThread: Thread? = null
     private var playbackThread: Thread? = null
@@ -145,17 +147,6 @@ class AudioSinkService : Service() {
             return existing
         }
 
-        try {
-            existing?.let {
-                if (it.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                    it.stop()
-                }
-                it.release()
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Error releasing previous AudioTrack: ${e.message}")
-        }
-
         val audioAttributes = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_MEDIA)
             .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
@@ -212,11 +203,25 @@ class AudioSinkService : Service() {
         track.setVolume(floatVol)
         track.play()
 
-        audioTrack = track
-        currentSampleRate = sampleRate
-        currentEncoding = encoding
-        currentPerformanceMode = perfMode
-        currentBufferSizeInBytes = bufferSize
+        val oldTrack = existing
+        synchronized(trackLock) {
+            audioTrack = track
+            currentSampleRate = sampleRate
+            currentEncoding = encoding
+            currentPerformanceMode = perfMode
+            currentBufferSizeInBytes = bufferSize
+        }
+
+        try {
+            oldTrack?.let {
+                if (it.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                    it.stop()
+                }
+                it.release()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error releasing previous AudioTrack: ${e.message}")
+        }
 
         Log.i(TAG, "Configured AudioTrack: sampleRate=$sampleRate, encoding=$encoding, perfMode=$perfMode, bufferSize=$bufferSize")
         return track
@@ -373,15 +378,21 @@ class AudioSinkService : Service() {
 
                                 if (isIncomingOpus) {
                                     if (opusDecoder == null || opusDecoderSampleRate != targetSampleRate) {
-                                        try { opusDecoder?.release() } catch (ignored: Exception) {}
-                                        opusDecoder = OpusDecoder(targetSampleRate)
-                                        opusDecoderSampleRate = targetSampleRate
+                                        synchronized(decoderLock) {
+                                            val old = opusDecoder
+                                            opusDecoder = OpusDecoder(targetSampleRate)
+                                            opusDecoderSampleRate = targetSampleRate
+                                            try { old?.release() } catch (ignored: Exception) {}
+                                        }
                                     }
                                 } else if (isIncomingAac) {
                                     if (aacDecoder == null || aacDecoderSampleRate != targetSampleRate) {
-                                        try { aacDecoder?.release() } catch (ignored: Exception) {}
-                                        aacDecoder = AacDecoder(targetSampleRate)
-                                        aacDecoderSampleRate = targetSampleRate
+                                        synchronized(decoderLock) {
+                                            val old = aacDecoder
+                                            aacDecoder = AacDecoder(targetSampleRate)
+                                            aacDecoderSampleRate = targetSampleRate
+                                            try { old?.release() } catch (ignored: Exception) {}
+                                        }
                                     }
                                 }
 
@@ -648,7 +659,9 @@ class AudioSinkService : Service() {
                                      val isSilenceFill = (bytesToPlay < 8) || (chunk[0] == 0.toByte() && chunk[1] == 0.toByte() && chunk[2] == 0.toByte())
                                      if (!isSilenceFill) {
                                          val t0 = SystemClock.elapsedRealtimeNanos()
-                                         val pcmList = opusDecoder?.decode(chunk, 0, bytesToPlay) ?: emptyList()
+                                         val pcmList = synchronized(decoderLock) {
+                                             opusDecoder?.decode(chunk, 0, bytesToPlay)
+                                         } ?: emptyList()
                                          lastDecodeDurationNs = SystemClock.elapsedRealtimeNanos() - t0
                                          for (i in pcmList.indices) {
                                              val pcm = pcmList[i]
@@ -704,7 +717,9 @@ class AudioSinkService : Service() {
                                      val isAdts = (bytesToPlay >= 7 && (chunk[0].toInt() and 0xFF) == 0xFF && (chunk[1].toInt() and 0xF0) == 0xF0)
                                      if (isAdts) {
                                          val t0 = SystemClock.elapsedRealtimeNanos()
-                                         val pcmList = aacDecoder?.decode(chunk, 0, bytesToPlay) ?: emptyList()
+                                         val pcmList = synchronized(decoderLock) {
+                                             aacDecoder?.decode(chunk, 0, bytesToPlay)
+                                         } ?: emptyList()
                                          lastDecodeDurationNs = SystemClock.elapsedRealtimeNanos() - t0
                                          for (i in pcmList.indices) {
                                              val pcm = pcmList[i]
@@ -956,12 +971,18 @@ class AudioSinkService : Service() {
         Log.i(TAG, "Stopping audio sink")
         unregisterLocalVolumeObserver()
 
-        heartbeatThread?.interrupt()
-        receiverThread?.interrupt()
-        playbackThread?.interrupt()
+        val hb = heartbeatThread
+        val rx = receiverThread
+        val pb = playbackThread
         heartbeatThread = null
         receiverThread = null
         playbackThread = null
+
+        hb?.interrupt()
+        rx?.interrupt()
+        pb?.interrupt()
+
+        jitterBuffer.reset()
 
         // Notify transmitter phone that client is disconnecting to pause media playback
         try {
@@ -992,26 +1013,36 @@ class AudioSinkService : Service() {
         datagramSocket = null
 
         try {
-            audioTrack?.let {
-                if (it.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                    it.stop()
+            hb?.join(300)
+            rx?.join(500)
+            pb?.join(500)
+        } catch (ignored: InterruptedException) {}
+
+        synchronized(trackLock) {
+            try {
+                audioTrack?.let {
+                    if (it.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                        it.stop()
+                    }
+                    it.release()
                 }
-                it.release()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error stopping AudioTrack", e)
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping AudioTrack", e)
+            audioTrack = null
         }
-        audioTrack = null
 
-        try {
-            aacDecoder?.release()
-        } catch (ignored: Exception) {}
-        aacDecoder = null
+        synchronized(decoderLock) {
+            try {
+                aacDecoder?.release()
+            } catch (ignored: Exception) {}
+            aacDecoder = null
 
-        try {
-            opusDecoder?.release()
-        } catch (ignored: Exception) {}
-        opusDecoder = null
+            try {
+                opusDecoder?.release()
+            } catch (ignored: Exception) {}
+            opusDecoder = null
+        }
 
         lastConfiguredCodec = null
         currentStreamConfig = null

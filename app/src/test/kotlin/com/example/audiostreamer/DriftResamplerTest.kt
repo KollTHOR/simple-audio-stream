@@ -257,4 +257,25 @@ class DriftResamplerTest {
         }
         assertTrue("Emergency catch-up drop must trigger under extreme sustained backlog", triggered)
     }
+
+    @Test
+    fun testResamplerBufferBoundsSafety() {
+        val controller = DriftController(initialFill = 10.0f)
+        // Set maximum ratio (+1000 ppm) which produces maximum output frames
+        for (i in 0 until 5000) {
+            controller.updateFill(30, 10)
+        }
+        assertTrue("Ratio should saturate near max correction", controller.correctionRatio > 1.0008)
+
+        // Test with tight buffers (buffer size exactly matches input length)
+        for (is24 in listOf(true, false)) {
+            val frameBytes = if (is24) 6 else 4
+            for (frames in listOf(10, 48, 240, 480)) {
+                val input = ByteArray(frames * frameBytes)
+                val outLen = controller.resamplePcmChunk(input, input.size, is24Bit = is24)
+                assertTrue("outLen must never exceed buffer size", outLen <= input.size)
+                assertEquals("outLen must be frame-aligned", 0, outLen % frameBytes)
+            }
+        }
+    }
 }

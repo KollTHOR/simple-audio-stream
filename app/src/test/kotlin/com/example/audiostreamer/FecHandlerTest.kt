@@ -439,4 +439,53 @@ class FecHandlerTest {
         dummy[1] = 8 // says 8, but decoder called with 4
         assertFalse(decoder.decode(0, 0L, 4, dummy, 0, 64))
     }
+
+    @Test
+    fun testSequenceWraparoundRecovery() {
+        val encoder = FecEncoder(blockSize = 4)
+        val jitterBuffer = JitterBuffer(AudioConfig.PROFILE_LOW_LATENCY)
+        jitterBuffer.set24Bit(true)
+        jitterBuffer.setSampleRate(AudioConfig.SAMPLE_RATE_48000)
+        val decoder = FecDecoder(jitterBuffer)
+
+        // Block spanning sequence wraparound: 65534, 65535, 0, 1
+        val baseSeq = 65534
+        val baseTs = 1_000_000L
+        val framesPerPacket = 240
+        val p0 = createPayload(1440, 1L)
+        val p1 = createPayload(1440, 2L)
+        val p2 = createPayload(1440, 3L) // seq 0 (wrapped)
+        val p3 = createPayload(1440, 4L) // seq 1
+
+        encoder.encode(65534, baseTs, p0, 0, p0.size)
+        encoder.encode(65535, baseTs + framesPerPacket, p1, 0, p1.size)
+        encoder.encode(0, baseTs + 2 * framesPerPacket, p2, 0, p2.size)
+        val parity = encoder.encode(1, baseTs + 3 * framesPerPacket, p3, 0, p3.size)!!
+
+        // Drop seq 0 (packet 2 in block)
+        jitterBuffer.write(65534, baseTs, p0, 0, p0.size)
+        jitterBuffer.write(65535, baseTs + framesPerPacket, p1, 0, p1.size)
+        jitterBuffer.write(1, baseTs + 3 * framesPerPacket, p3, 0, p3.size)
+
+        assertFalse(jitterBuffer.hasPacket(0))
+
+        val parityLen = parity.size - HatPacket.HEADER_SIZE
+        val recovered = decoder.decode(
+            baseSeq = baseSeq,
+            baseTimestamp = baseTs,
+            blockSize = 4,
+            parityPayload = parity,
+            parityOffset = HatPacket.HEADER_SIZE,
+            parityLen = parityLen
+        )
+
+        assertTrue("Recovery across sequence wraparound must succeed", recovered)
+        assertTrue("Sequence 0 must be present in jitter buffer", jitterBuffer.hasPacket(0))
+        assertEquals(p2.size, jitterBuffer.getPacketLength(0))
+        assertEquals(baseTs + 2 * framesPerPacket, jitterBuffer.getPacketTimestamp(0))
+
+        val dest = ByteArray(p2.size)
+        jitterBuffer.copyPacketData(0, dest)
+        assertArrayEquals(p2, dest)
+    }
 }
