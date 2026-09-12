@@ -22,6 +22,7 @@ class JitterBuffer(
 
     private var availableCount = 0
     private var isBuffering = true
+    private var hasReadStarted = false
     private var consecutiveUnderruns = 0
     private var lastSampleLeft16: Short = 0
     private var lastSampleRight16: Short = 0
@@ -123,12 +124,14 @@ class JitterBuffer(
         lock.withLock {
             isTransmitterSilent = true
             consecutiveUnderruns = 0
+            hasReadStarted = false
             notEmptyCondition.signal()
         }
     }
 
     fun applyConfiguration(config: NegotiatedStreamConfig) {
         lock.withLock {
+            hasReadStarted = false
             is24BitStream = config.is24Bit
             lastSampleRate = config.sampleRateHz
             packetDurationMs = config.packetDurationMs
@@ -204,6 +207,7 @@ class JitterBuffer(
             if (isTransmitterSilent || (isBuffering && availableCount == 0) || isFirstPacket || isSequenceReset || isBackwardTimestampJump || isForwardTimestampDiscontinuity) {
                 isTransmitterSilent = false
                 wasConcealed = false
+                hasReadStarted = false
                 expectedReadSeq = sequence
                 expectedReadTimestamp = timestamp
                 isBuffering = (preRollThreshold > 1)
@@ -217,7 +221,7 @@ class JitterBuffer(
 
             val diff = seqDiff(sequence, expectedReadSeq)
             if (diff < 0) {
-                if (isBuffering && diff >= -32) {
+                if ((!hasReadStarted || isBuffering) && diff >= -32) {
                     // During initial pre-roll before playback has started, adjust read cursor
                     // to the earliest packet received to preserve out-of-order startup packets.
                     expectedReadSeq = sequence
@@ -410,15 +414,27 @@ class JitterBuffer(
 
     fun isPacketPastPlayback(seq: Int): Boolean = lock.withLock {
         if (expectedReadSeq == -1) return false
+        if (!hasReadStarted || isBuffering) {
+            return seqDiff(seq, expectedReadSeq) < -32
+        }
         seqDiff(seq, expectedReadSeq) < 0
     }
 
-    fun putRecoveredPacket(sequence: Int, timestamp: Long, data: ByteArray, offset: Int, length: Int): Boolean = lock.withLock {
-        if (expectedReadSeq == -1 || seqDiff(sequence, expectedReadSeq) < 0) {
+    fun putRecoveredPacket(sequence: Int, timestamp: Long, data: ByteArray, offset: Int, length: Int, overwrite: Boolean = false): Boolean = lock.withLock {
+        if (expectedReadSeq == -1) {
             return false
         }
+        val diff = seqDiff(sequence, expectedReadSeq)
+        if (diff < 0) {
+            if ((!hasReadStarted || isBuffering) && diff >= -32) {
+                expectedReadSeq = sequence
+                expectedReadTimestamp = timestamp
+            } else {
+                return false
+            }
+        }
         val slot = sequence and (maxSlots - 1)
-        if (isSlotFilled[slot] && slotSeq[slot] == sequence) {
+        if (!overwrite && isSlotFilled[slot] && slotSeq[slot] == sequence) {
             return false
         }
 
@@ -504,6 +520,8 @@ class JitterBuffer(
                     return fillLen
                 }
             }
+
+            hasReadStarted = true
 
             if (hasPacket) {
                 val len = packetLengths[slot]
