@@ -268,7 +268,8 @@ data class TransportProfile(
 data class NegotiatedStreamConfig(
     val audioFormat: AudioFormatConfig,
     val codec: AudioCodec,
-    val transportProfile: TransportProfile
+    val transportProfile: TransportProfile,
+    val generation: Long = 1L
 ) {
     init {
         val validation = codec.validateFormat(audioFormat)
@@ -284,6 +285,9 @@ data class NegotiatedStreamConfig(
     val is24Bit: Boolean get() = audioFormat.bitDepth == AudioBitDepth.BIT_24
     val isCompressed: Boolean get() = codec.isCompressed
     val packetDurationMs: Float get() = transportProfile.transport.packetDurationMs
+
+    val transitionLogDescription: String
+        get() = "generation=$generation, codec=$codec, sampleRate=$sampleRateHz, bitDepth=$bitDepthBits, channels=$channels, profile=${transportProfile.latencyTarget.name}"
 
     fun getFramesPerPacket(): Int = when {
         codec == AudioCodec.OPUS -> 960
@@ -305,14 +309,15 @@ data class NegotiatedStreamConfig(
         payloadLength: Int,
         timestamp: Long,
         volumeOrCaps: Byte = 0,
-        flags: Byte = HatPacket.FLAG_NONE
+        flags: Byte = HatPacket.FLAG_NONE,
+        generation: Long = this.generation
     ): HatPacket.Header {
         return HatPacket.Header(
             version = HatPacket.PROTOCOL_VERSION,
             packetType = packetType,
             sequenceNumber = sequenceNumber,
             payloadLength = payloadLength,
-            timestamp = timestamp,
+            timestamp = if (packetType == HatPacket.TYPE_CONTROL && timestamp == 0L && generation > 0L) generation else timestamp,
             codec = codec.wireCode,
             profile = transportProfile.latencyTarget.wireCode,
             sampleRateCode = audioFormat.sampleRate.wireCode,
@@ -320,7 +325,8 @@ data class NegotiatedStreamConfig(
             channels = audioFormat.channelLayout.wireCode,
             volumeOrCaps = volumeOrCaps,
             fecBlockSize = if (packetType == HatPacket.TYPE_FEC_PARITY) transportProfile.fec.wireBlockSize else 0,
-            flags = flags
+            flags = flags,
+            generation = generation
         )
     }
 
@@ -334,10 +340,14 @@ data class NegotiatedStreamConfig(
         }
 
         if (header.codec != codec.wireCode) {
-            return AgreementResult.Disagreement(
-                "Codec disagreement: expected ${codec.name} (0x${Integer.toHexString(codec.wireCode.toInt())}), " +
-                "received 0x${Integer.toHexString(header.codec.toInt())}"
-            )
+            val isPcmCompatible = (codec == AudioCodec.PCM && header.codec == HatPacket.CODEC_LOSSLESS_PCM) ||
+                                  (codec == AudioCodec.LOSSLESS && header.codec == HatPacket.CODEC_RAW_PCM)
+            if (!isPcmCompatible) {
+                return AgreementResult.Disagreement(
+                    "Codec disagreement: expected ${codec.name} (0x${Integer.toHexString(codec.wireCode.toInt())}), " +
+                    "received 0x${Integer.toHexString(header.codec.toInt())}"
+                )
+            }
         }
 
         if (header.sampleRateCode != audioFormat.sampleRate.wireCode) {
@@ -367,7 +377,7 @@ data class NegotiatedStreamConfig(
          * Reconstructs a NegotiatedStreamConfig from an incoming packet header.
          * Returns null if any header field is unknown or combinations are invalid.
          */
-        fun fromHeader(header: HatPacket.Header, fecEnabled: Boolean = true): NegotiatedStreamConfig? {
+        fun fromHeader(header: HatPacket.Header, fecEnabled: Boolean = true, generation: Long = if (header.generation > 0L) header.generation else 1L): NegotiatedStreamConfig? {
             val codec = AudioCodec.fromWireCode(header.codec) ?: return null
             val rate = AudioSampleRate.fromWireCode(header.sampleRateCode) ?: return null
             val layout = AudioChannelLayout.fromWireCode(header.channels) ?: return null
@@ -385,7 +395,12 @@ data class NegotiatedStreamConfig(
             )
             val format = AudioFormatConfig(sampleRate = rate, bitDepth = bitDepth, channelLayout = layout)
             return try {
-                NegotiatedStreamConfig(audioFormat = format, codec = codec, transportProfile = profile)
+                NegotiatedStreamConfig(
+                    audioFormat = format,
+                    codec = codec,
+                    transportProfile = profile,
+                    generation = generation
+                )
             } catch (e: IllegalArgumentException) {
                 null
             }
@@ -400,6 +415,67 @@ sealed class AgreementResult {
 }
 
 /**
+ * Result of attempting to transition or update a stream configuration.
+ */
+sealed class ConfigTransitionResult {
+    data class Applied(val config: NegotiatedStreamConfig, val isInitial: Boolean) : ConfigTransitionResult()
+    data class IdempotentIgnored(val generation: Long) : ConfigTransitionResult()
+    data class RejectedStale(val incomingGeneration: Long, val currentGeneration: Long) : ConfigTransitionResult()
+}
+
+/**
+ * Authoritative thread-safe state machine governing stream configurations.
+ * Enforces:
+ * - Deterministic, immutable configuration during generation N.
+ * - Idempotency for repeated announcements with identical generation.
+ * - Strict rejection of stale generation updates (generation < activeGeneration).
+ * - Thread-safe synchronization preventing asynchronous/stale updates from overwriting newer configurations.
+ */
+class StreamConfigurationAuthority(initialConfig: NegotiatedStreamConfig? = null) {
+    private val lock = Any()
+    @Volatile
+    private var _currentConfig: NegotiatedStreamConfig? = initialConfig
+    @Volatile
+    private var _currentGeneration: Long = initialConfig?.generation ?: 0L
+
+    val currentConfig: NegotiatedStreamConfig? get() = _currentConfig
+    val currentGeneration: Long get() = _currentGeneration
+
+    /**
+     * Atomically attempts to apply a stream configuration update.
+     */
+    fun applyUpdate(incoming: NegotiatedStreamConfig): ConfigTransitionResult {
+        synchronized(lock) {
+            val current = _currentConfig
+            val activeGen = _currentGeneration
+
+            if (current != null && incoming.generation < activeGen) {
+                return ConfigTransitionResult.RejectedStale(
+                    incomingGeneration = incoming.generation,
+                    currentGeneration = activeGen
+                )
+            }
+
+            if (current != null && incoming.generation == activeGen) {
+                return ConfigTransitionResult.IdempotentIgnored(activeGen)
+            }
+
+            val isInitial = (current == null)
+            _currentConfig = incoming
+            _currentGeneration = incoming.generation
+            return ConfigTransitionResult.Applied(incoming, isInitial)
+        }
+    }
+
+    fun reset() {
+        synchronized(lock) {
+            _currentConfig = null
+            _currentGeneration = 0L
+        }
+    }
+}
+
+/**
  * Explicit negotiation engine for audio streaming sessions.
  */
 object StreamNegotiator {
@@ -411,18 +487,38 @@ object StreamNegotiator {
         val preferred24Bit: Boolean = true,
         val txCapabilitiesMask: Int = 0,
         val rxCapabilitiesMask: Int = 0,
+        val rxCapabilitiesList: List<Int> = emptyList(),
         val fecEnabled: Boolean = true,
         val isOpusEncoderAvailable: Boolean = true
     )
 
     /**
-     * Executes explicit negotiation between transmitter and receiver capabilities.
-     * Resolves format, codec, and transport parameters deterministically.
+     * Resolves a mutually supported capability mask across multiple active receivers.
+     * Uses intersection to prevent stream configuration oscillation when multiple receivers join or announce.
      */
-    fun negotiate(request: NegotiationRequest): NegotiatedStreamConfig {
+    fun resolveMutuallySupportedCapabilities(receiverCapabilities: Collection<Int>): Int {
+        val validMasks = receiverCapabilities.filter { it != 0 }
+        if (validMasks.isEmpty()) return 0
+        val intersection = validMasks.reduce { acc, mask -> acc and mask }
+        if (intersection != 0) {
+            return intersection
+        }
+        // Fallback: if intersection is empty (disjoint receiver capabilities), select 48 kHz native Android primary operating point
+        return AudioCapabilities.CAP_FLAG_48000
+    }
+
+    /**
+     * Executes explicit negotiation between transmitter and receiver capabilities.
+     * Resolves format, codec, and transport parameters deterministically for generation [generation].
+     */
+    fun negotiate(request: NegotiationRequest, generation: Long = 1L): NegotiatedStreamConfig {
         // 1. Resolve Audio Format
         val effectiveTx = if (request.txCapabilitiesMask == 0) AudioCapabilities.getLocalCaptureCapabilitiesMask() else request.txCapabilitiesMask
-        val effectiveRx = if (request.rxCapabilitiesMask == 0) AudioCapabilities.getLocalPlaybackCapabilitiesMask() else request.rxCapabilitiesMask
+        val effectiveRx = when {
+            request.rxCapabilitiesList.isNotEmpty() -> resolveMutuallySupportedCapabilities(request.rxCapabilitiesList)
+            request.rxCapabilitiesMask != 0 -> request.rxCapabilitiesMask
+            else -> AudioCapabilities.getLocalPlaybackCapabilitiesMask()
+        }
         val mutuallySupportedRate = AudioCapabilities.getHighestMutuallySupportedRate(effectiveTx, effectiveRx, request.preferredSampleRateHz)
 
         val sampleRate = AudioSampleRate.fromHz(mutuallySupportedRate)
@@ -458,7 +554,8 @@ object StreamNegotiator {
         return NegotiatedStreamConfig(
             audioFormat = format,
             codec = resolvedCodec,
-            transportProfile = transportProfile
+            transportProfile = transportProfile,
+            generation = generation
         )
     }
 }

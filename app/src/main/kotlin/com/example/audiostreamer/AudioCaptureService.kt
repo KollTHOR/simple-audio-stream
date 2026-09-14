@@ -70,6 +70,7 @@ class AudioCaptureService : Service() {
 
         val isRunning = AtomicBoolean(false)
         val remoteVolumePercent = AtomicInteger(100)
+        val currentStreamGeneration = java.util.concurrent.atomic.AtomicLong(0L)
 
         fun isOpusEncoderAvailable(): Boolean {
             return try {
@@ -86,6 +87,7 @@ class AudioCaptureService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var audioRecord: AudioRecord? = null
     @Volatile private var udpSocket: DatagramSocket? = null
+    @Volatile private var activeNegotiatedConfig: NegotiatedStreamConfig? = null
     private val socketSendLock = Any()
     private var streamThread: Thread? = null
     private var controlListenerThread: Thread? = null
@@ -241,20 +243,32 @@ class AudioCaptureService : Service() {
         val socket = udpSocket ?: return
         Thread({
             try {
+                val config = activeNegotiatedConfig
                 val buffer = ByteArray(HatPacket.HEADER_SIZE)
                 val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
                 val profileStr = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_AUTO) ?: AudioConfig.PROFILE_AUTO
                 val profileCode = HatPacket.profileStringToCode(profileStr)
 
-                HatPacket.writeHeader(
-                    buffer = buffer,
-                    header = HatPacket.Header(
+                val header = if (config != null) {
+                    config.createHeader(
                         packetType = HatPacket.TYPE_CONTROL,
+                        sequenceNumber = 0,
+                        payloadLength = 0,
+                        timestamp = config.generation,
+                        volumeOrCaps = volume.coerceIn(0, 100).toByte(),
+                        generation = config.generation
+                    )
+                } else {
+                    HatPacket.Header(
+                        packetType = HatPacket.TYPE_CONTROL,
+                        timestamp = currentStreamGeneration.get(),
                         profile = profileCode,
                         volumeOrCaps = volume.coerceIn(0, 100).toByte(),
-                        payloadLength = 0
+                        payloadLength = 0,
+                        generation = currentStreamGeneration.get()
                     )
-                )
+                }
+                HatPacket.writeHeader(buffer, 0, header)
 
                 val packet = DatagramPacket(buffer, buffer.size)
                 broadcastDatagram(socket, packet)
@@ -264,6 +278,38 @@ class AudioCaptureService : Service() {
         }, "AudioCaptureControlSender").apply {
             isDaemon = true
             start()
+        }
+    }
+
+    private fun sendStreamAnnouncement(config: NegotiatedStreamConfig, volume: Int, targetEndpoint: ClientEndpoint? = null) {
+        val socket = udpSocket ?: return
+        try {
+            val buffer = ByteArray(HatPacket.HEADER_SIZE)
+            val header = config.createHeader(
+                packetType = HatPacket.TYPE_CONTROL,
+                sequenceNumber = 0,
+                payloadLength = 0,
+                timestamp = config.generation,
+                volumeOrCaps = volume.coerceIn(0, 100).toByte(),
+                generation = config.generation
+            )
+            HatPacket.writeHeader(buffer, 0, header)
+            val packet = DatagramPacket(buffer, buffer.size)
+            if (targetEndpoint != null) {
+                packet.address = targetEndpoint.address
+                packet.port = targetEndpoint.port
+                synchronized(socketSendLock) {
+                    try {
+                        socket.send(packet)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed sending announcement to $targetEndpoint: ${e.message}")
+                    }
+                }
+            } else {
+                broadcastDatagram(socket, packet)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed sending stream announcement: ${e.message}")
         }
     }
 
@@ -469,16 +515,14 @@ class AudioCaptureService : Service() {
         }
 
         val txCaps = AudioCapabilities.getLocalCaptureCapabilitiesMask()
-        val rxCapsFromClients = clientCapabilities.values.firstOrNull { it != 0 } ?: 0
-        val rxCapsFromDiscovery = DiscoveryManager.lastDiscoveredReceiverCapabilities
-        val rxCapsFromPref = prefs.getInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, 0)
+        val rxCapsList = clientCapabilities.values.filter { it != 0 }.toList()
         val rxCaps = when {
-            rxCapsFromClients != 0 -> rxCapsFromClients
-            rxCapsFromDiscovery != 0 -> rxCapsFromDiscovery
-            rxCapsFromPref != 0 -> rxCapsFromPref
-            else -> 0
+            rxCapsList.isNotEmpty() -> StreamNegotiator.resolveMutuallySupportedCapabilities(rxCapsList)
+            DiscoveryManager.lastDiscoveredReceiverCapabilities != 0 -> DiscoveryManager.lastDiscoveredReceiverCapabilities
+            else -> prefs.getInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, 0)
         }
 
+        val generation = currentStreamGeneration.incrementAndGet()
         val negotiatedSession = StreamNegotiator.negotiate(
             StreamNegotiator.NegotiationRequest(
                 preferredProfile = LatencyTarget.fromString(profile),
@@ -491,9 +535,11 @@ class AudioCaptureService : Service() {
                 preferred24Bit = target24Bit,
                 txCapabilitiesMask = txCaps,
                 rxCapabilitiesMask = rxCaps,
+                rxCapabilitiesList = rxCapsList,
                 fecEnabled = prefs.getBoolean(AudioConfig.PREF_KEY_FEC_ENABLED, true),
                 isOpusEncoderAvailable = isOpusSupported
-            )
+            ),
+            generation = generation
         )
         val negotiatedRate = negotiatedSession.sampleRateHz
 
@@ -713,6 +759,9 @@ class AudioCaptureService : Service() {
                                         if (isNew) {
                                             val capsDesc = if (byteVal != 0) AudioCapabilities.describeCapabilitiesMask(byteVal) else "default"
                                             Log.i(TAG, "Registered new multi-unicast receiver: $endpoint (Caps: $capsDesc)")
+                                            activeNegotiatedConfig?.let { config ->
+                                                sendStreamAnnouncement(config, remoteVolumePercent.get(), endpoint)
+                                            }
                                         }
                                     }
                                     HatPacket.TYPE_DISCONNECT -> {
@@ -787,8 +836,16 @@ class AudioCaptureService : Service() {
                 val negotiatedStreamConfig = NegotiatedStreamConfig(
                     audioFormat = activeAudioFormat,
                     codec = baseCodec,
-                    transportProfile = activeTransportProfile
+                    transportProfile = activeTransportProfile,
+                    generation = generation
                 )
+                activeNegotiatedConfig = negotiatedStreamConfig
+                Log.i(TAG, "Configuration transition: ${negotiatedStreamConfig.transitionLogDescription}")
+
+                // Broadcast authoritative stream configuration announcement burst for generation
+                repeat(3) {
+                    sendStreamAnnouncement(negotiatedStreamConfig, remoteVolumePercent.get())
+                }
 
                 var sequence = 0
                 var streamTimelineFrames = 0L
@@ -1248,6 +1305,7 @@ class AudioCaptureService : Service() {
             udpSocket?.close()
         } catch (ignored: Exception) {}
         udpSocket = null
+        activeNegotiatedConfig = null
 
         try {
             audioRecord?.let {

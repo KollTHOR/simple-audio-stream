@@ -84,7 +84,8 @@ object HatPacket {
         val channels: Byte = CHANNELS_STEREO,
         val volumeOrCaps: Byte = 0,
         val fecBlockSize: Byte = 0,
-        val flags: Byte = FLAG_NONE
+        val flags: Byte = FLAG_NONE,
+        val generation: Long = if (packetType == TYPE_CONTROL) timestamp else 0L
     ) {
         val sampleRateHz: Int get() = rateCodeToHz(sampleRateCode)
     }
@@ -186,8 +187,13 @@ object HatPacket {
         // 6..7: Payload Length (UInt16 BE)
         writeUInt16BE(buffer, offset + 6, header.payloadLength and 0xFFFF)
 
-        // 8..15: Audio Timeline Timestamp (UInt64 BE)
-        writeUInt64BE(buffer, offset + 8, header.timestamp)
+        // 8..15: Audio Timeline Timestamp (UInt64 BE) or Stream Generation in Control Packets
+        val tsToWrite = if (header.packetType == TYPE_CONTROL && header.generation > 0L) {
+            header.generation
+        } else {
+            header.timestamp
+        }
+        writeUInt64BE(buffer, offset + 8, tsToWrite)
 
         // 16: Codec
         buffer[offset + 16] = header.codec
@@ -307,6 +313,7 @@ object HatPacket {
         }
 
         val sequenceNumber = readUInt16BE(buffer, offset + 4)
+        val generation = if (packetType == TYPE_CONTROL) timestamp else 0L
 
         return Header(
             version = version,
@@ -321,7 +328,8 @@ object HatPacket {
             channels = channels,
             volumeOrCaps = volumeOrCaps,
             fecBlockSize = fecBlockSize,
-            flags = flags
+            flags = flags,
+            generation = generation
         )
     }
 }

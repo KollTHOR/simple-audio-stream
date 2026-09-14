@@ -141,6 +141,33 @@ class HatPacketTest {
     }
 
     @Test
+    fun testControlPacketWithGeneration() {
+        val header = HatPacket.Header(
+            packetType = HatPacket.TYPE_CONTROL,
+            generation = 42L,
+            codec = HatPacket.CODEC_RAW_PCM,
+            profile = HatPacket.PROFILE_MUSIC,
+            sampleRateCode = HatPacket.RATE_48000,
+            bitDepth = HatPacket.BIT_DEPTH_24,
+            channels = HatPacket.CHANNELS_STEREO,
+            volumeOrCaps = 80,
+            payloadLength = 0
+        )
+        val buffer = ByteArray(HatPacket.HEADER_SIZE)
+        HatPacket.writeHeader(buffer, 0, header)
+
+        val parsed = HatPacket.parseHeader(buffer, 0, buffer.size)
+        assertNotNull(parsed)
+        assertEquals(HatPacket.TYPE_CONTROL, parsed?.packetType)
+        assertEquals(42L, parsed?.generation)
+        assertEquals(42L, parsed?.timestamp)
+        assertEquals(80.toByte(), parsed?.volumeOrCaps)
+        assertEquals(HatPacket.CODEC_RAW_PCM, parsed?.codec)
+        assertEquals(HatPacket.RATE_48000, parsed?.sampleRateCode)
+        assertEquals(HatPacket.BIT_DEPTH_24, parsed?.bitDepth)
+    }
+
+    @Test
     fun testDiscoveryAnnouncePacket() {
         val payload = "AudioStreamer-Transmitter".toByteArray(Charsets.UTF_8)
         val header = HatPacket.Header(

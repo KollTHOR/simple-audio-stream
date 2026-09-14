@@ -82,6 +82,7 @@ class AudioSinkService : Service() {
     @Volatile private var aacDecoderSampleRate: Int = AudioConfig.SAMPLE_RATE_48000
     @Volatile private var opusDecoder: OpusDecoder? = null
     @Volatile private var opusDecoderSampleRate: Int = AudioConfig.SAMPLE_RATE_48000
+    private val configAuthority = StreamConfigurationAuthority()
     @Volatile private var currentStreamConfig: NegotiatedStreamConfig? = null
     @Volatile private var lastConfiguredCodec: String? = null
     private val audioLevelMeter = AudioLevelMeter(AudioConfig.CHANNELS)
@@ -227,6 +228,59 @@ class AudioSinkService : Service() {
         return track
     }
 
+    private fun applyStreamConfiguration(config: NegotiatedStreamConfig) {
+        currentStreamConfig = config
+        jitterBuffer.applyConfiguration(config)
+
+        val isIncomingOpus = config.codec == AudioCodec.OPUS
+        val isIncomingAac = config.codec == AudioCodec.AAC
+        currentIsAac = isIncomingAac
+        currentIsOpus = isIncomingOpus
+        val targetSampleRate = config.sampleRateHz
+
+        if (isIncomingOpus) {
+            if (opusDecoder == null || opusDecoderSampleRate != targetSampleRate) {
+                synchronized(decoderLock) {
+                    val old = opusDecoder
+                    opusDecoder = OpusDecoder(targetSampleRate)
+                    opusDecoderSampleRate = targetSampleRate
+                    try { old?.release() } catch (ignored: Exception) {}
+                }
+            }
+        } else if (isIncomingAac) {
+            if (aacDecoder == null || aacDecoderSampleRate != targetSampleRate) {
+                synchronized(decoderLock) {
+                    val old = aacDecoder
+                    aacDecoder = AacDecoder(targetSampleRate)
+                    aacDecoderSampleRate = targetSampleRate
+                    try { old?.release() } catch (ignored: Exception) {}
+                }
+            }
+        }
+
+        val isServer24Bit = config.is24Bit
+        currentIsServer24Bit = isServer24Bit
+        val serverProfile = config.transportProfile.latencyTarget.name
+        val currentCodec = config.codec.name
+
+        if (serverProfile != currentProfile || currentCodec != lastConfiguredCodec) {
+            currentProfile = serverProfile
+            lastConfiguredCodec = currentCodec
+            audioTrack?.let { applyBufferSizeForProfile(it, serverProfile, currentSampleRate) }
+            currentTrackProfile = serverProfile
+        }
+
+        val targetEncoding = if (isServer24Bit && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            AudioFormat.ENCODING_PCM_24BIT_PACKED
+        } else {
+            AudioConfig.ENCODING
+        }
+        val targetPerfMode = AudioTrack.PERFORMANCE_MODE_NONE
+        if (targetSampleRate != currentSampleRate || targetEncoding != currentEncoding || targetPerfMode != currentPerformanceMode || serverProfile != currentTrackProfile) {
+            configureAudioTrack(targetSampleRate, targetEncoding, serverProfile, currentRemoteVolume)
+        }
+    }
+
     private fun startSink(port: Int) {
         if (isRunning.getAndSet(true)) {
             Log.w(TAG, "AudioSinkService is already active")
@@ -339,6 +393,56 @@ class AudioSinkService : Service() {
                             lastSenderAddress = packet.address
                             lastSenderPort = packet.port
 
+                            // Check for Stream Announcement / Control packet
+                            if (header.packetType == HatPacket.TYPE_CONTROL) {
+                                val incomingGen = header.generation
+                                val announcedConfig = NegotiatedStreamConfig.fromHeader(header, fecEnabled = true, generation = incomingGen)
+                                if (announcedConfig != null && incomingGen > 0L) {
+                                    when (val result = configAuthority.applyUpdate(announcedConfig)) {
+                                        is ConfigTransitionResult.RejectedStale -> {
+                                            Log.w(TAG, "Rejected stale stream configuration generation ${result.incomingGeneration} (current: ${result.currentGeneration})")
+                                        }
+                                        is ConfigTransitionResult.IdempotentIgnored -> {
+                                            // Repeated announcement of identical generation: idempotent no-op
+                                        }
+                                        is ConfigTransitionResult.Applied -> {
+                                            Log.i(TAG, "Configuration transition: ${announcedConfig.transitionLogDescription}")
+                                            applyStreamConfiguration(announcedConfig)
+                                        }
+                                    }
+                                }
+
+                                val volume = (header.volumeOrCaps.toInt() and 0xFF).coerceIn(0, 100)
+                                if (volume != currentRemoteVolume) {
+                                    currentRemoteVolume = volume
+                                    lastSentLocalVolume = volume
+                                    val floatVol = (volume / 100.0f).coerceIn(0.0f, 1.0f)
+                                    audioTrack?.setVolume(floatVol)
+
+                                    if (syncDeviceVolume) {
+                                        try {
+                                            val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                                            val minVol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                                audioManager.getStreamMinVolume(AudioManager.STREAM_MUSIC)
+                                            } else 0
+                                            val targetStep = minVol + ((maxVol - minVol) * (volume / 100.0f)).roundToInt().coerceIn(minVol, maxVol)
+                                            if (audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) != targetStep) {
+                                                ignoreLocalVolumeUntil = SystemClock.elapsedRealtime() + 500L
+                                                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetStep, 0)
+                                            }
+                                        } catch (e: Exception) {
+                                            Log.w(TAG, "Failed syncing receiver hardware volume: ${e.message}")
+                                        }
+                                    }
+                                }
+
+                                totalPackets++
+                                totalBytes += length
+                                intervalPackets++
+                                intervalBytes += length
+                                continue
+                            }
+
                             val isSilence = header.packetType == HatPacket.TYPE_SILENCE_HEARTBEAT
                             if (isSilence) {
                                 jitterBuffer.onSilenceHeartbeat()
@@ -353,71 +457,34 @@ class AudioSinkService : Service() {
                             var isLossless = false
 
                             if (isAudio) {
-                                val packetConfig = NegotiatedStreamConfig.fromHeader(header)
-                                if (packetConfig == null) {
-                                    Log.w(TAG, "Rejected audio packet with invalid configuration: codec=${header.codec}, rate=${header.sampleRateHz}, bitDepth=${header.bitDepth}")
+                                var activeConfig = configAuthority.currentConfig
+                                if (activeConfig == null) {
+                                    // Initial audio packet before any announcement: establish initial generation 1
+                                    val initialConfig = NegotiatedStreamConfig.fromHeader(header, fecEnabled = true, generation = 1L)
+                                    if (initialConfig != null) {
+                                        val result = configAuthority.applyUpdate(initialConfig)
+                                        if (result is ConfigTransitionResult.Applied) {
+                                            Log.i(TAG, "Configuration transition: ${initialConfig.transitionLogDescription}")
+                                            applyStreamConfiguration(initialConfig)
+                                        }
+                                        activeConfig = configAuthority.currentConfig
+                                    } else {
+                                        Log.w(TAG, "Rejected audio packet with invalid configuration: codec=${header.codec}, rate=${header.sampleRateHz}, bitDepth=${header.bitDepth}")
+                                        continue
+                                    }
+                                }
+
+                                // Once generation N starts, receivers MUST keep using that configuration.
+                                // A receiver must NOT switch PCM <-> another codec because of individual packets.
+                                val agreement = activeConfig?.validatePacketAgreement(header)
+                                if (agreement !is AgreementResult.Agreed) {
+                                    Log.w(TAG, "Dropping packet incompatible with active configuration: ${(agreement as AgreementResult.Disagreement).reason}")
                                     continue
                                 }
 
-                                val agreement = currentStreamConfig?.validatePacketAgreement(header)
-                                val hasConfigChanged = (currentStreamConfig == null || agreement !is AgreementResult.Agreed)
-                                if (hasConfigChanged) {
-                                    if (agreement is AgreementResult.Disagreement) {
-                                        Log.i(TAG, "Stream configuration updated by transmitter: ${agreement.reason}")
-                                    }
-                                    currentStreamConfig = packetConfig
-                                    jitterBuffer.applyConfiguration(packetConfig)
-                                }
-
-                                isIncomingOpus = packetConfig.codec == AudioCodec.OPUS
-                                isIncomingAac = packetConfig.codec == AudioCodec.AAC
-                                isLossless = packetConfig.codec == AudioCodec.LOSSLESS
-                                currentIsAac = isIncomingAac
-                                currentIsOpus = isIncomingOpus
-                                val targetSampleRate = packetConfig.sampleRateHz
-
-                                if (isIncomingOpus) {
-                                    if (opusDecoder == null || opusDecoderSampleRate != targetSampleRate) {
-                                        synchronized(decoderLock) {
-                                            val old = opusDecoder
-                                            opusDecoder = OpusDecoder(targetSampleRate)
-                                            opusDecoderSampleRate = targetSampleRate
-                                            try { old?.release() } catch (ignored: Exception) {}
-                                        }
-                                    }
-                                } else if (isIncomingAac) {
-                                    if (aacDecoder == null || aacDecoderSampleRate != targetSampleRate) {
-                                        synchronized(decoderLock) {
-                                            val old = aacDecoder
-                                            aacDecoder = AacDecoder(targetSampleRate)
-                                            aacDecoderSampleRate = targetSampleRate
-                                            try { old?.release() } catch (ignored: Exception) {}
-                                        }
-                                    }
-                                }
-
-                                val isServer24Bit = packetConfig.is24Bit
-                                currentIsServer24Bit = isServer24Bit
-                                val serverProfile = packetConfig.transportProfile.latencyTarget.name
-                                val currentCodec = packetConfig.codec.name
-
-                                if (serverProfile != currentProfile || currentCodec != lastConfiguredCodec) {
-                                    currentProfile = serverProfile
-                                    lastConfiguredCodec = currentCodec
-                                    audioTrack?.let { applyBufferSizeForProfile(it, serverProfile, currentSampleRate) }
-                                    currentTrackProfile = serverProfile
-                                    Log.i(TAG, "Adapted client buffer to server profile: $serverProfile, codec=$currentCodec")
-                                }
-
-                                val targetEncoding = if (isServer24Bit && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                    AudioFormat.ENCODING_PCM_24BIT_PACKED
-                                } else {
-                                    AudioConfig.ENCODING
-                                }
-                                val targetPerfMode = AudioTrack.PERFORMANCE_MODE_NONE
-                                if (targetSampleRate != currentSampleRate || targetEncoding != currentEncoding || targetPerfMode != currentPerformanceMode || serverProfile != currentTrackProfile) {
-                                    configureAudioTrack(targetSampleRate, targetEncoding, serverProfile, currentRemoteVolume)
-                                }
+                                isIncomingOpus = activeConfig.codec == AudioCodec.OPUS
+                                isIncomingAac = activeConfig.codec == AudioCodec.AAC
+                                isLossless = (header.codec == HatPacket.CODEC_LOSSLESS_PCM)
                             }
 
                             val activeTrack = audioTrack ?: configureAudioTrack(
@@ -1044,8 +1111,10 @@ class AudioSinkService : Service() {
             opusDecoder = null
         }
 
-        lastConfiguredCodec = null
+        configAuthority.reset()
         currentStreamConfig = null
+        lastConfiguredCodec = null
+        currentTrackProfile = ""
         currentIsOpus = false
         currentIsAac = false
         audioLevelMeter.resetInterval()

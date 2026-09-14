@@ -326,4 +326,207 @@ class TransportConfigTest {
         assertEquals(AudioBitDepth.BIT_16, stream4.audioFormat.bitDepth)
         assertEquals(LatencyTarget.RELIABLE, stream4.transportProfile.latencyTarget)
     }
+
+    @Test
+    fun testRepeatedIdenticalAnnouncementsAreIdempotent() {
+        val configGen1 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_24),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.BALANCED),
+            generation = 1L
+        )
+
+        val authority = StreamConfigurationAuthority(configGen1)
+        assertEquals(1L, authority.currentGeneration)
+        assertEquals(configGen1, authority.currentConfig)
+
+        // Repeated announcement of the exact same generation
+        val repeatResult = authority.applyUpdate(configGen1)
+        assertTrue(repeatResult is ConfigTransitionResult.IdempotentIgnored)
+        assertEquals(1L, (repeatResult as ConfigTransitionResult.IdempotentIgnored).generation)
+
+        // State remains completely unchanged
+        assertEquals(1L, authority.currentGeneration)
+        assertEquals(configGen1, authority.currentConfig)
+    }
+
+    @Test
+    fun testStaleGenerationUpdateIsRejected() {
+        val configGen2 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_24),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.RELIABLE),
+            generation = 2L
+        )
+        val configGen1 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_44100, AudioBitDepth.BIT_16),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.BALANCED),
+            generation = 1L
+        )
+
+        val authority = StreamConfigurationAuthority(configGen2)
+        assertEquals(2L, authority.currentGeneration)
+
+        // Incoming update with older generation 1L
+        val staleResult = authority.applyUpdate(configGen1)
+        assertTrue(staleResult is ConfigTransitionResult.RejectedStale)
+        val rejected = staleResult as ConfigTransitionResult.RejectedStale
+        assertEquals(1L, rejected.incomingGeneration)
+        assertEquals(2L, rejected.currentGeneration)
+
+        // Current config must NOT be overwritten by stale packet
+        assertEquals(2L, authority.currentGeneration)
+        assertEquals(configGen2, authority.currentConfig)
+        assertEquals(AudioSampleRate.RATE_48000, authority.currentConfig?.audioFormat?.sampleRate)
+    }
+
+    @Test
+    fun testNewerGenerationUpdateIsApplied() {
+        val configGen1 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_24),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.RELIABLE),
+            generation = 1L
+        )
+        val configGen2 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_16),
+            codec = AudioCodec.OPUS,
+            transportProfile = TransportProfile.create(LatencyTarget.LOW_LATENCY, isCompressedCodec = true),
+            generation = 2L
+        )
+
+        val authority = StreamConfigurationAuthority(configGen1)
+        assertEquals(1L, authority.currentGeneration)
+
+        // Incoming update with newer generation 2L
+        val updateResult = authority.applyUpdate(configGen2)
+        assertTrue(updateResult is ConfigTransitionResult.Applied)
+        val applied = updateResult as ConfigTransitionResult.Applied
+        assertFalse(applied.isInitial)
+        assertEquals(configGen2, applied.config)
+
+        // Current authority state transitioned to generation 2
+        assertEquals(2L, authority.currentGeneration)
+        assertEquals(AudioCodec.OPUS, authority.currentConfig?.codec)
+        assertEquals(2L, authority.currentConfig?.generation)
+        assertTrue(authority.currentConfig!!.transitionLogDescription.contains("generation=2"))
+        assertTrue(authority.currentConfig!!.transitionLogDescription.contains("codec=OPUS"))
+    }
+
+    @Test
+    fun testMultipleReceiversWithDifferentCapabilities() {
+        // Receiver 1: supports 48 kHz (0x02) and 96 kHz (0x08) -> 0x0A
+        val rx1Mask = AudioCapabilities.CAP_FLAG_48000 or AudioCapabilities.CAP_FLAG_96000
+        // Receiver 2: supports 44.1 kHz (0x01) and 48 kHz (0x02) -> 0x03
+        val rx2Mask = AudioCapabilities.CAP_FLAG_44100 or AudioCapabilities.CAP_FLAG_48000
+        // Receiver 3: supports 48 kHz (0x02), 88.2 kHz (0x04), and 192 kHz (0x20) -> 0x26
+        val rx3Mask = AudioCapabilities.CAP_FLAG_48000 or AudioCapabilities.CAP_FLAG_88200 or AudioCapabilities.CAP_FLAG_192000
+
+        // Test multi-receiver resolution: common intersection must be 48 kHz (0x02)
+        val mutuallySupported = StreamNegotiator.resolveMutuallySupportedCapabilities(listOf(rx1Mask, rx2Mask, rx3Mask))
+        assertEquals(AudioCapabilities.CAP_FLAG_48000, mutuallySupported)
+
+        // Negotiation across all 3 receivers must deterministically produce 48 kHz
+        val txMask = AudioCapabilities.CAP_FLAG_48000 or AudioCapabilities.CAP_FLAG_44100 or AudioCapabilities.CAP_FLAG_96000
+        val request = StreamNegotiator.NegotiationRequest(
+            preferredProfile = LatencyTarget.BALANCED,
+            preferredSampleRateHz = 96000, // Prefers 96kHz, but must clamp to mutually supported 48kHz
+            preferred24Bit = true,
+            txCapabilitiesMask = txMask,
+            rxCapabilitiesList = listOf(rx1Mask, rx2Mask, rx3Mask)
+        )
+        val config = StreamNegotiator.negotiate(request, generation = 5L)
+        assertEquals(48000, config.sampleRateHz)
+        assertEquals(5L, config.generation)
+
+        // Adding another receiver must NOT oscillate the configuration
+        val rx4Mask = AudioCapabilities.CAP_FLAG_48000
+        val request2 = request.copy(rxCapabilitiesList = listOf(rx1Mask, rx2Mask, rx3Mask, rx4Mask))
+        val config2 = StreamNegotiator.negotiate(request2, generation = 5L)
+        assertEquals(48000, config2.sampleRateHz)
+        assertEquals(config.audioFormat, config2.audioFormat)
+        assertEquals(config.codec, config2.codec)
+    }
+
+    @Test
+    fun testAsynchronousStaleConfigUpdateArrivingAfterCurrentConfig() {
+        val authority = StreamConfigurationAuthority()
+
+        val configGen1 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_16),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.BALANCED),
+            generation = 1L
+        )
+        val configGen2 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_44100, AudioBitDepth.BIT_16),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.BALANCED),
+            generation = 2L
+        )
+        val configGen3 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_24),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.RELIABLE),
+            generation = 3L
+        )
+
+        // Initial config applied
+        authority.applyUpdate(configGen1)
+        assertEquals(1L, authority.currentGeneration)
+
+        // A newer update (generation 3) is applied first (e.g. fast callback)
+        val res3 = authority.applyUpdate(configGen3)
+        assertTrue(res3 is ConfigTransitionResult.Applied)
+        assertEquals(3L, authority.currentGeneration)
+        assertEquals(24, authority.currentConfig?.bitDepthBits)
+
+        // A delayed/asynchronous older callback for generation 2 arrives after generation 3
+        val res2 = authority.applyUpdate(configGen2)
+        assertTrue(res2 is ConfigTransitionResult.RejectedStale)
+        assertEquals(2L, (res2 as ConfigTransitionResult.RejectedStale).incomingGeneration)
+        assertEquals(3L, res2.currentGeneration)
+
+        // Authority MUST strictly keep generation 3 and reject generation 2
+        assertEquals(3L, authority.currentGeneration)
+        assertEquals(24, authority.currentConfig?.bitDepthBits)
+        assertEquals(configGen3, authority.currentConfig)
+    }
+
+    @Test
+    fun testPcmAndLosslessPacketAgreementCompatibility() {
+        val pcmConfig = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_24),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.RELIABLE),
+            generation = 1L
+        )
+
+        // 1. Raw PCM audio packet matches
+        val rawPcmHeader = pcmConfig.createHeader(
+            packetType = HatPacket.TYPE_AUDIO,
+            sequenceNumber = 10,
+            payloadLength = 1440,
+            timestamp = 0L
+        )
+        assertTrue(pcmConfig.validatePacketAgreement(rawPcmHeader).isAgreed)
+
+        // 2. Lossless compressed audio packet during PCM stream must be AGREED (does not trigger stream codec switch)
+        val losslessPcmHeader = rawPcmHeader.copy(codec = HatPacket.CODEC_LOSSLESS_PCM)
+        val losslessResult = pcmConfig.validatePacketAgreement(losslessPcmHeader)
+        assertTrue("Lossless PCM packet must be compatible with PCM stream config", losslessResult.isAgreed)
+
+        // 3. Individual foreign packet (Opus) must be rejected
+        val opusHeader = rawPcmHeader.copy(codec = HatPacket.CODEC_OPUS)
+        val opusResult = pcmConfig.validatePacketAgreement(opusHeader)
+        assertFalse(opusResult.isAgreed)
+        assertTrue((opusResult as AgreementResult.Disagreement).reason.contains("Codec disagreement"))
+
+        // 4. Individual foreign packet (AAC) must be rejected
+        val aacHeader = rawPcmHeader.copy(codec = HatPacket.CODEC_AAC)
+        val aacResult = pcmConfig.validatePacketAgreement(aacHeader)
+        assertFalse(aacResult.isAgreed)
+        assertTrue((aacResult as AgreementResult.Disagreement).reason.contains("Codec disagreement"))
+    }
 }
