@@ -111,7 +111,8 @@ class FecEncoder(val blockSize: Int = AudioConfig.FEC_BLOCK_SIZE) {
         profile: Byte = HatPacket.PROFILE_MUSIC,
         sampleRateCode: Byte = HatPacket.RATE_48000,
         bitDepth: Byte = HatPacket.BIT_DEPTH_24,
-        volume: Int = 100
+        volume: Int = 100,
+        generation: Long = 0L
     ): ByteArray? {
         val metaSize = FecProtocol.metadataSize(blockSize)
         val maxAllowedPayload = AudioConfig.MAX_PACKET_SIZE - metaSize
@@ -163,7 +164,8 @@ class FecEncoder(val blockSize: Int = AudioConfig.FEC_BLOCK_SIZE) {
                     bitDepth = bitDepth,
                     channels = HatPacket.CHANNELS_STEREO,
                     volumeOrCaps = volume.coerceIn(0, 100).toByte(),
-                    fecBlockSize = blockSize.toByte()
+                    fecBlockSize = blockSize.toByte(),
+                    generation = generation
                 )
             )
 

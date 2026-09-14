@@ -229,7 +229,12 @@ class AudioSinkService : Service() {
     }
 
     private fun applyStreamConfiguration(config: NegotiatedStreamConfig) {
+        val previousGen = currentStreamConfig?.generation
         currentStreamConfig = config
+        if (previousGen != null && previousGen != config.generation) {
+            Log.i(TAG, "Stream generation transition from $previousGen to ${config.generation}: resetting jitter buffer and re-anchoring timeline")
+            jitterBuffer.reset()
+        }
         jitterBuffer.applyConfiguration(config)
 
         val isIncomingOpus = config.codec == AudioCodec.OPUS
@@ -367,6 +372,11 @@ class AudioSinkService : Service() {
 
                             // Check for XOR FEC Parity packet
                             if (header.packetType == HatPacket.TYPE_FEC_PARITY) {
+                                val activeConfig = configAuthority.currentConfig
+                                if (activeConfig != null && header.generation != 0L && header.generation != (activeConfig.generation and 0x7FL)) {
+                                    Log.w(TAG, "Dropping stale-generation FEC parity packet: packet gen=${header.generation}, active gen tag=${activeConfig.generation and 0x7FL}")
+                                    continue
+                                }
                                 val baseSeq = header.sequenceNumber
                                 val blockSize = header.fecBlockSize.toInt() and 0xFF
                                 val parityLen = header.payloadLength
@@ -392,6 +402,15 @@ class AudioSinkService : Service() {
 
                             lastSenderAddress = packet.address
                             lastSenderPort = packet.port
+
+                            // Check for Disconnect signal from transmitter
+                            if (header.packetType == HatPacket.TYPE_DISCONNECT) {
+                                Log.i(TAG, "Received disconnect signal from transmitter: $lastSenderHost")
+                                configAuthority.reset()
+                                currentStreamConfig = null
+                                jitterBuffer.reset()
+                                continue
+                            }
 
                             // Check for Stream Announcement / Control packet
                             if (header.packetType == HatPacket.TYPE_CONTROL) {
@@ -445,6 +464,11 @@ class AudioSinkService : Service() {
 
                             val isSilence = header.packetType == HatPacket.TYPE_SILENCE_HEARTBEAT
                             if (isSilence) {
+                                val activeConfig = configAuthority.currentConfig
+                                if (activeConfig != null && header.generation != 0L && header.generation != (activeConfig.generation and 0x7FL)) {
+                                    Log.w(TAG, "Dropping stale-generation silence heartbeat: packet gen=${header.generation}, active gen tag=${activeConfig.generation and 0x7FL}")
+                                    continue
+                                }
                                 jitterBuffer.onSilenceHeartbeat()
                                 lastSilencePacketTime = SystemClock.elapsedRealtime()
                             } else if (header.payloadLength > 0) {
@@ -457,26 +481,33 @@ class AudioSinkService : Service() {
                             var isLossless = false
 
                             if (isAudio) {
-                                var activeConfig = configAuthority.currentConfig
-                                if (activeConfig == null) {
-                                    // Initial audio packet before any announcement: establish initial generation 1
-                                    val initialConfig = NegotiatedStreamConfig.fromHeader(header, fecEnabled = true, generation = 1L)
+                                val activeConfig = configAuthority.currentConfig ?: run {
+                                    // Initial audio packet before any announcement: establish initial generation
+                                    val initialGen = if (header.generation > 0L) header.generation else 1L
+                                    val initialConfig = NegotiatedStreamConfig.fromHeader(header, fecEnabled = true, generation = initialGen)
                                     if (initialConfig != null) {
                                         val result = configAuthority.applyUpdate(initialConfig)
                                         if (result is ConfigTransitionResult.Applied) {
                                             Log.i(TAG, "Configuration transition: ${initialConfig.transitionLogDescription}")
                                             applyStreamConfiguration(initialConfig)
                                         }
-                                        activeConfig = configAuthority.currentConfig
+                                        configAuthority.currentConfig
                                     } else {
                                         Log.w(TAG, "Rejected audio packet with invalid configuration: codec=${header.codec}, rate=${header.sampleRateHz}, bitDepth=${header.bitDepth}")
-                                        continue
+                                        null
                                     }
+                                } ?: continue
+
+                                // Generation enforcement: drop audio packets from obsolete stream generations!
+                                val expectedGenTag = (activeConfig.generation and 0x7FL)
+                                if (header.generation != expectedGenTag && !(header.generation == 0L && expectedGenTag == 1L)) {
+                                    Log.w(TAG, "Dropping stale-generation audio packet: packet gen=${header.generation}, active gen tag=$expectedGenTag")
+                                    continue
                                 }
 
                                 // Once generation N starts, receivers MUST keep using that configuration.
                                 // A receiver must NOT switch PCM <-> another codec because of individual packets.
-                                val agreement = activeConfig?.validatePacketAgreement(header)
+                                val agreement = activeConfig.validatePacketAgreement(header)
                                 if (agreement !is AgreementResult.Agreed) {
                                     Log.w(TAG, "Dropping packet incompatible with active configuration: ${(agreement as AgreementResult.Disagreement).reason}")
                                     continue

@@ -363,4 +363,51 @@ class HatPacketTest {
         assertEquals(AudioConfig.PROFILE_AUTO, HatPacket.profileCodeToString(HatPacket.PROFILE_AUTO))
         assertEquals(AudioConfig.PROFILE_MUSIC, HatPacket.profileCodeToString(HatPacket.PROFILE_MUSIC))
     }
+
+    @Test
+    fun testAudioPacketGenerationSerializationPreservesFlagsAndTimestamp() {
+        val audioTs = 9876543210L
+        val header = HatPacket.Header(
+            packetType = HatPacket.TYPE_AUDIO,
+            sequenceNumber = 42,
+            payloadLength = 1440,
+            timestamp = audioTs,
+            flags = HatPacket.FLAG_P2P_ACTIVE,
+            generation = 77L
+        )
+
+        val buffer = ByteArray(HatPacket.HEADER_SIZE + 1440)
+        HatPacket.writeHeader(buffer, 0, header)
+
+        val parsed = HatPacket.parseHeader(buffer, 0, buffer.size)
+        assertNotNull(parsed)
+        assertEquals(HatPacket.TYPE_AUDIO, parsed?.packetType)
+        assertEquals(42, parsed?.sequenceNumber)
+        assertEquals(1440, parsed?.payloadLength)
+        // 64-bit frame timestamp must be strictly preserved without corruption
+        assertEquals(audioTs, parsed?.timestamp)
+        // 7-bit generation tag in byte 23 must be preserved
+        assertEquals(77L, parsed?.generation)
+        // Flag bit 0 (FLAG_P2P_ACTIVE) must be cleanly isolated
+        assertEquals(HatPacket.FLAG_P2P_ACTIVE, parsed?.flags)
+    }
+
+    @Test
+    fun testControlPacketGenerationSerialization() {
+        val gen = 123456789L
+        val header = HatPacket.Header(
+            packetType = HatPacket.TYPE_CONTROL,
+            timestamp = gen,
+            generation = gen
+        )
+
+        val buffer = ByteArray(HatPacket.HEADER_SIZE)
+        HatPacket.writeHeader(buffer, 0, header)
+
+        val parsed = HatPacket.parseHeader(buffer, 0, buffer.size)
+        assertNotNull(parsed)
+        assertEquals(HatPacket.TYPE_CONTROL, parsed?.packetType)
+        assertEquals(gen, parsed?.generation)
+        assertEquals(gen, parsed?.timestamp)
+    }
 }

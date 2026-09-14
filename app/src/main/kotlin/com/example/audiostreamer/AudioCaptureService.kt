@@ -750,17 +750,45 @@ class AudioCaptureService : Service() {
                                         notificationManager.notify(NOTIFICATION_ID, buildNotification("Streaming @ Receiver Vol: $incomingVol%"))
                                     }
                                     HatPacket.TYPE_RECEIVER_HEARTBEAT -> {
-                                        if (byteVal != 0) {
-                                            clientCapabilities[endpoint] = byteVal
-                                            prefs.edit().putInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, byteVal).apply()
-                                        }
                                         val isNew = !clientRegistry.containsKey(endpoint)
-                                        clientRegistry[endpoint] = SystemClock.elapsedRealtime()
-                                        if (isNew) {
-                                            val capsDesc = if (byteVal != 0) AudioCapabilities.describeCapabilitiesMask(byteVal) else "default"
-                                            Log.i(TAG, "Registered new multi-unicast receiver: $endpoint (Caps: $capsDesc)")
-                                            activeNegotiatedConfig?.let { config ->
-                                                sendStreamAnnouncement(config, remoteVolumePercent.get(), endpoint)
+                                        val currentConfig = activeNegotiatedConfig
+                                        if (isNew && currentConfig != null) {
+                                            if (!currentConfig.canReceiverConsume(byteVal)) {
+                                                val capsDesc = AudioCapabilities.describeCapabilitiesMask(byteVal)
+                                                Log.w(TAG, "Declining incompatible receiver: $endpoint (Caps: $capsDesc, Active stream requires: ${currentConfig.sampleRateHz} Hz)")
+                                                try {
+                                                    val declineHeader = currentConfig.createHeader(
+                                                        packetType = HatPacket.TYPE_DISCONNECT,
+                                                        sequenceNumber = 0,
+                                                        payloadLength = 0,
+                                                        timestamp = 0L
+                                                    )
+                                                    val declineBuf = ByteArray(AudioConfig.HEADER_SIZE)
+                                                    HatPacket.writeHeader(declineBuf, 0, declineHeader)
+                                                    val declinePkt = DatagramPacket(declineBuf, AudioConfig.HEADER_SIZE, endpoint.address, endpoint.port)
+                                                    listenerSocket.send(declinePkt)
+                                                } catch (e: Exception) {
+                                                    Log.w(TAG, "Failed to send disconnect to incompatible receiver $endpoint: ${e.message}")
+                                                }
+                                                // Incompatible: Do not add to clientRegistry or clientCapabilities, do not renegotiate
+                                            } else {
+                                                if (byteVal != 0) {
+                                                    clientCapabilities[endpoint] = byteVal
+                                                    prefs.edit().putInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, byteVal).apply()
+                                                }
+                                                clientRegistry[endpoint] = SystemClock.elapsedRealtime()
+                                                val capsDesc = if (byteVal != 0) AudioCapabilities.describeCapabilitiesMask(byteVal) else "default"
+                                                Log.i(TAG, "Registered new compatible receiver: $endpoint (Caps: $capsDesc)")
+                                                sendStreamAnnouncement(currentConfig, remoteVolumePercent.get(), endpoint)
+                                            }
+                                        } else {
+                                            if (byteVal != 0) {
+                                                clientCapabilities[endpoint] = byteVal
+                                                prefs.edit().putInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, byteVal).apply()
+                                            }
+                                            clientRegistry[endpoint] = SystemClock.elapsedRealtime()
+                                            if (isNew && currentConfig != null) {
+                                                sendStreamAnnouncement(currentConfig, remoteVolumePercent.get(), endpoint)
                                             }
                                         }
                                     }
@@ -995,7 +1023,8 @@ class AudioCaptureService : Service() {
                                                 profile = negotiatedStreamConfig.transportProfile.latencyTarget.wireCode,
                                                 sampleRateCode = negotiatedStreamConfig.audioFormat.sampleRate.wireCode,
                                                 bitDepth = negotiatedStreamConfig.audioFormat.bitDepth.wireCode,
-                                                volume = volByte.toInt() and 0xFF
+                                                volume = volByte.toInt() and 0xFF,
+                                                generation = negotiatedStreamConfig.generation
                                             )
                                             if (parityBytes != null) {
                                                 fecDatagramPacket.setData(parityBytes, 0, parityBytes.size)
@@ -1149,7 +1178,8 @@ class AudioCaptureService : Service() {
                                     profile = negotiatedStreamConfig.transportProfile.latencyTarget.wireCode,
                                     sampleRateCode = negotiatedStreamConfig.audioFormat.sampleRate.wireCode,
                                     bitDepth = negotiatedStreamConfig.audioFormat.bitDepth.wireCode,
-                                    volume = volByte.toInt() and 0xFF
+                                    volume = volByte.toInt() and 0xFF,
+                                    generation = negotiatedStreamConfig.generation
                                 )
                                 if (parityBytes != null) {
                                     fecDatagramPacket.setData(parityBytes, 0, parityBytes.size)

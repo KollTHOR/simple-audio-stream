@@ -85,7 +85,7 @@ object HatPacket {
         val volumeOrCaps: Byte = 0,
         val fecBlockSize: Byte = 0,
         val flags: Byte = FLAG_NONE,
-        val generation: Long = if (packetType == TYPE_CONTROL) timestamp else 0L
+        val generation: Long = if (packetType == TYPE_CONTROL) timestamp else (((flags.toInt() and 0xFE) ushr 1).toLong())
     ) {
         val sampleRateHz: Int get() = rateCodeToHz(sampleRateCode)
     }
@@ -216,8 +216,19 @@ object HatPacket {
         // 22: FEC Block Size
         buffer[offset + 22] = header.fecBlockSize
 
-        // 23: Flags
-        buffer[offset + 23] = header.flags
+        // 23: Flags and Audio Generation Tag
+        // For TYPE_CONTROL, full 64-bit generation is serialized in offset 8..15 (timestamp).
+        // For audio and other datagrams, timestamp is the 64-bit audio frame timeline and MUST NOT be repurposed.
+        // Bits 1..7 of flags carry the 7-bit generation tag ((generation and 0x7F) shl 1),
+        // preserving bit 0 (FLAG_P2P_ACTIVE).
+        val flagsByte = if (header.packetType == TYPE_CONTROL) {
+            header.flags
+        } else if (header.generation > 0L) {
+            (((header.generation.toInt() and 0x7F) shl 1) or (header.flags.toInt() and 0x01)).toByte()
+        } else {
+            header.flags
+        }
+        buffer[offset + 23] = flagsByte
     }
 
     /**
@@ -275,7 +286,6 @@ object HatPacket {
         val channels = buffer[offset + 20]
         val volumeOrCaps = buffer[offset + 21]
         val fecBlockSize = buffer[offset + 22]
-        val flags = buffer[offset + 23]
 
         // 6. Defensive Type-Specific Validation
         when (packetType) {
@@ -313,7 +323,13 @@ object HatPacket {
         }
 
         val sequenceNumber = readUInt16BE(buffer, offset + 4)
-        val generation = if (packetType == TYPE_CONTROL) timestamp else 0L
+        val rawFlags = buffer[offset + 23]
+        val generation = if (packetType == TYPE_CONTROL) {
+            timestamp
+        } else {
+            ((rawFlags.toInt() and 0xFE) ushr 1).toLong()
+        }
+        val flags = (rawFlags.toInt() and 0x01).toByte()
 
         return Header(
             version = version,

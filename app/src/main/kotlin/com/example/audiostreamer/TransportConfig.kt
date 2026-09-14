@@ -83,6 +83,16 @@ data class AudioFormatConfig(
     }
 }
 
+/**
+ * Audio codecs supported by the transport protocol.
+ *
+ * NOTE: [PCM] is the primary logical stream codec for uncompressed / lossless audio.
+ * [LOSSLESS] represents the custom ASLC (Adaptive Sub-band Lossless Codec) wire format.
+ * In HAT protocol semantics, [HatPacket.CODEC_LOSSLESS_PCM] is a wire-level compression of
+ * a logical PCM stream. Therefore, both [PCM] and [LOSSLESS] logical stream configurations
+ * accept both [HatPacket.CODEC_RAW_PCM] and [HatPacket.CODEC_LOSSLESS_PCM] wire frames interchangeably,
+ * without reconfiguring the stream or mutating the active [NegotiatedStreamConfig].
+ */
 enum class AudioCodec(val wireCode: Byte, val isCompressed: Boolean, val mimeType: String?) {
     PCM(HatPacket.CODEC_RAW_PCM, isCompressed = false, mimeType = null),
     LOSSLESS(HatPacket.CODEC_LOSSLESS_PCM, isCompressed = false, mimeType = null),
@@ -92,6 +102,16 @@ enum class AudioCodec(val wireCode: Byte, val isCompressed: Boolean, val mimeTyp
     companion object {
         fun fromWireCode(code: Byte): AudioCodec? = entries.find { it.wireCode == code }
         fun fromName(name: String): AudioCodec? = entries.find { it.name.equals(name, ignoreCase = true) }
+    }
+
+    /**
+     * Checks if this logical stream codec supports the incoming wire format codec code.
+     * In HAT protocol semantics, LOSSLESS_PCM is a wire-level compression of a logical PCM stream.
+     */
+    fun isWireCodecSupported(wireCodec: Byte): Boolean = when (this) {
+        PCM, LOSSLESS -> wireCodec == HatPacket.CODEC_RAW_PCM || wireCodec == HatPacket.CODEC_LOSSLESS_PCM
+        OPUS -> wireCodec == HatPacket.CODEC_OPUS
+        AAC -> wireCodec == HatPacket.CODEC_AAC
     }
 
     /**
@@ -300,6 +320,21 @@ data class NegotiatedStreamConfig(
     }
 
     /**
+     * Verifies whether a joining receiver reporting [rxCapsMask] is capable
+     * of consuming this running stream configuration without requiring renegotiation.
+     *
+     * In accordance with HAT protocol rules:
+     * - An active stream generation is immutable once started.
+     * - A joining receiver must support the stream's configured sample rate.
+     * - If [rxCapsMask] is 0 (legacy or unstated), compatibility is assumed.
+     */
+    fun canReceiverConsume(rxCapsMask: Int): Boolean {
+        if (rxCapsMask == 0) return true
+        val requiredRateFlag = AudioCapabilities.rateToCapFlag(sampleRateHz)
+        return (rxCapsMask and requiredRateFlag) != 0
+    }
+
+    /**
      * Derives a HatPacket.Header directly from this negotiated configuration.
      * Guarantees packet serialization matches the negotiated configuration.
      */
@@ -339,15 +374,11 @@ data class NegotiatedStreamConfig(
             return AgreementResult.Agreed
         }
 
-        if (header.codec != codec.wireCode) {
-            val isPcmCompatible = (codec == AudioCodec.PCM && header.codec == HatPacket.CODEC_LOSSLESS_PCM) ||
-                                  (codec == AudioCodec.LOSSLESS && header.codec == HatPacket.CODEC_RAW_PCM)
-            if (!isPcmCompatible) {
-                return AgreementResult.Disagreement(
-                    "Codec disagreement: expected ${codec.name} (0x${Integer.toHexString(codec.wireCode.toInt())}), " +
-                    "received 0x${Integer.toHexString(header.codec.toInt())}"
-                )
-            }
+        if (!codec.isWireCodecSupported(header.codec)) {
+            return AgreementResult.Disagreement(
+                "Codec disagreement: expected ${codec.name} (0x${Integer.toHexString(codec.wireCode.toInt())}), " +
+                "received 0x${Integer.toHexString(header.codec.toInt())}"
+            )
         }
 
         if (header.sampleRateCode != audioFormat.sampleRate.wireCode) {

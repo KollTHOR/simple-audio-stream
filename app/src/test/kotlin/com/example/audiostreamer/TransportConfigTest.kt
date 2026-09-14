@@ -529,4 +529,207 @@ class TransportConfigTest {
         assertFalse(aacResult.isAgreed)
         assertTrue((aacResult as AgreementResult.Disagreement).reason.contains("Codec disagreement"))
     }
+
+    @Test
+    fun testStaleAudioPacketAfterGenerationTransition() {
+        val configGen1 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_24),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.BALANCED),
+            generation = 1L
+        )
+
+        val configGen2 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_44100, AudioBitDepth.BIT_16),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.RELIABLE),
+            generation = 2L
+        )
+
+        // Transmitter sends an audio packet under generation 1
+        val pkt1 = configGen1.createHeader(
+            packetType = HatPacket.TYPE_AUDIO,
+            sequenceNumber = 100,
+            payloadLength = 1440,
+            timestamp = 50000L
+        )
+        val buf1 = ByteArray(HatPacket.HEADER_SIZE + 1440)
+        HatPacket.writeHeader(buf1, 0, pkt1)
+        val parsed1 = HatPacket.parseHeader(buf1, 0, buf1.size)
+        assertNotNull(parsed1)
+        assertEquals(1L, parsed1?.generation)
+        assertEquals(50000L, parsed1?.timestamp)
+
+        // Stream transitions to generation 2
+        val activeGenTag = configGen2.generation and 0x7FL
+        assertEquals(2L, activeGenTag)
+
+        // Receiver evaluating incoming audio packet 1 against active generation 2:
+        val isStale = parsed1?.generation != activeGenTag
+        assertTrue("Packet from generation 1 must be flagged as stale when generation 2 is active", isStale)
+
+        // Conversely, a packet created under generation 2 matches
+        val pkt2 = configGen2.createHeader(
+            packetType = HatPacket.TYPE_AUDIO,
+            sequenceNumber = 1,
+            payloadLength = 880,
+            timestamp = 0L
+        )
+        val buf2 = ByteArray(HatPacket.HEADER_SIZE + 880)
+        HatPacket.writeHeader(buf2, 0, pkt2)
+        val parsed2 = HatPacket.parseHeader(buf2, 0, buf2.size)
+        assertNotNull(parsed2)
+        assertEquals(2L, parsed2?.generation)
+        assertEquals(activeGenTag, parsed2?.generation)
+    }
+
+    @Test
+    fun testOldPacketArrivingAfterNewGenerationAnnouncement() {
+        val authority = StreamConfigurationAuthority()
+
+        val configGen1 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_24),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.BALANCED),
+            generation = 1L
+        )
+        val configGen2 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_44100, AudioBitDepth.BIT_16),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.RELIABLE),
+            generation = 2L
+        )
+
+        // Establish initial generation 1
+        authority.applyUpdate(configGen1)
+        assertEquals(1L, authority.currentGeneration)
+
+        // New generation announcement arrives
+        val transitionResult = authority.applyUpdate(configGen2)
+        assertTrue(transitionResult is ConfigTransitionResult.Applied)
+        assertEquals(2L, authority.currentGeneration)
+
+        // An old packet in-flight from generation 1 arrives AFTER the announcement
+        val oldPacketHeader = configGen1.createHeader(
+            packetType = HatPacket.TYPE_AUDIO,
+            sequenceNumber = 999,
+            payloadLength = 1440,
+            timestamp = 100000L
+        )
+        val buf = ByteArray(HatPacket.HEADER_SIZE + 1440)
+        HatPacket.writeHeader(buf, 0, oldPacketHeader)
+        val parsedOld = HatPacket.parseHeader(buf, 0, buf.size)
+        assertNotNull(parsedOld)
+
+        val activeExpectedTag = authority.currentGeneration and 0x7FL
+        val isStale = (parsedOld?.generation != activeExpectedTag)
+        assertTrue("In-flight packet from generation 1 must be detected as stale after generation 2 announcement", isStale)
+    }
+
+    @Test
+    fun testNewReceiverJoiningActiveStream_IncompatibleRejected() {
+        val activeConfig = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_24),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.BALANCED),
+            generation = 1L
+        )
+
+        // Incompatible receiver: only supports 44.1 kHz
+        val incompatibleCaps = AudioCapabilities.CAP_FLAG_44100
+        val canConsume = activeConfig.canReceiverConsume(incompatibleCaps)
+        assertFalse("Incompatible receiver must not be able to consume 48kHz active stream", canConsume)
+
+        // Active configuration is NOT changed or renegotiated
+        assertEquals(48000, activeConfig.sampleRateHz)
+        assertEquals(1L, activeConfig.generation)
+    }
+
+    @Test
+    fun testNewReceiverJoiningActiveStream_CompatibleAccepted() {
+        val activeConfig = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_24),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.BALANCED),
+            generation = 1L
+        )
+
+        // Compatible receiver: supports 48 kHz (and 44.1 kHz)
+        val compatibleCaps = AudioCapabilities.CAP_FLAG_48000 or AudioCapabilities.CAP_FLAG_44100
+        val canConsume = activeConfig.canReceiverConsume(compatibleCaps)
+        assertTrue("Compatible receiver must be able to consume 48kHz active stream", canConsume)
+
+        // Legacy receiver with caps = 0 (unstated) also assumed compatible
+        assertTrue("Legacy receiver with caps 0 must be accepted", activeConfig.canReceiverConsume(0))
+
+        // Active configuration remains authoritative and untouched
+        assertEquals(48000, activeConfig.sampleRateHz)
+        assertEquals(1L, activeConfig.generation)
+    }
+
+    @Test
+    fun testPcmLogicalStreamCarryingRawAndLosslessWirePackets() {
+        // AudioCodec wire support contract
+        assertTrue(AudioCodec.PCM.isWireCodecSupported(HatPacket.CODEC_RAW_PCM))
+        assertTrue(AudioCodec.PCM.isWireCodecSupported(HatPacket.CODEC_LOSSLESS_PCM))
+        assertFalse(AudioCodec.PCM.isWireCodecSupported(HatPacket.CODEC_OPUS))
+        assertFalse(AudioCodec.PCM.isWireCodecSupported(HatPacket.CODEC_AAC))
+
+        assertTrue(AudioCodec.LOSSLESS.isWireCodecSupported(HatPacket.CODEC_RAW_PCM))
+        assertTrue(AudioCodec.LOSSLESS.isWireCodecSupported(HatPacket.CODEC_LOSSLESS_PCM))
+
+        assertTrue(AudioCodec.OPUS.isWireCodecSupported(HatPacket.CODEC_OPUS))
+        assertFalse(AudioCodec.OPUS.isWireCodecSupported(HatPacket.CODEC_RAW_PCM))
+
+        val pcmConfig = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_24),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.RELIABLE),
+            generation = 1L
+        )
+
+        // Wire packets with RAW PCM and LOSSLESS PCM both agree without mutating current config
+        val rawHeader = pcmConfig.createHeader(HatPacket.TYPE_AUDIO, 1, 1440, 0L)
+        val losslessHeader = rawHeader.copy(codec = HatPacket.CODEC_LOSSLESS_PCM)
+
+        assertTrue(pcmConfig.validatePacketAgreement(rawHeader).isAgreed)
+        assertTrue(pcmConfig.validatePacketAgreement(losslessHeader).isAgreed)
+        assertEquals(AudioCodec.PCM, pcmConfig.codec)
+    }
+
+    @Test
+    fun testGenerationTransitionWithInFlightPacketsFlushed() {
+        val jitterBuffer = JitterBuffer()
+        val configGen1 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_24),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.BALANCED),
+            generation = 1L
+        )
+        jitterBuffer.applyConfiguration(configGen1)
+
+        val payload = ByteArray(1440) { 1 }
+        jitterBuffer.write(1, 0L, payload, 0, payload.size)
+        jitterBuffer.write(2, 240L, payload, 0, payload.size)
+        jitterBuffer.write(3, 480L, payload, 0, payload.size)
+        assertEquals(3, jitterBuffer.getAvailableCount())
+
+        // Generation transition occurs: reset jitter buffer to flush old in-flight packets
+        val configGen2 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_44100, AudioBitDepth.BIT_16),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.RELIABLE),
+            generation = 2L
+        )
+        jitterBuffer.reset()
+        jitterBuffer.applyConfiguration(configGen2)
+
+        // Jitter buffer queue is completely clear of old-generation packets
+        assertEquals(0, jitterBuffer.getAvailableCount())
+
+        // New generation packets enter clean jitter buffer
+        val newPayload = ByteArray(880) { 2 }
+        jitterBuffer.write(1, 0L, newPayload, 0, newPayload.size)
+        assertEquals(1, jitterBuffer.getAvailableCount())
+    }
 }
