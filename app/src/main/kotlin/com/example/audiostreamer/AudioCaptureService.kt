@@ -526,7 +526,7 @@ class AudioCaptureService : Service() {
 
         ensureSocketAndControlListener(currentTargetIp, currentTargetPort)
 
-        return profileTransactionManager.changeProfile(
+        val result = profileTransactionManager.changeProfile(
             targetProfile = requestedTarget,
             preferredCodec = when {
                 isOpusActive -> AudioCodec.OPUS
@@ -553,23 +553,35 @@ class AudioCaptureService : Service() {
                 resumeTransmissionPipeline(config)
             }
         )
+
+        if (result is ProfileChangeResult.InitializationFailed) {
+            // The old producer has been stopped and no new producer exists: the service is in a clean
+            // stopped state, so the UI must not keep claiming an active stream.
+            Log.e(
+                TAG,
+                "Profile change to ${requestedTarget.name} aborted: capture pipeline initialization failed. " +
+                    "Previous generation ${result.previousConfig?.generation ?: 0L} remains authoritative; nothing announced."
+            )
+            StreamState.update {
+                it.copy(
+                    isActive = false,
+                    statusDetail = "Profile change failed - capture unavailable",
+                    packetsPerSec = 0,
+                    bytesPerSec = 0
+                )
+            }
+        }
+
+        return result
     }
 
     private fun stopProducerSynchronously() {
         val sThread = streamThread
         streamThread = null
 
-        try {
-            audioRecord?.let { rec ->
-                if (rec.state == AudioRecord.STATE_INITIALIZED && rec.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
-                    rec.stop()
-                }
-                rec.release()
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping/releasing AudioRecord during producer stop", e)
-        }
-        audioRecord = null
+        // Release capture resources before joining the worker: stopping/releasing the AudioRecord unblocks
+        // a pending blocking read() so the join below cannot stall on a silent capture session.
+        releaseActiveCaptureResources()
 
         sThread?.interrupt()
         try {
@@ -577,16 +589,45 @@ class AudioCaptureService : Service() {
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
         }
+    }
 
-        try {
-            opusEncoder?.release()
-        } catch (ignored: Exception) {}
+    /** Releases and clears the capture pipeline resources currently owned by the service. */
+    private fun releaseActiveCaptureResources() {
+        val record = audioRecord
+        val opus = opusEncoder
+        val aac = aacEncoder
+        audioRecord = null
         opusEncoder = null
+        aacEncoder = null
+        releaseCaptureResources(record, opus, aac)
+    }
+
+    /** Releases any combination of capture resources. Every argument may be null. */
+    private fun releaseCaptureResources(record: AudioRecord?, opus: OpusEncoder?, aac: AacEncoder?) {
+        try {
+            if (record != null) {
+                if (record.state == AudioRecord.STATE_INITIALIZED &&
+                    record.recordingState == AudioRecord.RECORDSTATE_RECORDING
+                ) {
+                    record.stop()
+                }
+                record.release()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing AudioRecord", e)
+        }
 
         try {
-            aacEncoder?.release()
-        } catch (ignored: Exception) {}
-        aacEncoder = null
+            opus?.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error releasing Opus encoder: ${e.message}")
+        }
+
+        try {
+            aac?.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error releasing AAC encoder: ${e.message}")
+        }
     }
 
     private fun publishAnnouncementBurst(config: NegotiatedStreamConfig) {
@@ -721,11 +762,101 @@ class AudioCaptureService : Service() {
         }
     }
 
-    @SuppressLint("MissingPermission")
+    /**
+     * PROFILE-CHANGE INITIALIZATION STEP.
+     *
+     * Runs BEFORE the new generation/config is committed or announced. Initializes the COMPLETE capture
+     * pipeline for [config] (AudioRecord + every encoder the config requires), arms capture, and only then
+     * publishes the resources onto the service fields.
+     *
+     * Returns true only when the pipeline is fully initialized AND recording. On any failure every resource
+     * created by the attempt is released and the service fields are left untouched/cleared, so the caller can
+     * abort the transaction without leaking an AudioRecord, an encoder/MediaCodec or leaving a stale field.
+     */
     private fun reconfigureCapturePipeline(
         config: NegotiatedStreamConfig,
         projection: MediaProjection
-    ) {
+    ): Boolean {
+        // Build the whole pipeline locally first: no service field is touched until it is complete.
+        val pipeline = initializeCapturePipeline(config, projection) ?: return false
+
+        this.audioRecord = pipeline.audioRecord
+        this.opusEncoder = pipeline.opusEncoder
+        this.aacEncoder = pipeline.aacEncoder
+        activeCaptureSampleRate = pipeline.audioRecord.sampleRate
+
+        // Arm capture while still inside the initialization phase so a profile change can only be committed
+        // once the producer has a live source to read from.
+        try {
+            pipeline.audioRecord.startRecording()
+        } catch (t: Throwable) {
+            Log.e(TAG, "Failed to start AudioRecord for ${config.toSummaryString()}", t)
+            releaseActiveCaptureResources()
+            return false
+        }
+
+        if (pipeline.audioRecord.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+            Log.e(TAG, "AudioRecord did not enter RECORDING state for ${config.toSummaryString()}")
+            releaseActiveCaptureResources()
+            return false
+        }
+
+        Log.i(
+            TAG,
+            "Capture pipeline initialized and recording for ${config.toSummaryString()} at ${activeCaptureSampleRate} Hz"
+        )
+        silenceTransmitterSpeakers()
+        return true
+    }
+
+    /**
+     * Smallest initialization boundary directly used by the profile-change transaction: creates and
+     * validates every resource [config] requires, releasing everything it created on ANY failure so the
+     * caller never observes a partially initialized pipeline.
+     */
+    private fun initializeCapturePipeline(
+        config: NegotiatedStreamConfig,
+        projection: MediaProjection
+    ): CapturePipeline<AudioRecord, OpusEncoder, AacEncoder>? {
+        val initializer = CapturePipelineInitializer(
+            createAudioRecord = { cfg -> createAudioRecordForConfig(cfg, projection) },
+            createOpusEncoder = { cfg -> createOpusEncoderOrNull(cfg) },
+            createAacEncoder = { cfg -> createAacEncoderOrNull(cfg) },
+            releaseAudioRecord = { rec -> releaseCaptureResources(rec, null, null) },
+            releaseOpusEncoder = { enc -> releaseCaptureResources(null, enc, null) },
+            releaseAacEncoder = { enc -> releaseCaptureResources(null, null, enc) }
+        )
+        return initializer.initialize(config)
+    }
+
+    /** Creates an Opus encoder, or null when the underlying MediaCodec could not be initialized. */
+    private fun createOpusEncoderOrNull(config: NegotiatedStreamConfig): OpusEncoder? {
+        val encoder = OpusEncoder(config.sampleRateHz)
+        if (encoder.isInitialized) return encoder
+        Log.e(TAG, "Opus encoder unavailable; aborting capture pipeline for ${config.toSummaryString()}")
+        encoder.release()
+        return null
+    }
+
+    /** Creates an AAC encoder, or null when the underlying MediaCodec could not be initialized. */
+    private fun createAacEncoderOrNull(config: NegotiatedStreamConfig): AacEncoder? {
+        val encoder = AacEncoder(config.sampleRateHz)
+        if (encoder.isInitialized) return encoder
+        Log.e(TAG, "AAC encoder unavailable; aborting capture pipeline for ${config.toSummaryString()}")
+        encoder.release()
+        return null
+    }
+
+    /**
+     * Probes and creates an initialized AudioRecord for [config].
+     * Candidates that do not reach STATE_INITIALIZED are released here, so this never leaks a half-built
+     * AudioRecord nor returns an unusable one.
+     */
+    @SuppressLint("MissingPermission")
+    private fun createAudioRecordForConfig(
+        config: NegotiatedStreamConfig,
+        projection: MediaProjection
+    ): AudioRecord? {
         val captureConfig = AudioPlaybackCaptureConfiguration.Builder(projection)
             .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
             .addMatchingUsage(AudioAttributes.USAGE_GAME)
@@ -756,17 +887,26 @@ class AudioCaptureService : Service() {
                 val minBuf16 = AudioRecord.getMinBufferSize(rate, AudioConfig.CHANNEL_IN_MASK, AudioConfig.ENCODING)
                 if (minBuf16 > 0) {
                     val bufSize16 = maxOf(minBuf16 * 2, 4096)
-                    val rec = AudioRecord.Builder()
-                        .setAudioPlaybackCaptureConfig(captureConfig)
-                        .setAudioFormat(audioFormat16)
-                        .setBufferSizeInBytes(bufSize16)
-                        .build()
-                    if (rec.state == AudioRecord.STATE_INITIALIZED) {
-                        record = rec
-                        Log.i(TAG, "Initialized compressed capture AudioRecord at $rate Hz")
-                        break
-                    } else {
-                        rec.release()
+                    var candidate: AudioRecord? = null
+                    try {
+                        candidate = AudioRecord.Builder()
+                            .setAudioPlaybackCaptureConfig(captureConfig)
+                            .setAudioFormat(audioFormat16)
+                            .setBufferSizeInBytes(bufSize16)
+                            .build()
+                        if (candidate.state == AudioRecord.STATE_INITIALIZED) {
+                            record = candidate
+                            Log.i(TAG, "Initialized compressed capture AudioRecord at $rate Hz")
+                            break
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Probing compressed AudioRecord at $rate Hz failed: ${e.message}")
+                    }
+                    // Never abandon a candidate that this attempt did not adopt.
+                    if (record !== candidate) {
+                        try {
+                            candidate?.release()
+                        } catch (ignored: Exception) {}
                     }
                 }
             }
@@ -844,34 +984,30 @@ class AudioCaptureService : Service() {
 
         if (record == null || record.state != AudioRecord.STATE_INITIALIZED) {
             Log.e(TAG, "AudioRecord initialization failed across all probed rates")
-            return
+            return null
         }
-        this.audioRecord = record
-        activeCaptureSampleRate = record.sampleRate
-
-        if (config.codec == AudioCodec.OPUS) {
-            this.opusEncoder = OpusEncoder(config.sampleRateHz)
-        } else {
-            this.opusEncoder = null
-        }
-
-        if (config.codec == AudioCodec.AAC) {
-            this.aacEncoder = AacEncoder(config.sampleRateHz)
-        } else {
-            this.aacEncoder = null
-        }
-
-        silenceTransmitterSpeakers()
+        return record
     }
 
-    private fun resumeTransmissionPipeline(config: NegotiatedStreamConfig) {
+    /**
+     * PROFILE-CHANGE PRODUCER START STEP.
+     *
+     * Runs after the new generation/config has been committed and announced. The capture pipeline was
+     * already fully initialized (and is recording) by [reconfigureCapturePipeline]; this only starts the
+     * producer that consumes it. Returns true only when the producer is actually running.
+     */
+    private fun resumeTransmissionPipeline(config: NegotiatedStreamConfig): Boolean {
         val record = this.audioRecord ?: run {
             Log.e(TAG, "Cannot resume transmission: audioRecord is null")
-            return
+            return false
         }
         val socket = this.udpSocket ?: run {
             Log.e(TAG, "Cannot resume transmission: udpSocket is null")
-            return
+            return false
+        }
+        if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+            Log.e(TAG, "Cannot resume transmission: AudioRecord is not recording for ${config.toSummaryString()}")
+            return false
         }
 
         val isOpusActive = config.codec == AudioCodec.OPUS
@@ -940,10 +1076,9 @@ class AudioCaptureService : Service() {
             )
         }
 
-        record.startRecording()
-        Log.i(TAG, "AudioRecord recording started for generation ${config.generation} at $captureSampleRate Hz (Profile: $initialProfileDisplayName, Payload: $activePayloadSize bytes, FEC: $isFecEnabled)")
+        Log.i(TAG, "Starting producer for generation ${config.generation} at $captureSampleRate Hz (Profile: $initialProfileDisplayName, Payload: $activePayloadSize bytes, FEC: $isFecEnabled)")
 
-        streamThread = Thread({
+        val worker = Thread({
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
 
             val sendBuffer = ByteArray(AudioConfig.HEADER_SIZE + AudioConfig.MAX_PACKET_SIZE)
@@ -1296,10 +1431,18 @@ class AudioCaptureService : Service() {
             } finally {
                 Log.i(TAG, "Audio streaming thread stopped")
             }
-        }, "AudioCaptureStreamer").apply {
-            isDaemon = true
-            start()
+        }, "AudioCaptureStreamer")
+
+        streamThread = worker
+        worker.isDaemon = true
+        try {
+            worker.start()
+        } catch (t: Throwable) {
+            streamThread = null
+            Log.e(TAG, "Failed to start stream thread for generation ${config.generation}", t)
+            return false
         }
+        return true
     }
 
     private fun stopStreaming() {
@@ -1531,20 +1674,30 @@ class AudioCaptureService : Service() {
         private var codec: MediaCodec? = null
         private val bufferInfo = MediaCodec.BufferInfo()
 
+        /** True only when the underlying MediaCodec was created, configured and started. */
+        val isInitialized: Boolean get() = codec != null
+
         init {
+            // The MediaCodec is created locally and only published to [codec] once it is fully started, so a
+            // configuration/start failure can never leave a half-configured codec referenced by this encoder.
+            var encoder: MediaCodec? = null
             try {
                 val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channelCount).apply {
                     setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
                     setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
                     setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
                 }
-                val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+                encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
                 encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 encoder.start()
                 codec = encoder
                 Log.i(TAG, "Initialized AAC MediaCodec encoder: rate=$sampleRate, channels=$channelCount, bitRate=$bitRate")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed initializing AAC encoder", e)
+                try {
+                    encoder?.release()
+                } catch (ignored: Exception) {}
+                codec = null
             }
         }
 
@@ -1624,20 +1777,30 @@ class AudioCaptureService : Service() {
         private val bufferInfo = MediaCodec.BufferInfo()
         private var presentationTimeUs = 0L
 
+        /** True only when the underlying MediaCodec was created, configured and started. */
+        val isInitialized: Boolean get() = codec != null
+
         init {
+            // The MediaCodec is created locally and only published to [codec] once it is fully started, so a
+            // configuration/start failure can never leave a half-configured codec referenced by this encoder.
+            var encoder: MediaCodec? = null
             try {
                 val format = MediaFormat.createAudioFormat(AudioConfig.OPUS_MIME_TYPE, sampleRate, channelCount).apply {
                     setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
                     setInteger(MediaFormat.KEY_COMPLEXITY, 5)
                     setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
                 }
-                val encoder = MediaCodec.createEncoderByType(AudioConfig.OPUS_MIME_TYPE)
+                encoder = MediaCodec.createEncoderByType(AudioConfig.OPUS_MIME_TYPE)
                 encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 encoder.start()
                 codec = encoder
                 Log.i(TAG, "Initialized Opus MediaCodec encoder: rate=$sampleRate, channels=$channelCount, bitRate=$bitRate")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed initializing Opus encoder", e)
+                try {
+                    encoder?.release()
+                } catch (ignored: Exception) {}
+                codec = null
             }
         }
 
@@ -1688,6 +1851,113 @@ class AudioCaptureService : Service() {
             } catch (ignored: Exception) {}
             codec = null
             presentationTimeUs = 0L
+        }
+    }
+}
+
+private const val PIPELINE_TAG = "AudioCaptureService"
+
+/**
+ * A fully initialized capture pipeline for one profile-change attempt.
+ *
+ * An instance only ever holds resources that were ALL created and validated successfully: a partially
+ * initialized pipeline is never handed out. The owner releases it via [CapturePipelineInitializer.release]
+ * (or by releasing each resource) once the producer consuming it has been stopped.
+ */
+class CapturePipeline<R : Any, O : Any, A : Any>(
+    val audioRecord: R,
+    val opusEncoder: O?,
+    val aacEncoder: A?
+)
+
+/**
+ * Smallest runtime capture-pipeline initialization boundary used by the profile-change transaction.
+ *
+ * Creates every resource the negotiated config requires, in order, and only returns a pipeline once all of
+ * them are valid:
+ * - the AudioRecord factory must return an already validated record (or null/throw when it cannot create one);
+ * - a compressed codec additionally requires its encoder resource; a missing one is a failure;
+ * - uncompressed codecs (PCM/LOSSLESS) require no encoder resources.
+ *
+ * If ANY step fails (exception or missing required resource) every resource created by that attempt is
+ * released before null is returned, so a failed profile change can never leak an AudioRecord, an
+ * encoder/MediaCodec, or leave a partially initialized pipeline referenced by service fields.
+ */
+class CapturePipelineInitializer<R : Any, O : Any, A : Any>(
+    private val createAudioRecord: (NegotiatedStreamConfig) -> R?,
+    private val createOpusEncoder: (NegotiatedStreamConfig) -> O?,
+    private val createAacEncoder: (NegotiatedStreamConfig) -> A?,
+    private val releaseAudioRecord: (R) -> Unit,
+    private val releaseOpusEncoder: (O) -> Unit,
+    private val releaseAacEncoder: (A) -> Unit
+) {
+    fun initialize(config: NegotiatedStreamConfig): CapturePipeline<R, O, A>? {
+        var record: R? = null
+        var opus: O? = null
+        var aac: A? = null
+        try {
+            record = createAudioRecord(config)
+            if (record == null) {
+                Log.e(PIPELINE_TAG, "AudioRecord unavailable; capture pipeline not initialized for ${config.toSummaryString()}")
+                return null
+            }
+
+            when (config.codec) {
+                AudioCodec.OPUS -> {
+                    opus = createOpusEncoder(config)
+                    if (opus == null) {
+                        throw IllegalStateException("Opus encoder initialization failed for ${config.toSummaryString()}")
+                    }
+                }
+                AudioCodec.AAC -> {
+                    aac = createAacEncoder(config)
+                    if (aac == null) {
+                        throw IllegalStateException("AAC encoder initialization failed for ${config.toSummaryString()}")
+                    }
+                }
+                // Uncompressed streams need no encoder resources
+                AudioCodec.PCM, AudioCodec.LOSSLESS -> Unit
+            }
+
+            return CapturePipeline(record, opus, aac)
+        } catch (t: Throwable) {
+            Log.e(
+                PIPELINE_TAG,
+                "Capture pipeline initialization failed for ${config.toSummaryString()}; releasing every created resource",
+                t
+            )
+            releaseQuietly(record, opus, aac)
+            return null
+        }
+    }
+
+    /** Releases a pipeline previously returned by [initialize]. Safe to call with null. */
+    fun release(pipeline: CapturePipeline<R, O, A>?) {
+        if (pipeline == null) return
+        releaseQuietly(pipeline.audioRecord, pipeline.opusEncoder, pipeline.aacEncoder)
+    }
+
+    private fun releaseQuietly(record: R?, opus: O?, aac: A?) {
+        record?.let { res ->
+            try {
+                releaseAudioRecord(res)
+            } catch (t: Throwable) {
+                Log.w(PIPELINE_TAG, "Failed releasing AudioRecord: ${t.message}")
+            }
+        }
+        opus?.let { enc ->
+            try {
+                releaseOpusEncoder(enc)
+            } catch (t: Throwable) {
+                Log.w(PIPELINE_TAG, "Failed releasing Opus encoder: ${t.message}")
+            }
+        }
+        aac?.let { enc ->
+            try {
+                releaseAacEncoder(enc)
+            } catch (t: Throwable) {
+                Log.w(PIPELINE_TAG, "Failed releasing AAC encoder: ${t.message}")
+            }
         }
     }
 }
