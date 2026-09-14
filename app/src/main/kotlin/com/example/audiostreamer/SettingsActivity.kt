@@ -25,6 +25,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.button.MaterialButtonToggleGroup
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -80,6 +81,15 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var btnRefreshAudioStats: ImageView
     private lateinit var btnAppInfo: MaterialButton
     private lateinit var btnAccessibilitySettings: MaterialButton
+
+    // Full HAT Test (automated diagnostic harness)
+    private lateinit var tvHatTestState: TextView
+    private lateinit var tvHatTestProgress: TextView
+    private lateinit var pbHatTest: ProgressBar
+    private lateinit var btnRunFullHatTest: MaterialButton
+    private lateinit var btnCancelHatTest: MaterialButton
+    private lateinit var btnShareHatTest: MaterialButton
+    private lateinit var btnHatTestContinue: MaterialButton
 
     enum class UpdateState {
         CHECK,
@@ -278,6 +288,26 @@ class SettingsActivity : AppCompatActivity() {
         }
         btnViewLogs?.setOnClickListener {
             AppLogger.showLogViewerDialog(this)
+        }
+
+        tvHatTestState = findViewById(R.id.tv_hat_test_state)
+        tvHatTestProgress = findViewById(R.id.tv_hat_test_progress)
+        pbHatTest = findViewById(R.id.pb_hat_test)
+        btnRunFullHatTest = findViewById(R.id.btn_run_full_hat_test)
+        btnCancelHatTest = findViewById(R.id.btn_cancel_hat_test)
+        btnShareHatTest = findViewById(R.id.btn_share_hat_test)
+        btnHatTestContinue = findViewById(R.id.btn_hat_test_continue)
+
+        btnRunFullHatTest.setOnClickListener { confirmAndRunFullHatTest() }
+        btnCancelHatTest.setOnClickListener { HatTestController.cancel() }
+        btnHatTestContinue.setOnClickListener { HatTestController.continueManual() }
+        btnShareHatTest.setOnClickListener { shareHatTestReport() }
+        btnShareHatTest.visibility = View.GONE
+        btnHatTestContinue.visibility = View.GONE
+
+        // Single source of truth for the test state: the controller owns the run, this screen renders it.
+        lifecycleScope.launch {
+            HatTestController.progress.collect { renderHatTestProgress(it) }
         }
 
         btnCheckUpdate.text = "Check for Updates"
@@ -482,6 +512,88 @@ class SettingsActivity : AppCompatActivity() {
             AudioConfig.BIT_DEPTH_16 -> "16-bit: Standard 16-bit integer PCM. Bit-for-bit match for CD audio, Tidal HiFi, and Spotify with zero upsampling."
             AudioConfig.BIT_DEPTH_24 -> "24-bit: Lossless 24-bit packed PCM. 144 dB theoretical dynamic range for studio masters."
             else -> "Auto: Automatically uses 16-bit for CD/standard streams (44.1k/48k) to avoid artificial upsampling, and 24-bit for Hi-Res streams."
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Full HAT Test (Settings → Diagnostics)
+    // ---------------------------------------------------------------------------------------------
+
+    private fun confirmAndRunFullHatTest() {
+        if (HatTestController.isRunning()) {
+            Toast.makeText(this, "A Full HAT Test is already running", Toast.LENGTH_SHORT).show()
+            return
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Run Full HAT Test?")
+            .setMessage(
+                "Runs the automated diagnostic scenarios against the currently connected HAT stream. " +
+                    "The stream profile changes several times and a complete run takes several minutes. " +
+                    "The report is written to Downloads/HAT/. You can cancel at any time."
+            )
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Run") { _, _ ->
+                if (!HatTestController.start(this)) {
+                    Toast.makeText(this, "A Full HAT Test is already running", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .show()
+    }
+
+    private fun renderHatTestProgress(progress: HatTestProgress) {
+        val stateText = when (progress.state) {
+            HatTestState.IDLE -> "Idle"
+            HatTestState.PREPARING -> "Preparing"
+            HatTestState.RUNNING -> "Running"
+            HatTestState.COMPLETING -> "Completing"
+            HatTestState.EXPORTING -> "Exporting"
+            HatTestState.COMPLETED -> "Completed"
+            HatTestState.FAILED -> "Failed"
+            HatTestState.CANCELLED -> "Cancelled"
+        }
+        val verdict = progress.report?.summary?.verdict?.let { " ($it)" } ?: ""
+        tvHatTestState.text = "State: $stateText$verdict"
+        pbHatTest.progress = (progress.overallProgress * 100f).toInt().coerceIn(0, 100)
+
+        tvHatTestProgress.text = buildString {
+            if (progress.scenarioCount > 0 && progress.scenarioIndex > 0) {
+                append("Scenario ${progress.scenarioIndex}/${progress.scenarioCount}")
+                progress.scenarioName?.let { append(": $it") }
+                append(" (${(progress.scenarioProgress * 100f).toInt()}%)\n")
+            }
+            append("Elapsed: ${progress.elapsedMs / 1000}s • Overall: ${(progress.overallProgress * 100f).toInt()}%")
+            progress.message?.takeIf { it.isNotBlank() }?.let { append("\n$it") }
+            if (progress.exportedFiles.isNotEmpty()) {
+                append("\nExported: ${progress.exportedFiles.joinToString(", ")}")
+            }
+            if (progress.state == HatTestState.FAILED) {
+                progress.error?.takeIf { it.isNotBlank() }?.let { append("\nError: $it") }
+            }
+        }
+
+        btnRunFullHatTest.isEnabled = !progress.isBusy
+        btnCancelHatTest.isEnabled = progress.isBusy
+        btnHatTestContinue.visibility = if (progress.awaitingManualContinue) View.VISIBLE else View.GONE
+        btnShareHatTest.visibility = if (progress.exportedUris.isNotEmpty()) View.VISIBLE else View.GONE
+    }
+
+    private fun shareHatTestReport() {
+        val uris = HatTestController.progress.value.exportedUris
+            .mapNotNull { runCatching { Uri.parse(it) }.getOrNull() }
+        if (uris.isEmpty()) {
+            Toast.makeText(this, "No exported HAT test report yet", Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                type = "text/*"
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, "Share HAT test report"))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to share HAT test report", e)
+            Toast.makeText(this, "Could not share report: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
