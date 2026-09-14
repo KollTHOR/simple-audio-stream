@@ -87,7 +87,9 @@ class AudioCaptureService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var audioRecord: AudioRecord? = null
     @Volatile private var udpSocket: DatagramSocket? = null
-    @Volatile private var activeNegotiatedConfig: NegotiatedStreamConfig? = null
+    val profileTransactionManager = StreamProfileTransactionManager(currentStreamGeneration)
+    val activeNegotiatedConfig: NegotiatedStreamConfig?
+        get() = profileTransactionManager.activeTransmitterConfig
     private val socketSendLock = Any()
     private var streamThread: Thread? = null
     private var controlListenerThread: Thread? = null
@@ -422,7 +424,22 @@ class AudioCaptureService : Service() {
         this.mediaProjection = projection
         projection.registerCallback(projectionCallback, null)
 
-        startCapturePipeline(projection, targetIp, targetPort)
+        ensureSocketAndControlListener(targetIp, targetPort)
+
+        val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+        val profileStr = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_AUTO) ?: AudioConfig.PROFILE_AUTO
+        val initialTarget = LatencyTarget.fromString(profileStr)
+
+        performProfileChange(initialTarget)
+
+        // Real-time audio engine adaptation: monitor Android playback sessions (e.g. Tidal/Spotify)
+        val rawRatePref = prefs.getString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_AUTO) ?: AudioConfig.SAMPLE_RATE_AUTO
+        val rawBitPref = prefs.getString(AudioConfig.PREF_KEY_BIT_DEPTH, AudioConfig.BIT_DEPTH_AUTO) ?: AudioConfig.BIT_DEPTH_AUTO
+        if (profileStr == AudioConfig.PROFILE_AUTO || (profileStr == AudioConfig.PROFILE_MUSIC && (rawRatePref == AudioConfig.SAMPLE_RATE_AUTO || rawBitPref == AudioConfig.BIT_DEPTH_AUTO))) {
+            AudioPlaybackDetector.startMonitoring(this) { newFormat ->
+                Log.d(TAG, "AudioPlaybackDetector active media format: ${newFormat.description}")
+            }
+        }
     }
 
     private fun restartStreaming() {
@@ -435,52 +452,24 @@ class AudioCaptureService : Service() {
         val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
         val requestedProfileStr = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_AUTO) ?: AudioConfig.PROFILE_AUTO
         val requestedTarget = LatencyTarget.fromString(requestedProfileStr)
-        val currentTarget = activeNegotiatedConfig?.transportProfile?.latencyTarget
 
-        // Requirement 5: Repeated requests for currently active profile must do nothing
-        if (activeNegotiatedConfig != null && currentTarget == requestedTarget) {
-            Log.i(TAG, "Repeated request for active profile ${requestedTarget.name}: doing nothing (no generation increment, no AudioTrack recreation, no jitter-buffer reset)")
-            return
-        }
-
-        // Requirement 8: PROFILE_CHANGE_BEGIN
-        val current = activeNegotiatedConfig
-        val currentGen = current?.generation ?: currentStreamGeneration.get()
-        val currentProfileName = current?.transportProfile?.latencyTarget?.name ?: "NONE"
-        val currentCodecName = current?.codec?.name ?: "NONE"
-        val currentRate = current?.sampleRateHz ?: activeCaptureSampleRate
-        val currentBits = current?.bitDepthBits ?: 16
-        val currentChannels = current?.channels ?: 2
-        Log.i(TAG, "PROFILE_CHANGE_BEGIN: targetProfile=${requestedTarget.name}, generation=$currentGen, profile=$currentProfileName, codec=$currentCodecName, sampleRate=$currentRate, bitDepth=$currentBits, channels=$currentChannels")
-
-        Log.i(TAG, "Live restarting capture pipeline with existing MediaProjection...")
-        // Step a: Stop sending packets using the old configuration
-        stopStreamingInternal(keepProjection = true)
-        try { Thread.sleep(50) } catch (ignored: Exception) {}
-        isRunning.set(true)
-        startCapturePipeline(proj, currentTargetIp, currentTargetPort)
+        performProfileChange(requestedTarget)
     }
 
-    @SuppressLint("MissingPermission")
-    private fun startCapturePipeline(
-        projection: MediaProjection,
-        targetIp: String,
-        targetPort: Int
-    ) {
-        val captureConfig = AudioPlaybackCaptureConfiguration.Builder(projection)
-            .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-            .addMatchingUsage(AudioAttributes.USAGE_GAME)
-            .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
-            .build()
-
-        val detectedMedia = AudioPlaybackDetector.getActiveMediaFormat(this)
-        Log.i(TAG, "AudioPlaybackDetector detected: ${detectedMedia.description}")
+    fun performProfileChange(requestedTarget: LatencyTarget): ProfileChangeResult {
+        val proj = mediaProjection
+        if (proj == null) {
+            Log.w(TAG, "Cannot perform profile change: mediaProjection is null")
+            return ProfileChangeResult.IgnoredSameProfile(
+                activeProfile = requestedTarget,
+                generation = currentStreamGeneration.get()
+            )
+        }
 
         val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
-        val profile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_AUTO) ?: AudioConfig.PROFILE_AUTO
-        val isLowLatency = (profile == AudioConfig.PROFILE_VIDEO || profile == AudioConfig.PROFILE_LOW_LATENCY)
-        val isMusic = (profile == AudioConfig.PROFILE_MUSIC)
-        val isAuto = (!isLowLatency && !isMusic)
+        val isLowLatency = (requestedTarget == LatencyTarget.LOW_LATENCY)
+        val isMusic = (requestedTarget == LatencyTarget.RELIABLE)
+        val isAuto = (requestedTarget == LatencyTarget.BALANCED)
 
         val isOpusSupported = isLowLatency && isOpusEncoderAvailable()
         val isOpusActive = isLowLatency && isOpusSupported
@@ -490,16 +479,7 @@ class AudioCaptureService : Service() {
         val rawRatePref = prefs.getString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_AUTO) ?: AudioConfig.SAMPLE_RATE_AUTO
         val rawBitPref = prefs.getString(AudioConfig.PREF_KEY_BIT_DEPTH, AudioConfig.BIT_DEPTH_AUTO) ?: AudioConfig.BIT_DEPTH_AUTO
 
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-        val nativeProp = audioManager?.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)
-        val parsedRate = nativeProp?.toIntOrNull()
-        val nativeSampleRate = if (parsedRate == 44100) 44100 else 48000
-
-        var record: AudioRecord? = null
-        var captureSampleRate = AudioConfig.SAMPLE_RATE_48000
-        var is24BitActive = false
-        var activePayloadSize = AudioConfig.PACKET_SIZE_16BIT_48K
-
+        val detectedMedia = AudioPlaybackDetector.getActiveMediaFormat(this)
         val targetRate: Int
         val target24Bit: Boolean
 
@@ -509,8 +489,6 @@ class AudioCaptureService : Service() {
             target24Bit = false
         } else if (isAuto) {
             // Auto Adaptive Mode: 24-bit / 48 kHz stereo is the primary Android operating point.
-            // When media is CD audio (44.1 kHz) and hardware mix bus operates at 44.1 kHz, match 44.1 kHz.
-            // Otherwise, 48.0 kHz native mix bus avoids AudioFlinger resampler distortion.
             val hwOutputRate = AudioPlaybackDetector.getHardwareOutputRate(this)
             targetRate = if (detectedMedia.sampleRate == AudioConfig.SAMPLE_RATE_44100 && hwOutputRate == AudioConfig.SAMPLE_RATE_44100) {
                 AudioConfig.SAMPLE_RATE_44100
@@ -520,7 +498,6 @@ class AudioCaptureService : Service() {
             target24Bit = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) && (rawBitPref != AudioConfig.BIT_DEPTH_16)
         } else {
             // Unlocked Music Mode: 24-bit / 48 kHz stereo primary operating point on Android.
-            // Android capture is clamped to native rates (48k / 44.1k) to avoid AudioFlinger internal distortion.
             val requestedRate = if (rawRatePref == AudioConfig.SAMPLE_RATE_AUTO) {
                 if (detectedMedia.sampleRate == AudioConfig.SAMPLE_RATE_44100) AudioConfig.SAMPLE_RATE_44100 else AudioConfig.SAMPLE_RATE_48000
             } else {
@@ -545,39 +522,225 @@ class AudioCaptureService : Service() {
             else -> prefs.getInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, 0)
         }
 
-        val generation = currentStreamGeneration.incrementAndGet()
-        val negotiatedSession = StreamNegotiator.negotiate(
-            StreamNegotiator.NegotiationRequest(
-                preferredProfile = LatencyTarget.fromString(profile),
-                preferredCodec = when {
-                    isOpusActive -> AudioCodec.OPUS
-                    isAacActive -> AudioCodec.AAC
-                    else -> AudioCodec.PCM
-                },
-                preferredSampleRateHz = targetRate,
-                preferred24Bit = target24Bit,
-                txCapabilitiesMask = txCaps,
-                rxCapabilitiesMask = rxCaps,
-                rxCapabilitiesList = rxCapsList,
-                fecEnabled = prefs.getBoolean(AudioConfig.PREF_KEY_FEC_ENABLED, true),
-                isOpusEncoderAvailable = isOpusSupported
-            ),
-            generation = generation
+        val fecEnabled = prefs.getBoolean(AudioConfig.PREF_KEY_FEC_ENABLED, true)
+
+        ensureSocketAndControlListener(currentTargetIp, currentTargetPort)
+
+        return profileTransactionManager.changeProfile(
+            targetProfile = requestedTarget,
+            preferredCodec = when {
+                isOpusActive -> AudioCodec.OPUS
+                isAacActive -> AudioCodec.AAC
+                else -> AudioCodec.PCM
+            },
+            preferredSampleRateHz = targetRate,
+            preferred24Bit = target24Bit,
+            txCapabilitiesMask = txCaps,
+            rxCapabilitiesMask = rxCaps,
+            rxCapabilitiesList = rxCapsList,
+            fecEnabled = fecEnabled,
+            isOpusEncoderAvailable = isOpusSupported,
+            onStopTransmission = {
+                stopProducerSynchronously()
+            },
+            onPublishAnnouncement = { config ->
+                publishAnnouncementBurst(config)
+            },
+            onReconfigureCapture = { config ->
+                reconfigureCapturePipeline(config, proj)
+            },
+            onResumeTransmission = { config ->
+                resumeTransmissionPipeline(config)
+            }
         )
-        val negotiatedRate = negotiatedSession.sampleRateHz
+    }
 
-        val sourceCapDesc = "Android HAL: ${AudioCapabilities.describeCapabilities(txCaps)}"
-        val rxCapDesc = if (rxCaps != 0) AudioCapabilities.describeCapabilities(rxCaps) else "Pending receiver discovery"
+    private fun stopProducerSynchronously() {
+        val sThread = streamThread
+        streamThread = null
 
-        if (profile == AudioConfig.PROFILE_MUSIC && negotiatedRate != targetRate) {
-            Log.i(TAG, "Uncapped Music: requested $targetRate Hz clamped to mutually supported $negotiatedRate Hz (TX: ${AudioCapabilities.describeCapabilitiesMask(txCaps)}, RX: ${AudioCapabilities.describeCapabilitiesMask(rxCaps)})")
+        try {
+            audioRecord?.let { rec ->
+                if (rec.state == AudioRecord.STATE_INITIALIZED && rec.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                    rec.stop()
+                }
+                rec.release()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping/releasing AudioRecord during producer stop", e)
         }
+        audioRecord = null
+
+        sThread?.interrupt()
+        try {
+            sThread?.join()
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+
+        try {
+            opusEncoder?.release()
+        } catch (ignored: Exception) {}
+        opusEncoder = null
+
+        try {
+            aacEncoder?.release()
+        } catch (ignored: Exception) {}
+        aacEncoder = null
+    }
+
+    private fun publishAnnouncementBurst(config: NegotiatedStreamConfig) {
+        repeat(3) {
+            sendStreamAnnouncement(config, remoteVolumePercent.get())
+        }
+    }
+
+    private fun ensureSocketAndControlListener(targetIp: String, targetPort: Int) {
+        if (udpSocket != null && !udpSocket!!.isClosed) {
+            return
+        }
+        val targetAddresses = parseTargetAddresses(targetIp)
+        clientRegistry.clear()
+        clientCapabilities.clear()
+        for (addr in targetAddresses) {
+            val ep = ClientEndpoint(addr, targetPort)
+            clientRegistry[ep] = Long.MAX_VALUE
+            val knownCaps = DiscoveryManager.lastDiscoveredReceiverCapabilities
+            if (knownCaps != 0) {
+                clientCapabilities[ep] = knownCaps
+            }
+        }
+        val firstTargetIp = targetAddresses.firstOrNull()?.hostAddress ?: targetIp
+        val matchingLocalIp = NetworkUtils.findMatchingLocalIp(firstTargetIp)
+        val socket: DatagramSocket = try {
+            if (matchingLocalIp != null) {
+                DatagramSocket(InetSocketAddress(InetAddress.getByName(matchingLocalIp), 0)).apply {
+                    sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
+                    broadcast = true
+                }
+            } else {
+                DatagramSocket().apply {
+                    sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
+                    broadcast = true
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed binding socket to interface IP $matchingLocalIp, falling back to unbound socket: ${e.message}")
+            DatagramSocket().apply {
+                sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
+                broadcast = true
+            }
+        }
+        udpSocket = socket
+
+        val listenerSocket = socket
+        controlListenerThread = Thread({
+            val recvBuf = ByteArray(64)
+            val recvPacket = DatagramPacket(recvBuf, recvBuf.size)
+            while (isRunning.get() && !Thread.currentThread().isInterrupted) {
+                try {
+                    listenerSocket.receive(recvPacket)
+                    val header = HatPacket.parseHeader(recvBuf, 0, recvPacket.length)
+                    if (header != null) {
+                        val endpoint = ClientEndpoint(recvPacket.address, recvPacket.port)
+                        val byteVal = header.volumeOrCaps.toInt() and 0xFF
+
+                        when (header.packetType) {
+                            HatPacket.TYPE_REVERSE_VOLUME_SYNC -> {
+                                val incomingVol = byteVal.coerceIn(0, 100)
+                                Log.i(TAG, "Received reverse volume sync: $incomingVol% from $endpoint")
+                                remoteVolumePercent.set(incomingVol)
+                                StreamState.update { it.copy() }
+                                val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                                notificationManager.notify(NOTIFICATION_ID, buildNotification("Streaming @ Receiver Vol: $incomingVol%"))
+                            }
+                            HatPacket.TYPE_RECEIVER_HEARTBEAT -> {
+                                val isNew = !clientRegistry.containsKey(endpoint)
+                                val currentConfig = activeNegotiatedConfig
+                                if (isNew && currentConfig != null) {
+                                    if (!currentConfig.canReceiverConsume(byteVal)) {
+                                        val capsDesc = AudioCapabilities.describeCapabilitiesMask(byteVal)
+                                        Log.w(TAG, "Declining incompatible receiver: $endpoint (Caps: $capsDesc, Active stream requires: ${currentConfig.sampleRateHz} Hz)")
+                                        try {
+                                            val declineHeader = currentConfig.createHeader(
+                                                packetType = HatPacket.TYPE_DISCONNECT,
+                                                sequenceNumber = 0,
+                                                payloadLength = 0,
+                                                timestamp = 0L
+                                            )
+                                            val declineBuf = ByteArray(AudioConfig.HEADER_SIZE)
+                                            HatPacket.writeHeader(declineBuf, 0, declineHeader)
+                                            val declinePkt = DatagramPacket(declineBuf, AudioConfig.HEADER_SIZE, endpoint.address, endpoint.port)
+                                            listenerSocket.send(declinePkt)
+                                        } catch (e: Exception) {
+                                            Log.w(TAG, "Failed to send disconnect to incompatible receiver $endpoint: ${e.message}")
+                                        }
+                                    } else {
+                                        if (byteVal != 0) {
+                                            clientCapabilities[endpoint] = byteVal
+                                            val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+                                            prefs.edit().putInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, byteVal).apply()
+                                        }
+                                        clientRegistry[endpoint] = SystemClock.elapsedRealtime()
+                                        val capsDesc = if (byteVal != 0) AudioCapabilities.describeCapabilitiesMask(byteVal) else "default"
+                                        Log.i(TAG, "Registered new compatible receiver: $endpoint (Caps: $capsDesc)")
+                                        sendStreamAnnouncement(currentConfig, remoteVolumePercent.get(), endpoint)
+                                    }
+                                } else {
+                                    if (byteVal != 0) {
+                                        clientCapabilities[endpoint] = byteVal
+                                        val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+                                        prefs.edit().putInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, byteVal).apply()
+                                    }
+                                    clientRegistry[endpoint] = SystemClock.elapsedRealtime()
+                                    if (isNew && currentConfig != null) {
+                                        sendStreamAnnouncement(currentConfig, remoteVolumePercent.get(), endpoint)
+                                    }
+                                }
+                            }
+                            HatPacket.TYPE_DISCONNECT -> {
+                                Log.i(TAG, "Received client disconnect signal from $endpoint. Pausing media.")
+                                clientRegistry.remove(endpoint)
+                                clientCapabilities.remove(endpoint)
+                                if (clientRegistry.isEmpty()) {
+                                    pauseSystemMediaPlayback()
+                                }
+                            }
+                        }
+                    }
+                } catch (e: SocketException) {
+                    break
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error in control listener loop: ${e.message}")
+                }
+            }
+            Log.d(TAG, "Control listener thread exited")
+        }, "AudioCaptureControlListener").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun reconfigureCapturePipeline(
+        config: NegotiatedStreamConfig,
+        projection: MediaProjection
+    ) {
+        val captureConfig = AudioPlaybackCaptureConfiguration.Builder(projection)
+            .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+            .addMatchingUsage(AudioAttributes.USAGE_GAME)
+            .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+            .build()
+
+        val isCompressedActive = config.isCompressed
+        val targetRate = config.sampleRateHz
+        val target24Bit = config.is24Bit
+        var record: AudioRecord? = null
 
         val candidateRates = if (isCompressedActive) {
             mutableListOf(AudioConfig.SAMPLE_RATE_48000)
         } else {
-            // Android native operating rates: 48 kHz (primary) and 44.1 kHz (fallback)
-            val list = mutableListOf(negotiatedRate)
+            val list = mutableListOf(targetRate)
             if (!list.contains(AudioConfig.SAMPLE_RATE_48000)) list.add(AudioConfig.SAMPLE_RATE_48000)
             if (!list.contains(AudioConfig.SAMPLE_RATE_44100)) list.add(AudioConfig.SAMPLE_RATE_44100)
             list
@@ -600,9 +763,6 @@ class AudioCaptureService : Service() {
                         .build()
                     if (rec.state == AudioRecord.STATE_INITIALIZED) {
                         record = rec
-                        captureSampleRate = rate
-                        is24BitActive = false
-                        activePayloadSize = AudioConfig.getPacketPayloadSize(rate, false)
                         Log.i(TAG, "Initialized compressed capture AudioRecord at $rate Hz")
                         break
                     } else {
@@ -611,7 +771,6 @@ class AudioCaptureService : Service() {
                 }
             }
         } else {
-            // Phase 1: Probe 24-bit packed PCM ONLY if target24Bit is true and on Android 12+
             if (target24Bit && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 for (rate in candidateRates) {
                     try {
@@ -635,10 +794,7 @@ class AudioCaptureService : Service() {
                                 .build()
                             if (candidateRecord.state == AudioRecord.STATE_INITIALIZED) {
                                 record = candidateRecord
-                                captureSampleRate = rate
-                                is24BitActive = true
-                                activePayloadSize = AudioConfig.getPacketPayloadSize(rate, true)
-                                Log.i(TAG, "Probed and initialized 24-bit packed PCM AudioRecord at $rate Hz (Payload: $activePayloadSize bytes)")
+                                Log.i(TAG, "Probed and initialized 24-bit packed PCM AudioRecord at $rate Hz")
                                 break
                             } else {
                                 candidateRecord.release()
@@ -650,7 +806,6 @@ class AudioCaptureService : Service() {
                 }
             }
 
-            // Phase 2: Probe 16-bit PCM (if 24-bit was not requested or failed)
             if (record == null) {
                 for (rate in candidateRates) {
                     try {
@@ -674,10 +829,7 @@ class AudioCaptureService : Service() {
                                 .build()
                             if (candidateRecord.state == AudioRecord.STATE_INITIALIZED) {
                                 record = candidateRecord
-                                captureSampleRate = rate
-                                is24BitActive = false
-                                activePayloadSize = AudioConfig.getPacketPayloadSize(rate, false)
-                                Log.i(TAG, "Probed and initialized 16-bit PCM AudioRecord at $rate Hz (Payload: $activePayloadSize bytes)")
+                                Log.i(TAG, "Probed and initialized 16-bit PCM AudioRecord at $rate Hz")
                                 break
                             } else {
                                 candidateRecord.release()
@@ -692,286 +844,136 @@ class AudioCaptureService : Service() {
 
         if (record == null || record.state != AudioRecord.STATE_INITIALIZED) {
             Log.e(TAG, "AudioRecord initialization failed across all probed rates")
-            projection.stop()
-            isRunning.set(false)
-            stopSelf()
             return
         }
         this.audioRecord = record
-        // Read back actual AudioRecord sample rate after init.
-        // The OS may grant a different rate than requested if the hardware mix bus does not
-        // natively support the requested rate (AudioFlinger resamples internally).
-        val actualGrantedRate = record.sampleRate
-        if (actualGrantedRate > 0 && actualGrantedRate != captureSampleRate) {
-            Log.w(TAG, "AudioRecord granted $actualGrantedRate Hz (requested $captureSampleRate Hz). Hardware mix bus rate mismatch - using $actualGrantedRate Hz.")
-            captureSampleRate = actualGrantedRate
-            activePayloadSize = AudioConfig.getPacketPayloadSize(actualGrantedRate, is24BitActive)
+        activeCaptureSampleRate = record.sampleRate
+
+        if (config.codec == AudioCodec.OPUS) {
+            this.opusEncoder = OpusEncoder(config.sampleRateHz)
+        } else {
+            this.opusEncoder = null
         }
-        activeCaptureSampleRate = captureSampleRate
+
+        if (config.codec == AudioCodec.AAC) {
+            this.aacEncoder = AacEncoder(config.sampleRateHz)
+        } else {
+            this.aacEncoder = null
+        }
 
         silenceTransmitterSpeakers()
+    }
+
+    private fun resumeTransmissionPipeline(config: NegotiatedStreamConfig) {
+        val record = this.audioRecord ?: run {
+            Log.e(TAG, "Cannot resume transmission: audioRecord is null")
+            return
+        }
+        val socket = this.udpSocket ?: run {
+            Log.e(TAG, "Cannot resume transmission: udpSocket is null")
+            return
+        }
+
+        val isOpusActive = config.codec == AudioCodec.OPUS
+        val isAacActive = config.codec == AudioCodec.AAC
+        val isCompressedActive = config.isCompressed
+        val is24BitActive = config.is24Bit
+        val captureSampleRate = config.sampleRateHz
+        val activePayloadSize = config.getNominalPcmPayloadSize()
+        val opusEnc = this.opusEncoder
+        val aacEnc = this.aacEncoder
+        val isFecEnabled = config.transportProfile.fec.enabled
+        val negotiatedStreamConfig = config
+
+        val initialProfileDisplayName = when {
+            isOpusActive -> "Low Latency (Opus 320k)"
+            isAacActive -> "Low Latency (AAC 192k)"
+            config.transportProfile.latencyTarget == LatencyTarget.BALANCED -> if (is24BitActive) "Auto Adaptive (24-bit, ${captureSampleRate / 1000}kHz)" else "Auto Adaptive (${captureSampleRate / 1000}kHz)"
+            is24BitActive -> "Studio 24-bit Music (${captureSampleRate / 1000}kHz)"
+            else -> "Music (${captureSampleRate / 1000}kHz)"
+        }
+
+        val initialBitDepth = if (isCompressedActive) 16 else if (is24BitActive) 24 else 16
+        val initialBitrate = when {
+            isOpusActive -> 320
+            isAacActive -> 192
+            captureSampleRate == AudioConfig.SAMPLE_RATE_44100 -> if (initialBitDepth == 24) 2117 else 1411
+            else -> if (initialBitDepth == 24) 2304 else 1536
+        }
+
+        val initialEndpointCount = clientRegistry.size
+        val initialEndpointLabel = if (initialEndpointCount > 1) {
+            "$initialEndpointCount receivers"
+        } else if (initialEndpointCount == 1) {
+            val single = clientRegistry.keys.first()
+            "${single.address.hostAddress}:${single.port}"
+        } else {
+            "$currentTargetIp:$currentTargetPort"
+        }
+        val initialStatus = if (initialEndpointCount > 1) {
+            "Multi-Unicast ($initialEndpointCount receivers)"
+        } else {
+            "Transmitting to $initialEndpointLabel"
+        }
+
+        val initialNegotiatedFormat = if (isCompressedActive) {
+            "${if (isOpusActive) "Opus" else "AAC"} • ${initialBitrate} kbps • ${captureSampleRate / 1000.0} kHz"
+        } else {
+            "${captureSampleRate / 1000.0} kHz • ${initialBitDepth}-bit Stereo PCM"
+        }
+
+        StreamState.update {
+            it.copy(
+                isActive = true,
+                isTransmitter = true,
+                remoteEndpoint = initialEndpointLabel,
+                statusDetail = initialStatus,
+                streamProfileName = initialProfileDisplayName,
+                sampleRate = captureSampleRate,
+                bitDepth = initialBitDepth,
+                bitrateKbps = initialBitrate,
+                isSilenceSuppressed = false,
+                activeReceiversCount = initialEndpointCount,
+                sourceCapabilityDesc = "Android HAL",
+                receiverCapabilityDesc = "Active",
+                negotiatedFormatDesc = initialNegotiatedFormat
+            )
+        }
+
+        record.startRecording()
+        Log.i(TAG, "AudioRecord recording started for generation ${config.generation} at $captureSampleRate Hz (Profile: $initialProfileDisplayName, Payload: $activePayloadSize bytes, FEC: $isFecEnabled)")
 
         streamThread = Thread({
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
 
-            var socketToClose: DatagramSocket? = null
+            val sendBuffer = ByteArray(AudioConfig.HEADER_SIZE + AudioConfig.MAX_PACKET_SIZE)
+            val packet = DatagramPacket(sendBuffer, sendBuffer.size)
+
+            val fecEncoder = FecEncoder(AudioConfig.FEC_BLOCK_SIZE)
+            val fecDatagramPacket = DatagramPacket(ByteArray(AudioConfig.HEADER_SIZE + AudioConfig.MAX_PACKET_SIZE), 0)
+
+            var sequence = 0
+            var streamTimelineFrames = 0L
+            var totalPackets = 0L
+            var totalBytes = 0L
+            var intervalPackets = 0
+            var intervalBytes = 0
+            var lastStatsTime = SystemClock.elapsedRealtime()
+            val audioMeter = AudioLevelMeter(AudioConfig.CHANNELS)
+            var silentPacketsCount = 0
+            var isSilenceSuppressed = false
+            var lastHeartbeatTime = 0L
+            var smoothPps = 0f
+            var smoothBps = 0f
+            var lastLatencyLogTime = 0L
+            var lastReadDurationNs = 0L
+            var lastEncodeDurationNs = 0L
+
+            val pcmReadBuffer = ByteArray(4096)
+            val rawPcmBuffer = ByteArray(AudioConfig.MAX_PACKET_SIZE)
+            val losslessCodec = LosslessAudioCodec(1024)
+
             try {
-                val targetAddresses = parseTargetAddresses(targetIp)
-                clientRegistry.clear()
-                clientCapabilities.clear()
-                for (addr in targetAddresses) {
-                    val ep = ClientEndpoint(addr, targetPort)
-                    clientRegistry[ep] = Long.MAX_VALUE
-                    val knownCaps = DiscoveryManager.lastDiscoveredReceiverCapabilities
-                    if (knownCaps != 0) {
-                        clientCapabilities[ep] = knownCaps
-                    }
-                }
-                val firstTargetIp = targetAddresses.firstOrNull()?.hostAddress ?: targetIp
-                val matchingLocalIp = NetworkUtils.findMatchingLocalIp(firstTargetIp)
-                val socket: DatagramSocket = try {
-                    if (matchingLocalIp != null) {
-                        DatagramSocket(InetSocketAddress(InetAddress.getByName(matchingLocalIp), 0)).apply {
-                            sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
-                            broadcast = true
-                        }
-                    } else {
-                        DatagramSocket().apply {
-                            sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
-                            broadcast = true
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed binding socket to interface IP $matchingLocalIp, falling back to unbound socket: ${e.message}")
-                    DatagramSocket().apply {
-                        sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
-                        broadcast = true
-                    }
-                }
-                socketToClose = socket
-                udpSocket = socket
-
-                val listenerSocket = socket
-                controlListenerThread = Thread({
-                    val recvBuf = ByteArray(64)
-                    val recvPacket = DatagramPacket(recvBuf, recvBuf.size)
-                    while (isRunning.get() && !Thread.currentThread().isInterrupted) {
-                        try {
-                            listenerSocket.receive(recvPacket)
-                            val header = HatPacket.parseHeader(recvBuf, 0, recvPacket.length)
-                            if (header != null) {
-                                val endpoint = ClientEndpoint(recvPacket.address, recvPacket.port)
-                                val byteVal = header.volumeOrCaps.toInt() and 0xFF
-
-                                when (header.packetType) {
-                                    HatPacket.TYPE_REVERSE_VOLUME_SYNC -> {
-                                        val incomingVol = byteVal.coerceIn(0, 100)
-                                        Log.i(TAG, "Received reverse volume sync: $incomingVol% from $endpoint")
-                                        remoteVolumePercent.set(incomingVol)
-                                        StreamState.update { it.copy() }
-                                        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                                        notificationManager.notify(NOTIFICATION_ID, buildNotification("Streaming @ Receiver Vol: $incomingVol%"))
-                                    }
-                                    HatPacket.TYPE_RECEIVER_HEARTBEAT -> {
-                                        val isNew = !clientRegistry.containsKey(endpoint)
-                                        val currentConfig = activeNegotiatedConfig
-                                        if (isNew && currentConfig != null) {
-                                            if (!currentConfig.canReceiverConsume(byteVal)) {
-                                                val capsDesc = AudioCapabilities.describeCapabilitiesMask(byteVal)
-                                                Log.w(TAG, "Declining incompatible receiver: $endpoint (Caps: $capsDesc, Active stream requires: ${currentConfig.sampleRateHz} Hz)")
-                                                try {
-                                                    val declineHeader = currentConfig.createHeader(
-                                                        packetType = HatPacket.TYPE_DISCONNECT,
-                                                        sequenceNumber = 0,
-                                                        payloadLength = 0,
-                                                        timestamp = 0L
-                                                    )
-                                                    val declineBuf = ByteArray(AudioConfig.HEADER_SIZE)
-                                                    HatPacket.writeHeader(declineBuf, 0, declineHeader)
-                                                    val declinePkt = DatagramPacket(declineBuf, AudioConfig.HEADER_SIZE, endpoint.address, endpoint.port)
-                                                    listenerSocket.send(declinePkt)
-                                                } catch (e: Exception) {
-                                                    Log.w(TAG, "Failed to send disconnect to incompatible receiver $endpoint: ${e.message}")
-                                                }
-                                                // Incompatible: Do not add to clientRegistry or clientCapabilities, do not renegotiate
-                                            } else {
-                                                if (byteVal != 0) {
-                                                    clientCapabilities[endpoint] = byteVal
-                                                    prefs.edit().putInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, byteVal).apply()
-                                                }
-                                                clientRegistry[endpoint] = SystemClock.elapsedRealtime()
-                                                val capsDesc = if (byteVal != 0) AudioCapabilities.describeCapabilitiesMask(byteVal) else "default"
-                                                Log.i(TAG, "Registered new compatible receiver: $endpoint (Caps: $capsDesc)")
-                                                sendStreamAnnouncement(currentConfig, remoteVolumePercent.get(), endpoint)
-                                            }
-                                        } else {
-                                            if (byteVal != 0) {
-                                                clientCapabilities[endpoint] = byteVal
-                                                prefs.edit().putInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, byteVal).apply()
-                                            }
-                                            clientRegistry[endpoint] = SystemClock.elapsedRealtime()
-                                            if (isNew && currentConfig != null) {
-                                                sendStreamAnnouncement(currentConfig, remoteVolumePercent.get(), endpoint)
-                                            }
-                                        }
-                                    }
-                                    HatPacket.TYPE_DISCONNECT -> {
-                                        Log.i(TAG, "Received client disconnect signal from $endpoint. Pausing media.")
-                                        clientRegistry.remove(endpoint)
-                                        clientCapabilities.remove(endpoint)
-                                        if (clientRegistry.isEmpty()) {
-                                            pauseSystemMediaPlayback()
-                                        }
-                                    }
-                                }
-                            }
-                        } catch (e: SocketException) {
-                            break
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Error in control listener loop: ${e.message}")
-                        }
-                    }
-                    Log.d(TAG, "Control listener thread exited")
-                }, "AudioCaptureControlListener").apply {
-                    isDaemon = true
-                    start()
-                }
-
-                val sendBuffer = ByteArray(AudioConfig.HEADER_SIZE + AudioConfig.MAX_PACKET_SIZE)
-                val packet = DatagramPacket(sendBuffer, sendBuffer.size)
-
-                // Populate Magic Header "SA"
-                val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
-                var activeProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_AUTO) ?: AudioConfig.PROFILE_AUTO
-
-                val initialProfileDisplayName = when {
-                    isOpusActive -> "Low Latency (Opus 320k)"
-                    isAacActive -> "Low Latency (AAC 192k)"
-                    activeProfile == AudioConfig.PROFILE_AUTO -> if (is24BitActive) "Auto Adaptive (24-bit, ${captureSampleRate / 1000}kHz)" else "Auto Adaptive (${captureSampleRate / 1000}kHz)"
-                    is24BitActive -> if (activeProfile == AudioConfig.PROFILE_MUSIC && captureSampleRate < targetRate) "Studio 24-bit (Clamped ${captureSampleRate / 1000}kHz)" else "Studio 24-bit Music (${captureSampleRate / 1000}kHz)"
-                    else -> if (activeProfile == AudioConfig.PROFILE_MUSIC && captureSampleRate < targetRate) "Music (Clamped ${captureSampleRate / 1000}kHz)" else "Music (${captureSampleRate / 1000}kHz)"
-                }
-
-                val initialPayload = activePayloadSize
-
-                val opusEnc = if (isOpusActive) OpusEncoder(captureSampleRate) else null
-                this.opusEncoder = opusEnc
-                val aacEnc = if (isAacActive) AacEncoder(captureSampleRate) else null
-                this.aacEncoder = aacEnc
-
-                // XOR Forward Error Correction (FEC) setup
-                val isFecEnabled = prefs.getBoolean(AudioConfig.PREF_KEY_FEC_ENABLED, true)
-                val fecEncoder = FecEncoder(AudioConfig.FEC_BLOCK_SIZE)
-                val fecDatagramPacket = DatagramPacket(ByteArray(AudioConfig.HEADER_SIZE + AudioConfig.MAX_PACKET_SIZE), 0)
-
-                record.startRecording()
-                Log.i(TAG, "AudioRecord recording started. Streaming at $captureSampleRate Hz to ${clientRegistry.size} target(s) (Profile: $initialProfileDisplayName, Payload: $initialPayload bytes, FEC: $isFecEnabled)")
-
-                val activeAudioFormat = AudioFormatConfig(
-                    sampleRate = AudioSampleRate.fromHz(captureSampleRate),
-                    bitDepth = if (is24BitActive && !isCompressedActive) AudioBitDepth.BIT_24 else AudioBitDepth.BIT_16,
-                    channelLayout = AudioChannelLayout.STEREO
-                )
-                val baseCodec = when {
-                    isOpusActive -> AudioCodec.OPUS
-                    isAacActive -> AudioCodec.AAC
-                    else -> AudioCodec.PCM
-                }
-                val latencyTarget = LatencyTarget.fromString(activeProfile)
-                val activeTransportProfile = TransportProfile.create(
-                    target = latencyTarget,
-                    fecEnabled = isFecEnabled,
-                    isCompressedCodec = isCompressedActive,
-                    sampleRateHz = captureSampleRate
-                )
-                val negotiatedStreamConfig = NegotiatedStreamConfig(
-                    audioFormat = activeAudioFormat,
-                    codec = baseCodec,
-                    transportProfile = activeTransportProfile,
-                    generation = generation
-                )
-                activeNegotiatedConfig = negotiatedStreamConfig
-
-                // Requirement 8: GENERATION_CREATED
-                Log.i(TAG, "GENERATION_CREATED: ${negotiatedStreamConfig.toSummaryString()}")
-
-                // Broadcast authoritative stream configuration announcement burst for generation
-                repeat(3) {
-                    sendStreamAnnouncement(negotiatedStreamConfig, remoteVolumePercent.get())
-                }
-
-                // Requirement 8: PROFILE_CHANGE_COMPLETE
-                Log.i(TAG, "PROFILE_CHANGE_COMPLETE: ${negotiatedStreamConfig.toSummaryString()}")
-
-                var sequence = 0
-                var streamTimelineFrames = 0L
-                var totalPackets = 0L
-                var totalBytes = 0L
-                var intervalPackets = 0
-                var intervalBytes = 0
-                var lastStatsTime = SystemClock.elapsedRealtime()
-                val audioMeter = AudioLevelMeter(AudioConfig.CHANNELS)
-                var silentPacketsCount = 0
-                var isSilenceSuppressed = false
-                var lastHeartbeatTime = 0L
-                var smoothPps = 0f
-                var smoothBps = 0f
-                var lastLatencyLogTime = 0L
-                var lastReadDurationNs = 0L
-                var lastEncodeDurationNs = 0L
-
-                val initialBitDepth = if (isCompressedActive) 16 else if (is24BitActive) 24 else 16
-                val initialBitrate = when {
-                    isOpusActive -> 320
-                    isAacActive -> 192
-                    captureSampleRate == AudioConfig.SAMPLE_RATE_44100 -> if (initialBitDepth == 24) 2117 else 1411
-                    else -> if (initialBitDepth == 24) 2304 else 1536
-                }
-
-                val initialEndpointCount = clientRegistry.size
-                val initialEndpointLabel = if (initialEndpointCount > 1) {
-                    "$initialEndpointCount receivers"
-                } else if (initialEndpointCount == 1) {
-                    val single = clientRegistry.keys.first()
-                    "${single.address.hostAddress}:${single.port}"
-                } else {
-                    "$targetIp:$targetPort"
-                }
-                val initialStatus = if (initialEndpointCount > 1) {
-                    "Multi-Unicast ($initialEndpointCount receivers)"
-                } else {
-                    "Transmitting to $initialEndpointLabel"
-                }
-
-                val initialNegotiatedFormat = if (isCompressedActive) {
-                    "${if (isOpusActive) "Opus" else "AAC"} • ${initialBitrate} kbps • ${captureSampleRate / 1000.0} kHz"
-                } else {
-                    "${captureSampleRate / 1000.0} kHz • ${initialBitDepth}-bit Stereo PCM"
-                }
-
-                StreamState.update {
-                    it.copy(
-                        isActive = true,
-                        isTransmitter = true,
-                        remoteEndpoint = initialEndpointLabel,
-                        statusDetail = initialStatus,
-                        streamProfileName = initialProfileDisplayName,
-                        sampleRate = captureSampleRate,
-                        bitDepth = initialBitDepth,
-                        bitrateKbps = initialBitrate,
-                        isSilenceSuppressed = false,
-                        activeReceiversCount = initialEndpointCount,
-                        sourceCapabilityDesc = sourceCapDesc,
-                        receiverCapabilityDesc = rxCapDesc,
-                        negotiatedFormatDesc = initialNegotiatedFormat
-                    )
-                }
-
-                val pcmReadBuffer = ByteArray(4096)
-
-                val rawPcmBuffer = ByteArray(AudioConfig.MAX_PACKET_SIZE)
-                val losslessCodec = LosslessAudioCodec(1024)
-
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                     if (isCompressedActive && (opusEnc != null || aacEnc != null)) {
                         val targetReadBytes = if (isOpusActive) {
@@ -999,8 +1001,6 @@ class AudioCaptureService : Service() {
 
                             val now = SystemClock.elapsedRealtime()
                             val shouldSendHeartbeat = isSilenceSuppressed && (now - lastHeartbeatTime >= AudioConfig.SILENCE_HEARTBEAT_INTERVAL_MS)
-
-                            val codecFlag = if (isOpusActive) AudioConfig.FLAG_CODEC_OPUS else AudioConfig.FLAG_CODEC_AAC
 
                             val framesInChunk = if (isOpusActive) 960 else if (isAacActive) 1024 else (activePayloadSize / 4)
 
@@ -1039,7 +1039,6 @@ class AudioCaptureService : Service() {
                                         intervalPackets++
                                         intervalBytes += packet.length
 
-                                        // Forward Error Correction (XOR FEC) for compressed stream
                                         if (isFecEnabled) {
                                             val parityBytes = fecEncoder.encode(
                                                 seq = currentSeq,
@@ -1081,13 +1080,46 @@ class AudioCaptureService : Service() {
                                     )
                                     HatPacket.writeHeader(sendBuffer, 0, header)
                                     packet.length = HatPacket.HEADER_SIZE
-                                    lastHeartbeatTime = now
                                     broadcastDatagram(socket, packet)
                                     totalPackets++
                                     totalBytes += packet.length
                                     intervalPackets++
                                     intervalBytes += packet.length
+                                    lastHeartbeatTime = now
                                 }
+                            }
+
+                            val nowStats = SystemClock.elapsedRealtime()
+                            if (nowStats - lastStatsTime >= 1000L) {
+                                val elapsedSec = (nowStats - lastStatsTime) / 1000.0f
+                                val currentPps = intervalPackets / elapsedSec
+                                val currentBps = intervalBytes / elapsedSec
+                                smoothPps = if (smoothPps == 0f) currentPps else (smoothPps * 0.7f + currentPps * 0.3f)
+                                smoothBps = if (smoothBps == 0f) currentBps else (smoothBps * 0.7f + currentBps * 0.3f)
+                                val pps = smoothPps.toInt()
+                                val bps = smoothBps.toInt()
+
+                                val activeEndpointsCount = clientRegistry.size
+                                StreamState.update {
+                                    it.copy(
+                                        packetsTotal = totalPackets,
+                                        packetsPerSec = pps,
+                                        bytesPerSec = bps,
+                                        isSilenceSuppressed = isSilenceSuppressed,
+                                        activeReceiversCount = activeEndpointsCount
+                                    )
+                                }
+
+                                if (nowStats - lastLatencyLogTime >= 1000L) {
+                                    lastLatencyLogTime = nowStats
+                                    val readMsStr = String.format(Locale.US, "%.1f", lastReadDurationNs / 1_000_000.0)
+                                    val encMsStr = String.format(Locale.US, "%.1f", lastEncodeDurationNs / 1_000_000.0)
+                                    Log.i("LATENCY-TX", "Record: ${readMsStr}ms | Encode: ${encMsStr}ms | Sent: $pps pps ($bps B/s)")
+                                }
+
+                                intervalPackets = 0
+                                intervalBytes = 0
+                                lastStatsTime = nowStats
                             }
                         } else if (pcmBytesRead == 0) {
                             Thread.sleep(2)
@@ -1096,246 +1128,177 @@ class AudioCaptureService : Service() {
                             break
                         }
                     } else {
-                    val bytesRead = record.read(rawPcmBuffer, 0, activePayloadSize, AudioRecord.READ_BLOCKING)
-                    if (bytesRead > 0) {
-                        val currentIsLowLat = (activeProfile == AudioConfig.PROFILE_VIDEO || activeProfile == AudioConfig.PROFILE_LOW_LATENCY)
-                        val isEffective24 = is24BitActive
-                        val bytesPerFrame = if (isEffective24) 6 else 4
-                        val framesRead = bytesRead / bytesPerFrame
-                        val currentTimestamp = streamTimelineFrames
-                        streamTimelineFrames += framesRead
+                        val tRead0 = SystemClock.elapsedRealtimeNanos()
+                        val bytesRead = record.read(rawPcmBuffer, 0, activePayloadSize, AudioRecord.READ_BLOCKING)
+                        lastReadDurationNs = SystemClock.elapsedRealtimeNanos() - tRead0
 
-                        // Compute peak amplitude and RMS of current chunk
-                        val metrics = audioMeter.analyze(rawPcmBuffer, 0, bytesRead, is24Bit = isEffective24)
-                        val chunkPeak = metrics.peak
+                        if (bytesRead > 0) {
+                            val isEffective24 = is24BitActive
+                            val bytesPerFrame = if (isEffective24) 6 else 4
+                            val framesRead = bytesRead / bytesPerFrame
+                            val currentTimestamp = streamTimelineFrames
+                            streamTimelineFrames += framesRead
 
-                        // Silence suppression evaluation
-                        val isChunkSilent = if (isEffective24) {
-                            chunkPeak <= AudioConfig.SILENCE_AMPLITUDE_THRESHOLD_24BIT
-                        } else {
-                            chunkPeak <= AudioConfig.SILENCE_AMPLITUDE_THRESHOLD_16BIT
-                        }
+                            val metrics = audioMeter.analyze(rawPcmBuffer, 0, bytesRead, is24Bit = isEffective24)
+                            val chunkPeak = metrics.peak
 
-                        if (isChunkSilent) {
-                            silentPacketsCount++
-                            if (silentPacketsCount >= AudioConfig.SILENCE_PACKETS_THRESHOLD) {
-                                isSilenceSuppressed = true
-                            }
-                        } else {
-                            if (isSilenceSuppressed && currentIsLowLat) {
-                                val drainBuf = ByteArray(activePayloadSize)
-                                while (record.read(drainBuf, 0, drainBuf.size, AudioRecord.READ_NON_BLOCKING) > 0) {
-                                    // Drain stale backlog frames
-                                }
-                            }
-                            silentPacketsCount = 0
-                            isSilenceSuppressed = false
-                        }
-
-                        val now = SystemClock.elapsedRealtime()
-                        val shouldSendHeartbeat = isSilenceSuppressed && (now - lastHeartbeatTime >= AudioConfig.SILENCE_HEARTBEAT_INTERVAL_MS)
-
-                        // Transmit regular audio immediately (<5ms wakeup) or silence heartbeat at 2 pps
-                        if (!isSilenceSuppressed || shouldSendHeartbeat) {
-                            val currentSeq = sequence
-                            sequence = (sequence + 1) and 0xFFFF
-
-                            val volByte = remoteVolumePercent.get().coerceIn(0, 100).toByte()
-                            var effectivePayloadLen: Int
-                            var activeCodec = AudioCodec.PCM
-
-                            if (isSilenceSuppressed) {
-                                val header = negotiatedStreamConfig.createHeader(
-                                    packetType = HatPacket.TYPE_SILENCE_HEARTBEAT,
-                                    sequenceNumber = currentSeq,
-                                    payloadLength = 0,
-                                    timestamp = currentTimestamp,
-                                    volumeOrCaps = volByte
-                                )
-                                HatPacket.writeHeader(sendBuffer, 0, header)
-                                packet.length = HatPacket.HEADER_SIZE
-                                lastHeartbeatTime = now
-                                effectivePayloadLen = 0
+                            val isChunkSilent = if (isEffective24) {
+                                chunkPeak <= AudioConfig.SILENCE_AMPLITUDE_THRESHOLD_24BIT
                             } else {
-                                val compBytes = losslessCodec.encode(
-                                    pcm = rawPcmBuffer,
-                                    offset = 0,
-                                    length = bytesRead,
-                                    is24Bit = isEffective24,
-                                    out = sendBuffer,
-                                    outOffset = HatPacket.HEADER_SIZE
-                                )
-                                val isLossless = (compBytes < bytesRead) && (sendBuffer[HatPacket.HEADER_SIZE] != LosslessAudioCodec.MODE_RAW)
-                                if (isLossless) {
-                                    activeCodec = AudioCodec.LOSSLESS
-                                    effectivePayloadLen = compBytes
+                                chunkPeak <= AudioConfig.SILENCE_AMPLITUDE_THRESHOLD_16BIT
+                            }
+
+                            if (isChunkSilent) {
+                                silentPacketsCount++
+                                if (silentPacketsCount >= AudioConfig.SILENCE_PACKETS_THRESHOLD) {
+                                    isSilenceSuppressed = true
+                                }
+                            } else {
+                                if (isSilenceSuppressed && (config.transportProfile.latencyTarget == LatencyTarget.LOW_LATENCY)) {
+                                    val drainBuf = ByteArray(activePayloadSize)
+                                    while (record.read(drainBuf, 0, drainBuf.size, AudioRecord.READ_NON_BLOCKING) > 0) {
+                                        // Drain stale backlog frames
+                                    }
+                                }
+                                silentPacketsCount = 0
+                                isSilenceSuppressed = false
+                            }
+
+                            val now = SystemClock.elapsedRealtime()
+                            val shouldSendHeartbeat = isSilenceSuppressed && (now - lastHeartbeatTime >= AudioConfig.SILENCE_HEARTBEAT_INTERVAL_MS)
+
+                            if (!isSilenceSuppressed || shouldSendHeartbeat) {
+                                val currentSeq = sequence
+                                sequence = (sequence + 1) and 0xFFFF
+
+                                val volByte = remoteVolumePercent.get().coerceIn(0, 100).toByte()
+                                var effectivePayloadLen: Int
+                                var activeCodec = AudioCodec.PCM
+
+                                if (isSilenceSuppressed) {
+                                    val header = negotiatedStreamConfig.createHeader(
+                                        packetType = HatPacket.TYPE_SILENCE_HEARTBEAT,
+                                        sequenceNumber = currentSeq,
+                                        payloadLength = 0,
+                                        timestamp = currentTimestamp,
+                                        volumeOrCaps = volByte
+                                    )
+                                    HatPacket.writeHeader(sendBuffer, 0, header)
+                                    packet.length = HatPacket.HEADER_SIZE
+                                    lastHeartbeatTime = now
+                                    effectivePayloadLen = 0
                                 } else {
-                                    activeCodec = AudioCodec.PCM
-                                    System.arraycopy(rawPcmBuffer, 0, sendBuffer, HatPacket.HEADER_SIZE, bytesRead)
-                                    effectivePayloadLen = bytesRead
+                                    val compBytes = losslessCodec.encode(
+                                        pcm = rawPcmBuffer,
+                                        offset = 0,
+                                        length = bytesRead,
+                                        is24Bit = isEffective24,
+                                        out = sendBuffer,
+                                        outOffset = HatPacket.HEADER_SIZE
+                                    )
+                                    val isLossless = (compBytes < bytesRead) && (sendBuffer[HatPacket.HEADER_SIZE] != LosslessAudioCodec.MODE_RAW)
+                                    if (isLossless) {
+                                        activeCodec = AudioCodec.LOSSLESS
+                                        effectivePayloadLen = compBytes
+                                    } else {
+                                        activeCodec = AudioCodec.PCM
+                                        System.arraycopy(rawPcmBuffer, 0, sendBuffer, HatPacket.HEADER_SIZE, bytesRead)
+                                        effectivePayloadLen = bytesRead
+                                    }
+
+                                    val header = negotiatedStreamConfig.copy(codec = activeCodec).createHeader(
+                                        packetType = HatPacket.TYPE_AUDIO,
+                                        sequenceNumber = currentSeq,
+                                        payloadLength = effectivePayloadLen,
+                                        timestamp = currentTimestamp,
+                                        volumeOrCaps = volByte
+                                    )
+                                    HatPacket.writeHeader(sendBuffer, 0, header)
+                                    packet.length = HatPacket.HEADER_SIZE + effectivePayloadLen
                                 }
 
-                                val header = negotiatedStreamConfig.copy(codec = activeCodec).createHeader(
-                                    packetType = HatPacket.TYPE_AUDIO,
-                                    sequenceNumber = currentSeq,
-                                    payloadLength = effectivePayloadLen,
-                                    timestamp = currentTimestamp,
-                                    volumeOrCaps = volByte
-                                )
-                                HatPacket.writeHeader(sendBuffer, 0, header)
-                                packet.length = HatPacket.HEADER_SIZE + effectivePayloadLen
-                            }
+                                broadcastDatagram(socket, packet)
+                                totalPackets++
+                                totalBytes += packet.length
+                                intervalPackets++
+                                intervalBytes += packet.length
 
-                            broadcastDatagram(socket, packet)
-                            totalPackets++
-                            totalBytes += packet.length
-                            intervalPackets++
-                            intervalBytes += packet.length
-
-                            // Forward Error Correction (XOR FEC) Accumulation & Parity Dispatch
-                            if (isSilenceSuppressed) {
-                                fecEncoder.reset()
-                            } else if (isFecEnabled && effectivePayloadLen > 0) {
-                                val parityBytes = fecEncoder.encode(
-                                    seq = currentSeq,
-                                    timestamp = currentTimestamp,
-                                    payload = sendBuffer,
-                                    offset = HatPacket.HEADER_SIZE,
-                                    len = effectivePayloadLen,
-                                    codec = activeCodec.wireCode,
-                                    profile = negotiatedStreamConfig.transportProfile.latencyTarget.wireCode,
-                                    sampleRateCode = negotiatedStreamConfig.audioFormat.sampleRate.wireCode,
-                                    bitDepth = negotiatedStreamConfig.audioFormat.bitDepth.wireCode,
-                                    volume = volByte.toInt() and 0xFF,
-                                    generation = negotiatedStreamConfig.generation
-                                )
-                                if (parityBytes != null) {
-                                    fecDatagramPacket.setData(parityBytes, 0, parityBytes.size)
-                                    broadcastDatagram(socket, fecDatagramPacket)
-                                    totalBytes += parityBytes.size
-                                    intervalBytes += parityBytes.size
+                                if (isFecEnabled) {
+                                    if (isSilenceSuppressed) {
+                                        fecEncoder.reset()
+                                    } else {
+                                        val parityBytes = fecEncoder.encode(
+                                            seq = currentSeq,
+                                            timestamp = currentTimestamp,
+                                            payload = sendBuffer,
+                                            offset = HatPacket.HEADER_SIZE,
+                                            len = effectivePayloadLen,
+                                            codec = activeCodec.wireCode,
+                                            profile = negotiatedStreamConfig.transportProfile.latencyTarget.wireCode,
+                                            sampleRateCode = negotiatedStreamConfig.audioFormat.sampleRate.wireCode,
+                                            bitDepth = negotiatedStreamConfig.audioFormat.bitDepth.wireCode,
+                                            volume = volByte.toInt() and 0xFF,
+                                            generation = negotiatedStreamConfig.generation
+                                        )
+                                        if (parityBytes != null) {
+                                            fecDatagramPacket.setData(parityBytes, 0, parityBytes.size)
+                                            broadcastDatagram(socket, fecDatagramPacket)
+                                            totalBytes += parityBytes.size
+                                            intervalBytes += parityBytes.size
+                                        }
+                                    }
                                 }
                             }
+
+                            val nowStats = SystemClock.elapsedRealtime()
+                            if (nowStats - lastStatsTime >= 1000L) {
+                                val elapsedSec = (nowStats - lastStatsTime) / 1000.0f
+                                val currentPps = intervalPackets / elapsedSec
+                                val currentBps = intervalBytes / elapsedSec
+                                smoothPps = if (smoothPps == 0f) currentPps else (smoothPps * 0.7f + currentPps * 0.3f)
+                                smoothBps = if (smoothBps == 0f) currentBps else (smoothBps * 0.7f + currentBps * 0.3f)
+                                val pps = smoothPps.toInt()
+                                val bps = smoothBps.toInt()
+
+                                val activeEndpointsCount = clientRegistry.size
+                                StreamState.update {
+                                    it.copy(
+                                        packetsTotal = totalPackets,
+                                        packetsPerSec = pps,
+                                        bytesPerSec = bps,
+                                        isSilenceSuppressed = isSilenceSuppressed,
+                                        activeReceiversCount = activeEndpointsCount
+                                    )
+                                }
+
+                                if (nowStats - lastLatencyLogTime >= 1000L) {
+                                    lastLatencyLogTime = nowStats
+                                    val readMsStr = String.format(Locale.US, "%.1f", lastReadDurationNs / 1_000_000.0)
+                                    val encMsStr = String.format(Locale.US, "%.1f", lastEncodeDurationNs / 1_000_000.0)
+                                    Log.i("LATENCY-TX", "Record: ${readMsStr}ms | Encode: ${encMsStr}ms | Sent: $pps pps ($bps B/s)")
+                                }
+
+                                intervalPackets = 0
+                                intervalBytes = 0
+                                lastStatsTime = nowStats
+                            }
+                        } else if (bytesRead == 0) {
+                            Thread.sleep(2)
+                        } else if (bytesRead < 0) {
+                            Log.e(TAG, "AudioRecord read error: $bytesRead")
+                            break
                         }
-
-                        val dt = now - lastStatsTime
-                        if (dt >= 250) {
-                            activeProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_MUSIC) ?: AudioConfig.PROFILE_MUSIC
-                            val inLowLatencyNow = (activeProfile == AudioConfig.PROFILE_LOW_LATENCY)
-                            val is24Now = is24BitActive && !isCompressedActive
-
-                            val instantPps = ((intervalPackets * 1000L) / dt).toFloat()
-                            val instantBps = ((intervalBytes * 1000L) / dt).toFloat()
-                            smoothPps = if (smoothPps == 0f) instantPps else (smoothPps * 0.7f + instantPps * 0.3f)
-                            smoothBps = if (smoothBps == 0f) instantBps else (smoothBps * 0.7f + instantBps * 0.3f)
-                            val pps = smoothPps.toInt()
-                            val bps = smoothBps.toInt()
-                            val intervalPeak = audioMeter.getAndResetIntervalPeak()
-                            val peakPercent = AudioLevelMeter.calculatePeakPercent(intervalPeak, is24Now)
-                            val bitDepth = if (isCompressedActive) 16 else if (is24Now) 24 else 16
-                            val bitrate = when {
-                                isOpusActive -> 320
-                                isAacActive -> 192
-                                else -> (captureSampleRate * 2 * (if (is24Now) 3 else 2) * 8) / 1000
-                            }
-                            val isLowLatNow = (activeProfile == AudioConfig.PROFILE_VIDEO || activeProfile == AudioConfig.PROFILE_LOW_LATENCY)
-                            val profileDisplayName = when {
-                                isOpusActive -> "Low Latency (Opus 320k)"
-                                isAacActive -> "Low Latency (AAC 192k)"
-                                activeProfile == AudioConfig.PROFILE_AUTO -> if (is24Now) "Auto Adaptive (24-bit, ${captureSampleRate / 1000}kHz)" else "Auto Adaptive (${captureSampleRate / 1000}kHz)"
-                                is24BitActive -> if (activeProfile == AudioConfig.PROFILE_MUSIC && captureSampleRate < targetRate) "Studio 24-bit (Clamped ${captureSampleRate / 1000}kHz)" else "Studio 24-bit Music (${captureSampleRate / 1000}kHz)"
-                                else -> if (activeProfile == AudioConfig.PROFILE_MUSIC && captureSampleRate < targetRate) "Music (Clamped ${captureSampleRate / 1000}kHz)" else "Music (${captureSampleRate / 1000}kHz)"
-                            }
-
-                            val receiverCount = clientRegistry.size
-                            val statusDetailText = if (isSilenceSuppressed) {
-                                "Silence Suppressed (Standby)"
-                            } else if (receiverCount > 1) {
-                                "Multi-Unicast ($receiverCount receivers)"
-                            } else if (peakPercent > 1) {
-                                "Active Audio ($bitDepth-bit)"
-                            } else {
-                                "Silent Stream"
-                            }
-
-                            val endpointLabel = if (receiverCount > 1) {
-                                "$receiverCount receivers (DAP Vol: ${remoteVolumePercent.get()}%)"
-                            } else if (receiverCount == 1) {
-                                val single = clientRegistry.keys.first()
-                                "${single.address.hostAddress}:${single.port} (DAP Vol: ${remoteVolumePercent.get()}%)"
-                            } else {
-                                "$targetIp:$targetPort (DAP Vol: ${remoteVolumePercent.get()}%)"
-                            }
-
-                            val periodicNegotiatedFormat = if (isCompressedActive) {
-                                "${if (isOpusActive) "Opus" else "AAC"} • ${bitrate} kbps • ${captureSampleRate / 1000.0} kHz"
-                            } else {
-                                "${captureSampleRate / 1000.0} kHz • ${bitDepth}-bit Stereo PCM"
-                            }
-                            val currentRxCap = clientCapabilities.values.firstOrNull { it != 0 } ?: rxCaps
-                            val currentRxCapDesc = if (currentRxCap != 0) AudioCapabilities.describeCapabilities(currentRxCap) else rxCapDesc
-
-                            StreamState.update {
-                                it.copy(
-                                    isActive = true,
-                                    isTransmitter = true,
-                                    packetsTotal = totalPackets,
-                                    packetsPerSec = pps,
-                                    bytesPerSec = bps,
-                                    audioPeakPercent = peakPercent,
-                                    remoteEndpoint = endpointLabel,
-                                    statusDetail = statusDetailText,
-                                    streamProfileName = profileDisplayName,
-                                    sampleRate = captureSampleRate,
-                                    bitDepth = bitDepth,
-                                    bitrateKbps = bitrate,
-                                    isSilenceSuppressed = isSilenceSuppressed,
-                                    activeReceiversCount = receiverCount,
-                                    sourceCapabilityDesc = sourceCapDesc,
-                                    receiverCapabilityDesc = currentRxCapDesc,
-                                    negotiatedFormatDesc = periodicNegotiatedFormat
-                                )
-                            }
-
-                            if (now - lastLatencyLogTime >= 1000L) {
-                                lastLatencyLogTime = now
-                                val readMsStr = String.format(Locale.US, "%.1f", lastReadDurationNs / 1_000_000.0)
-                                val encMsStr = String.format(Locale.US, "%.1f", lastEncodeDurationNs / 1_000_000.0)
-                                Log.i("LATENCY-TX", "Record: ${readMsStr}ms | Encode: ${encMsStr}ms | Sent: $pps pps ($bps B/s)")
-                            }
-
-                            intervalPackets = 0
-                            intervalBytes = 0
-                            lastStatsTime = now
-                        }
-                    } else if (bytesRead == 0) {
-                        Thread.sleep(2)
-                    } else if (bytesRead < 0) {
-                        Log.e(TAG, "AudioRecord read error: $bytesRead")
-                        break
-                    }
                     }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Audio streaming exception", e)
                 StreamState.update { it.copy(statusDetail = "Error: ${e.message}") }
             } finally {
-                try {
-                    socketToClose?.close()
-                } catch (ignored: Exception) {}
-                udpSocket = null
                 Log.i(TAG, "Audio streaming thread stopped")
             }
         }, "AudioCaptureStreamer").apply {
             isDaemon = true
             start()
-        }
-
-        // Real-time audio engine adaptation: monitor Android playback sessions (e.g. Tidal/Spotify)
-        if (profile == AudioConfig.PROFILE_AUTO || (profile == AudioConfig.PROFILE_MUSIC && (rawRatePref == AudioConfig.SAMPLE_RATE_AUTO || rawBitPref == AudioConfig.BIT_DEPTH_AUTO))) {
-            AudioPlaybackDetector.startMonitoring(this) { newFormat ->
-                Log.d(TAG, "AudioPlaybackDetector active media format: ${newFormat.description}")
-            }
         }
     }
 
@@ -1351,57 +1314,21 @@ class AudioCaptureService : Service() {
 
         AudioPlaybackDetector.stopMonitoring(this)
 
-        val cThread = controlListenerThread
-        val sThread = streamThread
-        controlListenerThread = null
-        streamThread = null
+        stopProducerSynchronously()
 
+        val cThread = controlListenerThread
+        controlListenerThread = null
         cThread?.interrupt()
-        sThread?.interrupt()
 
         try {
             udpSocket?.close()
         } catch (ignored: Exception) {}
         udpSocket = null
-        activeNegotiatedConfig = null
-
-        try {
-            audioRecord?.let {
-                if (it.state == AudioRecord.STATE_INITIALIZED) {
-                    if (it.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
-                        it.stop()
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping AudioRecord", e)
-        }
+        profileTransactionManager.reset()
 
         try {
             cThread?.join(300)
-            sThread?.join(500)
         } catch (ignored: InterruptedException) {}
-
-        try {
-            audioRecord?.let {
-                if (it.state == AudioRecord.STATE_INITIALIZED) {
-                    it.release()
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error releasing AudioRecord", e)
-        }
-        audioRecord = null
-
-        try {
-            opusEncoder?.release()
-        } catch (ignored: Exception) {}
-        opusEncoder = null
-
-        try {
-            aacEncoder?.release()
-        } catch (ignored: Exception) {}
-        aacEncoder = null
 
         if (!keepProjection) {
             try {

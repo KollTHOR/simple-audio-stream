@@ -612,21 +612,21 @@ sealed class ProfileChangeResult {
 }
 
 /**
- * Transactional manager coordinating runtime stream profile changes.
- * Enforces atomic state transitions across transmitter and receiver:
- * a. Stop sending packets using the old configuration.
- * b. Increment the stream generation.
- * c. Create the complete new negotiated configuration.
- * d. Publish the new configuration/generation to receivers.
- * e. Reset/re-anchor receiver jitter-buffer state for the new generation.
- * f. Reconfigure AudioTrack/decoder exactly once.
- * g. Resume audio packets using only the new generation/configuration.
+ * Transactional manager coordinating runtime transmitter stream profile changes.
+ * Enforces atomic state transitions on the transmitter:
+ * State A: Old config active, old generation transmitting.
+ * Step 1: Stop existing capture/transmission producer synchronously (streamThread.join(), release/stop old AudioRecord). Assert: no old-generation packets produced.
+ * Step 2: Increment/create the new stream generation.
+ * Step 3: Construct the COMPLETE new TransportConfig / NegotiatedStreamConfig from requested profile.
+ * Step 4: Atomically publish the new generation + complete configuration as the transmitter's authoritative active state.
+ * Step 5: Send/publish the new stream configuration announcement burst.
+ * Step 6: Reconfigure the capture pipeline using ONLY the new configuration.
+ * Step 7: Resume transmission. Assert: every transmitted packet after resume uses the new generation and new configuration.
  */
 class StreamProfileTransactionManager(
-    val authority: StreamConfigurationAuthority = StreamConfigurationAuthority(),
     val currentStreamGeneration: java.util.concurrent.atomic.AtomicLong = java.util.concurrent.atomic.AtomicLong(0L)
 ) {
-    private val transactionLock = Any()
+    private val profileChangeLock = java.util.concurrent.locks.ReentrantLock()
 
     @Volatile
     var activeTransmitterConfig: NegotiatedStreamConfig? = null
@@ -638,19 +638,24 @@ class StreamProfileTransactionManager(
 
     fun changeProfile(
         targetProfile: LatencyTarget,
-        preferredCodec: AudioCodec = if (targetProfile == LatencyTarget.LOW_LATENCY) AudioCodec.OPUS else AudioCodec.PCM,
-        sampleRateHz: Int = 48000,
-        is24Bit: Boolean = (targetProfile != LatencyTarget.LOW_LATENCY),
+        preferredCodec: AudioCodec? = null,
+        preferredSampleRateHz: Int = 48000,
+        preferred24Bit: Boolean = (targetProfile != LatencyTarget.LOW_LATENCY),
+        txCapabilitiesMask: Int = 0,
+        rxCapabilitiesMask: Int = 0,
+        rxCapabilitiesList: List<Int> = emptyList(),
         fecEnabled: Boolean = true,
+        isOpusEncoderAvailable: Boolean = true,
         onStopTransmission: (() -> Unit)? = null,
         onPublishAnnouncement: ((NegotiatedStreamConfig) -> Unit)? = null,
-        onApplyReceiverConfig: ((NegotiatedStreamConfig) -> Unit)? = null,
+        onReconfigureCapture: ((NegotiatedStreamConfig) -> Unit)? = null,
         onResumeTransmission: ((NegotiatedStreamConfig) -> Unit)? = null
     ): ProfileChangeResult {
-        synchronized(transactionLock) {
+        profileChangeLock.lock()
+        try {
             val current = activeTransmitterConfig
 
-            // Requirement 5: Repeated requests for currently active profile must do nothing
+            // Requirement 3: if requested profile equals current profile, return without changing generation/configuration or restarting capture
             if (current != null && current.transportProfile.latencyTarget == targetProfile) {
                 return ProfileChangeResult.IgnoredSameProfile(
                     activeProfile = targetProfile,
@@ -662,60 +667,69 @@ class StreamProfileTransactionManager(
             val currentGen = current?.generation ?: currentStreamGeneration.get()
             val currentProfileName = current?.transportProfile?.latencyTarget?.name ?: "NONE"
             val currentCodecName = current?.codec?.name ?: "NONE"
-            val currentRate = current?.sampleRateHz ?: sampleRateHz
-            val currentBits = current?.bitDepthBits ?: (if (is24Bit) 24 else 16)
+            val currentRate = current?.sampleRateHz ?: preferredSampleRateHz
+            val currentBits = current?.bitDepthBits ?: (if (preferred24Bit) 24 else 16)
             val currentChannels = current?.channels ?: 2
             Log.i(
-                "StreamProfileManager",
+                "AudioCaptureService",
                 "PROFILE_CHANGE_BEGIN: targetProfile=${targetProfile.name}, generation=$currentGen, profile=$currentProfileName, codec=$currentCodecName, sampleRate=$currentRate, bitDepth=$currentBits, channels=$currentChannels"
             )
 
-            // Step a: Stop sending packets using the old configuration
+            // Step 1: Stop existing capture/transmission producer synchronously (streamThread.join(), release/stop old AudioRecord). Assert: no old-generation packets produced.
             isTransmissionActive = false
             onStopTransmission?.invoke()
 
-            // Step b: Increment the stream generation
+            // Step 2: Increment/create the new stream generation.
             val newGen = currentStreamGeneration.incrementAndGet()
 
-            // Step c: Create the complete new negotiated configuration
+            // Step 3: Construct the COMPLETE new TransportConfig / NegotiatedStreamConfig from requested profile.
+            val resolvedCodec = preferredCodec ?: when (targetProfile) {
+                LatencyTarget.LOW_LATENCY -> if (isOpusEncoderAvailable) AudioCodec.OPUS else AudioCodec.AAC
+                else -> AudioCodec.PCM
+            }
             val newConfig = StreamNegotiator.negotiate(
                 request = StreamNegotiator.NegotiationRequest(
                     preferredProfile = targetProfile,
-                    preferredCodec = preferredCodec,
-                    preferredSampleRateHz = sampleRateHz,
-                    preferred24Bit = is24Bit && !preferredCodec.isCompressed,
-                    fecEnabled = fecEnabled
+                    preferredCodec = resolvedCodec,
+                    preferredSampleRateHz = preferredSampleRateHz,
+                    preferred24Bit = preferred24Bit && !resolvedCodec.isCompressed,
+                    txCapabilitiesMask = txCapabilitiesMask,
+                    rxCapabilitiesMask = rxCapabilitiesMask,
+                    rxCapabilitiesList = rxCapabilitiesList,
+                    fecEnabled = fecEnabled,
+                    isOpusEncoderAvailable = isOpusEncoderAvailable
                 ),
                 generation = newGen
             )
 
             // Requirement 8: GENERATION_CREATED
             Log.i(
-                "StreamProfileManager",
+                "AudioCaptureService",
                 "GENERATION_CREATED: ${newConfig.toSummaryString()}"
             )
 
-            // Step d: Publish the new configuration/generation to receivers
+            // Step 4: Atomically publish the new generation + complete configuration as the transmitter's authoritative active state.
+            activeTransmitterConfig = newConfig
+
+            // Requirement 8: CONFIG_APPLIED
+            Log.i(
+                "AudioCaptureService",
+                "CONFIG_APPLIED: ${newConfig.toSummaryString()}"
+            )
+
+            // Step 5: Send/publish the new stream configuration announcement burst.
             onPublishAnnouncement?.invoke(newConfig)
 
-            // Step e & f: Receiver applies configuration, resets jitter buffer, reconfigures AudioTrack/decoder
-            val updateResult = authority.applyUpdate(newConfig)
-            if (updateResult is ConfigTransitionResult.Applied) {
-                Log.i(
-                    "StreamProfileManager",
-                    "CONFIG_APPLIED: ${newConfig.toSummaryString()}"
-                )
-                onApplyReceiverConfig?.invoke(newConfig)
-            }
+            // Step 6: Reconfigure the capture pipeline using ONLY the new configuration.
+            onReconfigureCapture?.invoke(newConfig)
 
-            // Step g: Resume audio packets using only the new generation/configuration
-            activeTransmitterConfig = newConfig
+            // Step 7: Resume transmission. Assert: every transmitted packet after resume uses the new generation and new configuration.
             isTransmissionActive = true
             onResumeTransmission?.invoke(newConfig)
 
             // Requirement 8: PROFILE_CHANGE_COMPLETE
             Log.i(
-                "StreamProfileManager",
+                "AudioCaptureService",
                 "PROFILE_CHANGE_COMPLETE: ${newConfig.toSummaryString()}"
             )
 
@@ -723,6 +737,19 @@ class StreamProfileTransactionManager(
                 previousConfig = current,
                 newConfig = newConfig
             )
+        } finally {
+            profileChangeLock.unlock()
+        }
+    }
+
+    fun reset() {
+        profileChangeLock.lock()
+        try {
+            activeTransmitterConfig = null
+            isTransmissionActive = false
+        } finally {
+            profileChangeLock.unlock()
         }
     }
 }
+

@@ -847,26 +847,79 @@ class TransportConfigTest {
     }
 
     @Test
-    fun testProfileChange_AutoToLowLatency() {
+    fun testProfileChange_SameProfileNoOp() {
         val manager = StreamProfileTransactionManager()
+        val receiverAuthority = StreamConfigurationAuthority()
+
+        // 1. Establish Auto Adaptive (generation 1)
+        val initialResult = manager.changeProfile(
+            targetProfile = LatencyTarget.BALANCED,
+            onPublishAnnouncement = { config -> receiverAuthority.applyUpdate(config) }
+        )
+        assertTrue(initialResult is ProfileChangeResult.Applied)
+        assertEquals(1L, manager.currentStreamGeneration.get())
+        assertEquals(1L, receiverAuthority.currentGeneration)
+
         var stoppedTransmission = false
         var publishedAnnouncement = false
-        var receiverConfigured = false
+        var reconfiguredCapture = false
         var resumedTransmission = false
 
-        // 1. Initial configuration: Auto Adaptive
-        val initialResult = manager.changeProfile(LatencyTarget.BALANCED)
+        // 2. Repeated request for same profile (BALANCED)
+        val repeatedResult = manager.changeProfile(
+            targetProfile = LatencyTarget.BALANCED,
+            onStopTransmission = { stoppedTransmission = true },
+            onPublishAnnouncement = { config ->
+                publishedAnnouncement = true
+                receiverAuthority.applyUpdate(config)
+            },
+            onReconfigureCapture = { reconfiguredCapture = true },
+            onResumeTransmission = { resumedTransmission = true }
+        )
+
+        // Must be a no-op: no generation change, no callbacks/restarts
+        assertTrue("Repeated request must be ignored as same profile", repeatedResult is ProfileChangeResult.IgnoredSameProfile)
+        val ignored = repeatedResult as ProfileChangeResult.IgnoredSameProfile
+        assertEquals(LatencyTarget.BALANCED, ignored.activeProfile)
+        assertEquals(1L, ignored.generation)
+
+        assertEquals("Generation must NOT increment on same-profile request", 1L, manager.currentStreamGeneration.get())
+        assertEquals("Authority generation must NOT change", 1L, receiverAuthority.currentGeneration)
+        assertFalse("Transmission must NOT be stopped", stoppedTransmission)
+        assertFalse("Announcement must NOT be published", publishedAnnouncement)
+        assertFalse("Capture must NOT be reconfigured", reconfiguredCapture)
+        assertFalse("Transmission must NOT be resumed", resumedTransmission)
+    }
+
+    @Test
+    fun testProfileChange_AutoToLowLatency() {
+        val manager = StreamProfileTransactionManager()
+        val receiverAuthority = StreamConfigurationAuthority()
+        var stoppedTransmission = false
+        var publishedAnnouncement = false
+        var reconfiguredCapture = false
+        var resumedTransmission = false
+
+        // 1. Initial configuration: Auto Adaptive (BALANCED)
+        val initialResult = manager.changeProfile(
+            targetProfile = LatencyTarget.BALANCED,
+            onPublishAnnouncement = { receiverAuthority.applyUpdate(it) }
+        )
         assertTrue(initialResult is ProfileChangeResult.Applied)
         assertEquals(1L, (initialResult as ProfileChangeResult.Applied).newConfig.generation)
         assertEquals(LatencyTarget.BALANCED, initialResult.newConfig.transportProfile.latencyTarget)
         assertEquals(AudioCodec.PCM, initialResult.newConfig.codec)
+        assertEquals(1L, receiverAuthority.currentGeneration)
 
         // 2. Transactional change: Auto -> Low Latency
         val transitionResult = manager.changeProfile(
             targetProfile = LatencyTarget.LOW_LATENCY,
             onStopTransmission = { stoppedTransmission = true },
-            onPublishAnnouncement = { publishedAnnouncement = true },
-            onApplyReceiverConfig = { receiverConfigured = true },
+            onPublishAnnouncement = { config ->
+                publishedAnnouncement = true
+                receiverAuthority.applyUpdate(config)
+            },
+            onReconfigureCapture = { reconfiguredCapture = true },
             onResumeTransmission = { resumedTransmission = true }
         )
 
@@ -874,36 +927,46 @@ class TransportConfigTest {
         val applied = transitionResult as ProfileChangeResult.Applied
 
         // Verification of transactional sequence:
-        assertTrue("Step a: old transmission must be stopped", stoppedTransmission)
-        assertEquals("Step b: generation must increment to 2", 2L, applied.newConfig.generation)
-        assertEquals("Step c: profile must be LOW_LATENCY", LatencyTarget.LOW_LATENCY, applied.newConfig.transportProfile.latencyTarget)
-        assertEquals("Step c: codec must resolve to OPUS for low latency", AudioCodec.OPUS, applied.newConfig.codec)
-        assertTrue("Step d: new configuration must be published", publishedAnnouncement)
-        assertTrue("Step e/f: receiver config must be applied exactly once", receiverConfigured)
-        assertTrue("Step g: transmission must resume with new configuration", resumedTransmission)
+        assertTrue("Step 1: old transmission must be stopped", stoppedTransmission)
+        assertEquals("Step 2: generation must increment to 2", 2L, applied.newConfig.generation)
+        assertEquals("Step 3: profile must be LOW_LATENCY", LatencyTarget.LOW_LATENCY, applied.newConfig.transportProfile.latencyTarget)
+        assertEquals("Step 3: codec must resolve to OPUS for low latency", AudioCodec.OPUS, applied.newConfig.codec)
+        assertEquals("Step 3: bit depth must resolve to 16-bit for OPUS", 16, applied.newConfig.bitDepthBits)
+        assertTrue("Step 5: new configuration must be published", publishedAnnouncement)
+        assertTrue("Step 6: capture must be reconfigured", reconfiguredCapture)
+        assertTrue("Step 7: transmission must resume with new configuration", resumedTransmission)
 
         // Transmitter and receiver state match atomically
-        assertEquals(2L, manager.authority.currentGeneration)
-        assertEquals(LatencyTarget.LOW_LATENCY, manager.authority.currentConfig?.transportProfile?.latencyTarget)
+        assertEquals(2L, receiverAuthority.currentGeneration)
+        assertEquals(LatencyTarget.LOW_LATENCY, receiverAuthority.currentConfig?.transportProfile?.latencyTarget)
+        assertEquals(AudioCodec.OPUS, receiverAuthority.currentConfig?.codec)
         assertEquals(2L, manager.activeTransmitterConfig?.generation)
+        assertEquals(AudioCodec.OPUS, manager.activeTransmitterConfig?.codec)
     }
 
     @Test
     fun testProfileChange_LowLatencyToAuto() {
         val manager = StreamProfileTransactionManager()
+        val receiverAuthority = StreamConfigurationAuthority()
 
         // 1. Establish Low Latency (generation 1)
-        val initialResult = manager.changeProfile(LatencyTarget.LOW_LATENCY)
+        val initialResult = manager.changeProfile(
+            targetProfile = LatencyTarget.LOW_LATENCY,
+            onPublishAnnouncement = { receiverAuthority.applyUpdate(it) }
+        )
         assertTrue(initialResult is ProfileChangeResult.Applied)
-        assertEquals(1L, manager.authority.currentGeneration)
-        assertEquals(LatencyTarget.LOW_LATENCY, manager.authority.currentConfig?.transportProfile?.latencyTarget)
-        assertEquals(AudioCodec.OPUS, manager.authority.currentConfig?.codec)
+        assertEquals(1L, receiverAuthority.currentGeneration)
+        assertEquals(LatencyTarget.LOW_LATENCY, receiverAuthority.currentConfig?.transportProfile?.latencyTarget)
+        assertEquals(AudioCodec.OPUS, receiverAuthority.currentConfig?.codec)
 
         // 2. Transition: Low Latency -> Auto (generation 2)
         var receiverReconfigured = false
         val transitionResult = manager.changeProfile(
             targetProfile = LatencyTarget.BALANCED,
-            onApplyReceiverConfig = { receiverReconfigured = true }
+            onPublishAnnouncement = { config ->
+                val res = receiverAuthority.applyUpdate(config)
+                if (res is ConfigTransitionResult.Applied) receiverReconfigured = true
+            }
         )
 
         assertTrue(transitionResult is ProfileChangeResult.Applied)
@@ -913,68 +976,153 @@ class TransportConfigTest {
         assertEquals(AudioCodec.PCM, applied.newConfig.codec)
         assertTrue("Receiver must be reconfigured for Auto", receiverReconfigured)
 
-        assertEquals(2L, manager.authority.currentGeneration)
-        assertEquals(LatencyTarget.BALANCED, manager.authority.currentConfig?.transportProfile?.latencyTarget)
-        assertEquals(AudioCodec.PCM, manager.authority.currentConfig?.codec)
+        assertEquals(2L, receiverAuthority.currentGeneration)
+        assertEquals(LatencyTarget.BALANCED, receiverAuthority.currentConfig?.transportProfile?.latencyTarget)
+        assertEquals(AudioCodec.PCM, receiverAuthority.currentConfig?.codec)
     }
 
     @Test
     fun testProfileChange_MusicToLowLatency() {
         val manager = StreamProfileTransactionManager()
+        val receiverAuthority = StreamConfigurationAuthority()
 
         // 1. Establish Music (generation 1)
-        val initialResult = manager.changeProfile(LatencyTarget.RELIABLE)
+        val initialResult = manager.changeProfile(
+            targetProfile = LatencyTarget.RELIABLE,
+            onPublishAnnouncement = { receiverAuthority.applyUpdate(it) }
+        )
         assertTrue(initialResult is ProfileChangeResult.Applied)
-        assertEquals(1L, manager.authority.currentGeneration)
-        assertEquals(LatencyTarget.RELIABLE, manager.authority.currentConfig?.transportProfile?.latencyTarget)
-        assertEquals(AudioCodec.PCM, manager.authority.currentConfig?.codec)
+        assertEquals(1L, receiverAuthority.currentGeneration)
+        assertEquals(LatencyTarget.RELIABLE, receiverAuthority.currentConfig?.transportProfile?.latencyTarget)
+        assertEquals(AudioCodec.PCM, receiverAuthority.currentConfig?.codec)
 
         // 2. Transition: Music -> Low Latency (generation 2)
-        val transitionResult = manager.changeProfile(LatencyTarget.LOW_LATENCY)
+        val transitionResult = manager.changeProfile(
+            targetProfile = LatencyTarget.LOW_LATENCY,
+            onPublishAnnouncement = { receiverAuthority.applyUpdate(it) }
+        )
         assertTrue(transitionResult is ProfileChangeResult.Applied)
         val applied = transitionResult as ProfileChangeResult.Applied
         assertEquals(2L, applied.newConfig.generation)
         assertEquals(LatencyTarget.LOW_LATENCY, applied.newConfig.transportProfile.latencyTarget)
         assertEquals(AudioCodec.OPUS, applied.newConfig.codec)
 
-        assertEquals(2L, manager.authority.currentGeneration)
-        assertEquals(LatencyTarget.LOW_LATENCY, manager.authority.currentConfig?.transportProfile?.latencyTarget)
+        assertEquals(2L, receiverAuthority.currentGeneration)
+        assertEquals(LatencyTarget.LOW_LATENCY, receiverAuthority.currentConfig?.transportProfile?.latencyTarget)
+        assertEquals(AudioCodec.OPUS, receiverAuthority.currentConfig?.codec)
     }
 
     @Test
-    fun testProfileChange_RepeatedSameProfileRequest() {
+    fun testProfileChange_SerializedConcurrency() {
         val manager = StreamProfileTransactionManager()
+        val receiverAuthority = StreamConfigurationAuthority()
 
-        // 1. Establish Auto Adaptive
-        manager.changeProfile(LatencyTarget.BALANCED)
-        assertEquals(1L, manager.currentStreamGeneration.get())
-        assertEquals(1L, manager.authority.currentGeneration)
-
-        var trackRecreated = false
-        var jitterReset = false
-
-        // 2. Repeated request for Auto Adaptive
-        val repeatedResult = manager.changeProfile(
+        // Initialize at BALANCED
+        manager.changeProfile(
             targetProfile = LatencyTarget.BALANCED,
-            onApplyReceiverConfig = {
-                trackRecreated = true
-                jitterReset = true
+            onPublishAnnouncement = { receiverAuthority.applyUpdate(it) }
+        )
+        assertEquals(1L, manager.currentStreamGeneration.get())
+
+        val startLatch = java.util.concurrent.CountDownLatch(1)
+        val doneLatch = java.util.concurrent.CountDownLatch(2)
+        val executionOrder = java.util.Collections.synchronizedList(mutableListOf<String>())
+
+        val t1 = Thread {
+            startLatch.await()
+            manager.changeProfile(
+                targetProfile = LatencyTarget.LOW_LATENCY,
+                onStopTransmission = { executionOrder.add("T1_STOP") },
+                onPublishAnnouncement = { config ->
+                    executionOrder.add("T1_ANNOUNCE")
+                    receiverAuthority.applyUpdate(config)
+                },
+                onResumeTransmission = { executionOrder.add("T1_RESUME") }
+            )
+            doneLatch.countDown()
+        }
+
+        val t2 = Thread {
+            startLatch.await()
+            manager.changeProfile(
+                targetProfile = LatencyTarget.RELIABLE,
+                onStopTransmission = { executionOrder.add("T2_STOP") },
+                onPublishAnnouncement = { config ->
+                    executionOrder.add("T2_ANNOUNCE")
+                    receiverAuthority.applyUpdate(config)
+                },
+                onResumeTransmission = { executionOrder.add("T2_RESUME") }
+            )
+            doneLatch.countDown()
+        }
+
+        t1.start()
+        t2.start()
+        startLatch.countDown()
+        assertTrue("Both concurrent threads must finish", doneLatch.await(5, java.util.concurrent.TimeUnit.SECONDS))
+
+        // Both transactions must execute sequentially without interleaving steps
+        assertEquals("Generation must increment exactly twice (1 -> 2 -> 3)", 3L, manager.currentStreamGeneration.get())
+        assertEquals(3L, receiverAuthority.currentGeneration)
+
+        // Check non-interleaving: for whichever thread ran first, all its events must finish before the second starts
+        val firstThreadPrefix = if (executionOrder[0].startsWith("T1")) "T1" else "T2"
+        val secondThreadPrefix = if (firstThreadPrefix == "T1") "T2" else "T1"
+
+        assertEquals("${firstThreadPrefix}_STOP", executionOrder[0])
+        assertEquals("${firstThreadPrefix}_ANNOUNCE", executionOrder[1])
+        assertEquals("${firstThreadPrefix}_RESUME", executionOrder[2])
+        assertEquals("${secondThreadPrefix}_STOP", executionOrder[3])
+        assertEquals("${secondThreadPrefix}_ANNOUNCE", executionOrder[4])
+        assertEquals("${secondThreadPrefix}_RESUME", executionOrder[5])
+    }
+
+    @Test
+    fun testProfileChange_OldTransmissionStoppedBeforeNewStarts() {
+        val manager = StreamProfileTransactionManager()
+        manager.changeProfile(LatencyTarget.BALANCED)
+
+        val stepLog = mutableListOf<String>()
+        var wasTransmissionActiveDuringStop = true
+        var wasTransmissionActiveDuringAnnounce = true
+        var wasTransmissionActiveDuringReconfigure = true
+
+        manager.changeProfile(
+            targetProfile = LatencyTarget.LOW_LATENCY,
+            onStopTransmission = {
+                stepLog.add("STOP")
+                wasTransmissionActiveDuringStop = manager.isTransmissionActive
+            },
+            onPublishAnnouncement = {
+                stepLog.add("ANNOUNCE")
+                wasTransmissionActiveDuringAnnounce = manager.isTransmissionActive
+            },
+            onReconfigureCapture = {
+                stepLog.add("RECONFIGURE")
+                wasTransmissionActiveDuringReconfigure = manager.isTransmissionActive
+            },
+            onResumeTransmission = {
+                stepLog.add("RESUME")
             }
         )
 
-        assertTrue("Repeated request must be ignored as same profile", repeatedResult is ProfileChangeResult.IgnoredSameProfile)
-        assertEquals("Generation must NOT increment on repeated request", 1L, manager.currentStreamGeneration.get())
-        assertEquals("Authority generation must NOT change", 1L, manager.authority.currentGeneration)
-        assertFalse("AudioTrack must NOT be recreated on repeated same profile request", trackRecreated)
-        assertFalse("Jitter buffer must NOT be reset on repeated same profile request", jitterReset)
+        assertEquals(listOf("STOP", "ANNOUNCE", "RECONFIGURE", "RESUME"), stepLog)
+        assertFalse("isTransmissionActive must be false during onStopTransmission", wasTransmissionActiveDuringStop)
+        assertFalse("isTransmissionActive must be false during onPublishAnnouncement", wasTransmissionActiveDuringAnnounce)
+        assertFalse("isTransmissionActive must be false during onReconfigureCapture", wasTransmissionActiveDuringReconfigure)
+        assertTrue("isTransmissionActive must be true after completion", manager.isTransmissionActive)
     }
 
     @Test
     fun testProfileChange_OldGenerationPacketsDuringTransition() {
         val manager = StreamProfileTransactionManager()
+        val receiverAuthority = StreamConfigurationAuthority()
 
         // 1. Establish Auto Adaptive (generation 1)
-        val initialResult = manager.changeProfile(LatencyTarget.BALANCED) as ProfileChangeResult.Applied
+        val initialResult = manager.changeProfile(
+            targetProfile = LatencyTarget.BALANCED,
+            onPublishAnnouncement = { receiverAuthority.applyUpdate(it) }
+        ) as ProfileChangeResult.Applied
         val configGen1 = initialResult.newConfig
 
         // Packets created and in flight under generation 1
@@ -983,8 +1131,11 @@ class TransportConfigTest {
         val silenceGen1 = configGen1.createHeader(packetType = HatPacket.TYPE_SILENCE_HEARTBEAT, sequenceNumber = 12, payloadLength = 0, timestamp = 1000L)
 
         // 2. Transition occurs to Low Latency (generation 2)
-        val transitionResult = manager.changeProfile(LatencyTarget.LOW_LATENCY) as ProfileChangeResult.Applied
-        val activeGen = manager.authority.currentGeneration
+        val transitionResult = manager.changeProfile(
+            targetProfile = LatencyTarget.LOW_LATENCY,
+            onPublishAnnouncement = { receiverAuthority.applyUpdate(it) }
+        ) as ProfileChangeResult.Applied
+        val activeGen = receiverAuthority.currentGeneration
         assertEquals(2L, activeGen)
 
         // 3. Old generation packets arrive at receiver AFTER transition
@@ -1004,20 +1155,28 @@ class TransportConfigTest {
     @Test
     fun testProfileChange_AsynchronousOldConfigArrivingAfterNewConfig() {
         val manager = StreamProfileTransactionManager()
+        val receiverAuthority = StreamConfigurationAuthority()
 
         // 1. Initial generation 1 config
-        val r1 = manager.changeProfile(LatencyTarget.BALANCED) as ProfileChangeResult.Applied
+        val r1 = manager.changeProfile(
+            targetProfile = LatencyTarget.BALANCED,
+            onPublishAnnouncement = { receiverAuthority.applyUpdate(it) }
+        ) as ProfileChangeResult.Applied
         val oldConfigGen1 = r1.newConfig
         assertEquals(1L, oldConfigGen1.generation)
+        assertEquals(1L, receiverAuthority.currentGeneration)
 
         // 2. Profile transition to generation 2
-        val r2 = manager.changeProfile(LatencyTarget.LOW_LATENCY) as ProfileChangeResult.Applied
+        val r2 = manager.changeProfile(
+            targetProfile = LatencyTarget.LOW_LATENCY,
+            onPublishAnnouncement = { receiverAuthority.applyUpdate(it) }
+        ) as ProfileChangeResult.Applied
         val newConfigGen2 = r2.newConfig
         assertEquals(2L, newConfigGen2.generation)
-        assertEquals(2L, manager.authority.currentGeneration)
+        assertEquals(2L, receiverAuthority.currentGeneration)
 
         // 3. Asynchronous / delayed callback from generation 1 arrives AFTER generation 2 has been applied
-        val delayedResult = manager.authority.applyUpdate(oldConfigGen1)
+        val delayedResult = receiverAuthority.applyUpdate(oldConfigGen1)
 
         assertTrue("Delayed old configuration must be rejected as stale", delayedResult is ConfigTransitionResult.RejectedStale)
         val stale = delayedResult as ConfigTransitionResult.RejectedStale
@@ -1025,9 +1184,9 @@ class TransportConfigTest {
         assertEquals(2L, stale.currentGeneration)
 
         // Active configuration was not overwritten
-        assertEquals(2L, manager.authority.currentGeneration)
-        assertEquals(LatencyTarget.LOW_LATENCY, manager.authority.currentConfig?.transportProfile?.latencyTarget)
-        assertEquals(AudioCodec.OPUS, manager.authority.currentConfig?.codec)
+        assertEquals(2L, receiverAuthority.currentGeneration)
+        assertEquals(LatencyTarget.LOW_LATENCY, receiverAuthority.currentConfig?.transportProfile?.latencyTarget)
+        assertEquals(AudioCodec.OPUS, receiverAuthority.currentConfig?.codec)
     }
 
     @Test
