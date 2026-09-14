@@ -873,8 +873,8 @@ class TransportConfigTest {
                 publishedAnnouncement = true
                 receiverAuthority.applyUpdate(config)
             },
-            onReconfigureCapture = { reconfiguredCapture = true },
-            onResumeTransmission = { resumedTransmission = true }
+            onReconfigureCapture = { reconfiguredCapture = true; true },
+            onResumeTransmission = { resumedTransmission = true; true }
         )
 
         // Must be a no-op: no generation change, no callbacks/restarts
@@ -919,8 +919,8 @@ class TransportConfigTest {
                 publishedAnnouncement = true
                 receiverAuthority.applyUpdate(config)
             },
-            onReconfigureCapture = { reconfiguredCapture = true },
-            onResumeTransmission = { resumedTransmission = true }
+            onReconfigureCapture = { reconfiguredCapture = true; true },
+            onResumeTransmission = { resumedTransmission = true; true }
         )
 
         assertTrue("Profile change must succeed", transitionResult is ProfileChangeResult.Applied)
@@ -1037,7 +1037,7 @@ class TransportConfigTest {
                     executionOrder.add("T1_ANNOUNCE")
                     receiverAuthority.applyUpdate(config)
                 },
-                onResumeTransmission = { executionOrder.add("T1_RESUME") }
+                onResumeTransmission = { executionOrder.add("T1_RESUME"); true }
             )
             doneLatch.countDown()
         }
@@ -1051,7 +1051,7 @@ class TransportConfigTest {
                     executionOrder.add("T2_ANNOUNCE")
                     receiverAuthority.applyUpdate(config)
                 },
-                onResumeTransmission = { executionOrder.add("T2_RESUME") }
+                onResumeTransmission = { executionOrder.add("T2_RESUME"); true }
             )
             doneLatch.countDown()
         }
@@ -1100,13 +1100,17 @@ class TransportConfigTest {
             onReconfigureCapture = {
                 stepLog.add("RECONFIGURE")
                 wasTransmissionActiveDuringReconfigure = manager.isTransmissionActive
+                true
             },
             onResumeTransmission = {
                 stepLog.add("RESUME")
+                true
             }
         )
 
-        assertEquals(listOf("STOP", "ANNOUNCE", "RECONFIGURE", "RESUME"), stepLog)
+        // The pipeline must be fully initialized BEFORE the generation is announced, so that a failed
+        // initialization can never announce a generation that will not transmit.
+        assertEquals(listOf("STOP", "RECONFIGURE", "ANNOUNCE", "RESUME"), stepLog)
         assertFalse("isTransmissionActive must be false during onStopTransmission", wasTransmissionActiveDuringStop)
         assertFalse("isTransmissionActive must be false during onPublishAnnouncement", wasTransmissionActiveDuringAnnounce)
         assertFalse("isTransmissionActive must be false during onReconfigureCapture", wasTransmissionActiveDuringReconfigure)
