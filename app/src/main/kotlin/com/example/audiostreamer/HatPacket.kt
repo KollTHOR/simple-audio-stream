@@ -3,7 +3,7 @@ package com.example.audiostreamer
 /**
  * High-definition Audio Transport (HAT) Packet Protocol.
  *
- * 24-byte versioned header with explicit, un-overloaded fields:
+ * 24-byte versioned header with explicit fields and 32-bit generation:
  * Offset  Size  Field              Description
  * ----------------------------------------------------------------------------------
  * 0..1     2    magic              0x4854 ("HT", HAT Transport)
@@ -11,15 +11,12 @@ package com.example.audiostreamer
  * 3        1    packetType         Packet type (Audio, Silence, FEC, Control, etc.)
  * 4..5     2    sequenceNumber     16-bit sequence number (Big-Endian uint16)
  * 6..7     2    payloadLength      Payload length in bytes (Big-Endian uint16)
- * 8..15    8    timestamp          Audio timeline timestamp in frames (Big-Endian uint64)
- * 16       1    codec              Codec identifier (Raw PCM, Lossless, Opus, AAC)
- * 17       1    profile            Streaming profile (Auto, Music, Low Latency)
- * 18       1    sampleRateCode     Sample rate enumeration (44.1k, 48k, etc.)
- * 19       1    bitDepth           Bit depth (16, 24)
- * 20       1    channels           Channel count (2 for stereo)
- * 21       1    volumeOrCaps       Volume (0..100) or capabilities mask
- * 22       1    fecBlockSize       FEC parity block size (K, e.g. 4)
- * 23       1    flags              Protocol flags (e.g. Wi-Fi Direct P2P active)
+ * 8..15    8    timestamp          Audio timeline timestamp in frames (Big-Endian uint64) / 64-bit generation in CONTROL
+ * 16       1    packedCodecProfile Codec (bits 0..1), Profile (bits 2..3), SampleRateCode (bits 4..7)
+ * 17       1    packedFormatFlags  BitDepth (bits 0..1), Channels (bits 2..3), Flags (bits 4..7)
+ * 18       1    volumeOrCaps       Volume (0..100) or capabilities mask
+ * 19       1    fecBlockSize       FEC parity block size (K, e.g. 4)
+ * 20..23   4    generation         32-bit stream generation (Big-Endian uint32)
  */
 object HatPacket {
     const val HEADER_SIZE = 24
@@ -39,18 +36,18 @@ object HatPacket {
     const val TYPE_DISCOVERY_PROBE: Byte = 0x08
     const val TYPE_DISCOVERY_ANNOUNCE: Byte = 0x09
 
-    // Codec Types (Byte 16)
+    // Codec Types (Byte 16 bits 0..1)
     const val CODEC_RAW_PCM: Byte = 0x00
     const val CODEC_LOSSLESS_PCM: Byte = 0x01
     const val CODEC_OPUS: Byte = 0x02
     const val CODEC_AAC: Byte = 0x03
 
-    // Stream Profile Types (Byte 17)
+    // Stream Profile Types (Byte 16 bits 2..3)
     const val PROFILE_AUTO: Byte = 0x01
     const val PROFILE_MUSIC: Byte = 0x02
     const val PROFILE_LOW_LATENCY: Byte = 0x03
 
-    // Sample Rate Codes (Byte 18)
+    // Sample Rate Codes (Byte 16 bits 4..7)
     const val RATE_NONE: Byte = 0x00
     const val RATE_44100: Byte = 0x01
     const val RATE_48000: Byte = 0x02
@@ -59,15 +56,15 @@ object HatPacket {
     const val RATE_176400: Byte = 0x05
     const val RATE_192000: Byte = 0x06
 
-    // Bit Depths (Byte 19)
+    // Bit Depths (Byte 17 bits 0..1)
     const val BIT_DEPTH_NONE: Byte = 0
     const val BIT_DEPTH_16: Byte = 16
     const val BIT_DEPTH_24: Byte = 24
 
-    // Channels (Byte 20)
+    // Channels (Byte 17 bits 2..3)
     const val CHANNELS_STEREO: Byte = 2
 
-    // Flags (Byte 23)
+    // Flags (Byte 17 bits 4..7)
     const val FLAG_NONE: Byte = 0x00
     const val FLAG_P2P_ACTIVE: Byte = 0x01
 
@@ -85,7 +82,7 @@ object HatPacket {
         val volumeOrCaps: Byte = 0,
         val fecBlockSize: Byte = 0,
         val flags: Byte = FLAG_NONE,
-        val generation: Long = if (packetType == TYPE_CONTROL) timestamp else (((flags.toInt() and 0xFE) ushr 1).toLong())
+        val generation: Long = if (packetType == TYPE_CONTROL) timestamp else 0L
     ) {
         val sampleRateHz: Int get() = rateCodeToHz(sampleRateCode)
     }
@@ -138,6 +135,26 @@ object HatPacket {
     }
 
     /**
+     * Big-Endian 32-bit unsigned integer serialization.
+     */
+    fun writeUInt32BE(buffer: ByteArray, offset: Int, value: Long) {
+        buffer[offset] = ((value ushr 24) and 0xFFL).toByte()
+        buffer[offset + 1] = ((value ushr 16) and 0xFFL).toByte()
+        buffer[offset + 2] = ((value ushr 8) and 0xFFL).toByte()
+        buffer[offset + 3] = (value and 0xFFL).toByte()
+    }
+
+    /**
+     * Big-Endian 32-bit unsigned integer deserialization.
+     */
+    fun readUInt32BE(buffer: ByteArray, offset: Int): Long {
+        return ((buffer[offset].toLong() and 0xFFL) shl 24) or
+               ((buffer[offset + 1].toLong() and 0xFFL) shl 16) or
+               ((buffer[offset + 2].toLong() and 0xFFL) shl 8) or
+               (buffer[offset + 3].toLong() and 0xFFL)
+    }
+
+    /**
      * Big-Endian 64-bit integer serialization.
      */
     fun writeUInt64BE(buffer: ByteArray, offset: Int, value: Long) {
@@ -163,6 +180,21 @@ object HatPacket {
                ((buffer[offset + 5].toLong() and 0xFFL) shl 16) or
                ((buffer[offset + 6].toLong() and 0xFFL) shl 8) or
                (buffer[offset + 7].toLong() and 0xFFL)
+    }
+
+    /**
+     * Validates an incoming packet's stream generation against the receiver's active generation.
+     *
+     * Rules:
+     * 1. Packets matching [currentGeneration] are valid.
+     * 2. Legacy behavior: generation 0 packets are accepted while the receiver is initially expecting generation 1.
+     * 3. Obsolete, stale, or mismatched generations are rejected.
+     */
+    fun isGenerationValid(packetGeneration: Long, currentGeneration: Long): Boolean {
+        if (currentGeneration == 1L && packetGeneration == 0L) {
+            return true
+        }
+        return packetGeneration == currentGeneration
     }
 
     /**
@@ -195,40 +227,32 @@ object HatPacket {
         }
         writeUInt64BE(buffer, offset + 8, tsToWrite)
 
-        // 16: Codec
-        buffer[offset + 16] = header.codec
+        // 16: Packed Codec, Profile, Sample Rate
+        val byte16 = (header.codec.toInt() and 0x03) or
+                     ((header.profile.toInt() and 0x03) shl 2) or
+                     ((header.sampleRateCode.toInt() and 0x0F) shl 4)
+        buffer[offset + 16] = byte16.toByte()
 
-        // 17: Stream Profile
-        buffer[offset + 17] = header.profile
-
-        // 18: Sample Rate Code
-        buffer[offset + 18] = header.sampleRateCode
-
-        // 19: Bit Depth
-        buffer[offset + 19] = header.bitDepth
-
-        // 20: Channels
-        buffer[offset + 20] = header.channels
-
-        // 21: Volume or Capabilities
-        buffer[offset + 21] = header.volumeOrCaps
-
-        // 22: FEC Block Size
-        buffer[offset + 22] = header.fecBlockSize
-
-        // 23: Flags and Audio Generation Tag
-        // For TYPE_CONTROL, full 64-bit generation is serialized in offset 8..15 (timestamp).
-        // For audio and other datagrams, timestamp is the 64-bit audio frame timeline and MUST NOT be repurposed.
-        // Bits 1..7 of flags carry the 7-bit generation tag ((generation and 0x7F) shl 1),
-        // preserving bit 0 (FLAG_P2P_ACTIVE).
-        val flagsByte = if (header.packetType == TYPE_CONTROL) {
-            header.flags
-        } else if (header.generation > 0L) {
-            (((header.generation.toInt() and 0x7F) shl 1) or (header.flags.toInt() and 0x01)).toByte()
-        } else {
-            header.flags
+        // 17: Packed Bit Depth, Channels, Flags
+        val bitDepthCode = when (header.bitDepth) {
+            BIT_DEPTH_16 -> 1
+            BIT_DEPTH_24 -> 2
+            else -> 0
         }
-        buffer[offset + 23] = flagsByte
+        val byte17 = (bitDepthCode and 0x03) or
+                     ((header.channels.toInt() and 0x03) shl 2) or
+                     ((header.flags.toInt() and 0x0F) shl 4)
+        buffer[offset + 17] = byte17.toByte()
+
+        // 18: Volume or Capabilities
+        buffer[offset + 18] = header.volumeOrCaps
+
+        // 19: FEC Block Size
+        buffer[offset + 19] = header.fecBlockSize
+
+        // 20..23: 32-bit Stream Generation (UInt32 BE)
+        val genToWrite = header.generation and 0xFFFFFFFFL
+        writeUInt32BE(buffer, offset + 20, genToWrite)
     }
 
     /**
@@ -279,13 +303,23 @@ object HatPacket {
             return null
         }
 
-        val codec = buffer[offset + 16]
-        val profile = buffer[offset + 17]
-        val sampleRateCode = buffer[offset + 18]
-        val bitDepth = buffer[offset + 19]
-        val channels = buffer[offset + 20]
-        val volumeOrCaps = buffer[offset + 21]
-        val fecBlockSize = buffer[offset + 22]
+        val byte16 = buffer[offset + 16].toInt() and 0xFF
+        val codec = (byte16 and 0x03).toByte()
+        val profile = ((byte16 ushr 2) and 0x03).toByte()
+        val sampleRateCode = ((byte16 ushr 4) and 0x0F).toByte()
+
+        val byte17 = buffer[offset + 17].toInt() and 0xFF
+        val bitDepthCode = byte17 and 0x03
+        val bitDepth = when (bitDepthCode) {
+            1 -> BIT_DEPTH_16
+            2 -> BIT_DEPTH_24
+            else -> BIT_DEPTH_NONE
+        }
+        val channels = ((byte17 ushr 2) and 0x03).toByte()
+        val flags = ((byte17 ushr 4) and 0x0F).toByte()
+
+        val volumeOrCaps = buffer[offset + 18]
+        val fecBlockSize = buffer[offset + 19]
 
         // 6. Defensive Type-Specific Validation
         when (packetType) {
@@ -323,13 +357,11 @@ object HatPacket {
         }
 
         val sequenceNumber = readUInt16BE(buffer, offset + 4)
-        val rawFlags = buffer[offset + 23]
         val generation = if (packetType == TYPE_CONTROL) {
             timestamp
         } else {
-            ((rawFlags.toInt() and 0xFE) ushr 1).toLong()
+            readUInt32BE(buffer, offset + 20)
         }
-        val flags = (rawFlags.toInt() and 0x01).toByte()
 
         return Header(
             version = version,

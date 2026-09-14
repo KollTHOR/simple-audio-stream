@@ -561,11 +561,10 @@ class TransportConfigTest {
         assertEquals(50000L, parsed1?.timestamp)
 
         // Stream transitions to generation 2
-        val activeGenTag = configGen2.generation and 0x7FL
-        assertEquals(2L, activeGenTag)
+        assertEquals(2L, configGen2.generation)
 
         // Receiver evaluating incoming audio packet 1 against active generation 2:
-        val isStale = parsed1?.generation != activeGenTag
+        val isStale = !HatPacket.isGenerationValid(parsed1?.generation ?: -1L, configGen2.generation)
         assertTrue("Packet from generation 1 must be flagged as stale when generation 2 is active", isStale)
 
         // Conversely, a packet created under generation 2 matches
@@ -580,7 +579,8 @@ class TransportConfigTest {
         val parsed2 = HatPacket.parseHeader(buf2, 0, buf2.size)
         assertNotNull(parsed2)
         assertEquals(2L, parsed2?.generation)
-        assertEquals(activeGenTag, parsed2?.generation)
+        assertTrue("Packet from generation 2 must be valid under active generation 2",
+            HatPacket.isGenerationValid(parsed2!!.generation, configGen2.generation))
     }
 
     @Test
@@ -621,9 +621,122 @@ class TransportConfigTest {
         val parsedOld = HatPacket.parseHeader(buf, 0, buf.size)
         assertNotNull(parsedOld)
 
-        val activeExpectedTag = authority.currentGeneration and 0x7FL
-        val isStale = (parsedOld?.generation != activeExpectedTag)
+        val isStale = !HatPacket.isGenerationValid(parsedOld!!.generation, authority.currentGeneration)
         assertTrue("In-flight packet from generation 1 must be detected as stale after generation 2 announcement", isStale)
+    }
+
+    @Test
+    fun testStaleGenerationPacketsAreRejectedForAudioFecAndSilence() {
+        val activeGen = 2L
+
+        // Audio packet from stale generation 1
+        val staleAudio = HatPacket.Header(packetType = HatPacket.TYPE_AUDIO, payloadLength = 1440, generation = 1L)
+        assertFalse("Stale audio packet must be rejected", HatPacket.isGenerationValid(staleAudio.generation, activeGen))
+
+        // FEC packet from stale generation 1
+        val staleFec = HatPacket.Header(packetType = HatPacket.TYPE_FEC_PARITY, fecBlockSize = 4, payloadLength = 1440, generation = 1L)
+        assertFalse("Stale FEC packet must be rejected", HatPacket.isGenerationValid(staleFec.generation, activeGen))
+
+        // Silence heartbeat packet from stale generation 1
+        val staleSilence = HatPacket.Header(packetType = HatPacket.TYPE_SILENCE_HEARTBEAT, generation = 1L)
+        assertFalse("Stale silence packet must be rejected", HatPacket.isGenerationValid(staleSilence.generation, activeGen))
+
+        // Obsolete legacy generation 0 packet when active is generation 2
+        val legacyGen0 = HatPacket.Header(packetType = HatPacket.TYPE_AUDIO, payloadLength = 1440, generation = 0L)
+        assertFalse("Generation 0 packet must be rejected when active is generation 2", HatPacket.isGenerationValid(legacyGen0.generation, activeGen))
+    }
+
+    @Test
+    fun testCurrentGenerationPacketsAreAcceptedForAudioFecAndSilence() {
+        val activeGen = 2L
+
+        // Audio packet from current generation 2
+        val currentAudio = HatPacket.Header(packetType = HatPacket.TYPE_AUDIO, payloadLength = 1440, generation = activeGen)
+        assertTrue("Current audio packet must be accepted", HatPacket.isGenerationValid(currentAudio.generation, activeGen))
+
+        // FEC packet from current generation 2
+        val currentFec = HatPacket.Header(packetType = HatPacket.TYPE_FEC_PARITY, fecBlockSize = 4, payloadLength = 1440, generation = activeGen)
+        assertTrue("Current FEC packet must be accepted", HatPacket.isGenerationValid(currentFec.generation, activeGen))
+
+        // Silence packet from current generation 2
+        val currentSilence = HatPacket.Header(packetType = HatPacket.TYPE_SILENCE_HEARTBEAT, generation = activeGen)
+        assertTrue("Current silence packet must be accepted", HatPacket.isGenerationValid(currentSilence.generation, activeGen))
+
+        // Legacy behavior: generation 0 accepted when expecting generation 1
+        val legacyGen0 = HatPacket.Header(packetType = HatPacket.TYPE_AUDIO, payloadLength = 1440, generation = 0L)
+        assertTrue("Generation 0 packet must be accepted when expecting generation 1", HatPacket.isGenerationValid(legacyGen0.generation, 1L))
+    }
+
+    @Test
+    fun testGenerationWraparoundCannotMakeOldPacketAppearCurrent() {
+        // Stream generation 129 would wrap to 1 with 7-bit arithmetic (129 and 0x7F == 1)
+        val currentGen = 129L
+        val oldPacketGen = 1L
+
+        assertFalse(
+            "Generation wraparound (129 vs 1) must never make an old packet appear current",
+            HatPacket.isGenerationValid(oldPacketGen, currentGen)
+        )
+
+        // Stream generation 257 would wrap to 1 with 8-bit arithmetic (257 and 0xFF == 1)
+        assertFalse(
+            "Generation wraparound (257 vs 1) must never make an old packet appear current",
+            HatPacket.isGenerationValid(1L, 257L)
+        )
+
+        // Stream generation 65537 would wrap to 1 with 16-bit arithmetic
+        assertFalse(
+            "Generation wraparound (65537 vs 1) must never make an old packet appear current",
+            HatPacket.isGenerationValid(1L, 65537L)
+        )
+    }
+
+    @Test
+    fun testGenerationChangesCorrectlyResetPacketAcceptance() {
+        val authority = StreamConfigurationAuthority()
+
+        val configGen1 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_24),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.BALANCED),
+            generation = 1L
+        )
+        val configGen2 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_24),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.BALANCED),
+            generation = 2L
+        )
+        val configGen3 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_24),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.BALANCED),
+            generation = 3L
+        )
+
+        // Initial phase: Generation 1
+        authority.applyUpdate(configGen1)
+        assertEquals(1L, authority.currentGeneration)
+        assertTrue("Gen 1 packet accepted during gen 1", HatPacket.isGenerationValid(1L, authority.currentGeneration))
+        assertTrue("Gen 0 packet accepted during gen 1 (legacy)", HatPacket.isGenerationValid(0L, authority.currentGeneration))
+        assertFalse("Gen 2 packet rejected during gen 1", HatPacket.isGenerationValid(2L, authority.currentGeneration))
+
+        // Transition phase 1: Generation 1 -> Generation 2
+        val updateToGen2 = authority.applyUpdate(configGen2)
+        assertTrue(updateToGen2 is ConfigTransitionResult.Applied)
+        assertEquals(2L, authority.currentGeneration)
+        assertFalse("Gen 1 packet immediately rejected after transition to gen 2", HatPacket.isGenerationValid(1L, authority.currentGeneration))
+        assertFalse("Gen 0 packet rejected after transition to gen 2", HatPacket.isGenerationValid(0L, authority.currentGeneration))
+        assertTrue("Gen 2 packet accepted during gen 2", HatPacket.isGenerationValid(2L, authority.currentGeneration))
+        assertFalse("Gen 3 packet rejected during gen 2", HatPacket.isGenerationValid(3L, authority.currentGeneration))
+
+        // Transition phase 2: Generation 2 -> Generation 3
+        val updateToGen3 = authority.applyUpdate(configGen3)
+        assertTrue(updateToGen3 is ConfigTransitionResult.Applied)
+        assertEquals(3L, authority.currentGeneration)
+        assertFalse("Gen 1 packet rejected during gen 3", HatPacket.isGenerationValid(1L, authority.currentGeneration))
+        assertFalse("Gen 2 packet rejected during gen 3", HatPacket.isGenerationValid(2L, authority.currentGeneration))
+        assertTrue("Gen 3 packet accepted during gen 3", HatPacket.isGenerationValid(3L, authority.currentGeneration))
     }
 
     @Test

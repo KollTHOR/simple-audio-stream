@@ -386,10 +386,72 @@ class HatPacketTest {
         assertEquals(1440, parsed?.payloadLength)
         // 64-bit frame timestamp must be strictly preserved without corruption
         assertEquals(audioTs, parsed?.timestamp)
-        // 7-bit generation tag in byte 23 must be preserved
+        // 32-bit generation in bytes 20..23 must be preserved
         assertEquals(77L, parsed?.generation)
         // Flag bit 0 (FLAG_P2P_ACTIVE) must be cleanly isolated
         assertEquals(HatPacket.FLAG_P2P_ACTIVE, parsed?.flags)
+    }
+
+    @Test
+    fun testGenerationSerializationLargeValuesNo128Wrap() {
+        val testGens = listOf(1L, 127L, 128L, 129L, 255L, 256L, 1000L, 65535L, 65536L, 1000000L, 4294967295L)
+        val buffer = ByteArray(HatPacket.HEADER_SIZE + 1440)
+
+        for (gen in testGens) {
+            val header = HatPacket.Header(
+                packetType = HatPacket.TYPE_AUDIO,
+                sequenceNumber = 10,
+                payloadLength = 1440,
+                timestamp = 54321L,
+                flags = HatPacket.FLAG_P2P_ACTIVE,
+                generation = gen
+            )
+            HatPacket.writeHeader(buffer, 0, header)
+            val parsed = HatPacket.parseHeader(buffer, 0, buffer.size)
+            assertNotNull("Parsing failed for gen $gen", parsed)
+            assertEquals("Generation must match without wrapping for $gen", gen, parsed?.generation)
+            assertEquals("Timestamp must remain intact for gen $gen", 54321L, parsed?.timestamp)
+            assertEquals("Flag must remain intact for gen $gen", HatPacket.FLAG_P2P_ACTIVE, parsed?.flags)
+        }
+    }
+
+    @Test
+    fun testUInt32SerializationRoundtrip() {
+        val buf = ByteArray(8)
+        val values = listOf(0L, 1L, 127L, 128L, 129L, 0x12345678L, 0x80000000L, 0xFFFFFFFFL)
+        for (v in values) {
+            HatPacket.writeUInt32BE(buf, 2, v)
+            val read = HatPacket.readUInt32BE(buf, 2)
+            assertEquals("Roundtrip failed for UInt32 value $v", v, read)
+        }
+    }
+
+    @Test
+    fun testIsGenerationValidHelper() {
+        // Current generation packets are accepted
+        org.junit.Assert.assertTrue(HatPacket.isGenerationValid(1L, 1L))
+        org.junit.Assert.assertTrue(HatPacket.isGenerationValid(2L, 2L))
+        org.junit.Assert.assertTrue(HatPacket.isGenerationValid(129L, 129L))
+
+        // Legacy behavior: generation 0 accepted when expecting generation 1
+        org.junit.Assert.assertTrue(HatPacket.isGenerationValid(0L, 1L))
+
+        // Legacy behavior: generation 0 rejected when expecting generation 2 or higher
+        org.junit.Assert.assertFalse(HatPacket.isGenerationValid(0L, 2L))
+        org.junit.Assert.assertFalse(HatPacket.isGenerationValid(0L, 129L))
+
+        // Stale generation packets are rejected
+        org.junit.Assert.assertFalse(HatPacket.isGenerationValid(1L, 2L))
+        org.junit.Assert.assertFalse(HatPacket.isGenerationValid(2L, 3L))
+
+        // Generation wraparound cannot make an old packet appear current
+        // 129 vs 1 (would collide under 7-bit / 128-gen wrapping)
+        org.junit.Assert.assertFalse(HatPacket.isGenerationValid(1L, 129L))
+        // 65537 vs 1 (would collide under 16-bit wrapping)
+        org.junit.Assert.assertFalse(HatPacket.isGenerationValid(1L, 65537L))
+
+        // Future generation packets rejected
+        org.junit.Assert.assertFalse(HatPacket.isGenerationValid(2L, 1L))
     }
 
     @Test

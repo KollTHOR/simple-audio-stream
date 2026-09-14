@@ -373,8 +373,8 @@ class AudioSinkService : Service() {
                             // Check for XOR FEC Parity packet
                             if (header.packetType == HatPacket.TYPE_FEC_PARITY) {
                                 val activeConfig = configAuthority.currentConfig
-                                if (activeConfig != null && header.generation != 0L && header.generation != (activeConfig.generation and 0x7FL)) {
-                                    Log.w(TAG, "Dropping stale-generation FEC parity packet: packet gen=${header.generation}, active gen tag=${activeConfig.generation and 0x7FL}")
+                                if (activeConfig != null && !HatPacket.isGenerationValid(header.generation, activeConfig.generation)) {
+                                    Log.w(TAG, "Dropping stale-generation FEC parity packet: packet gen=${header.generation}, active gen=${activeConfig.generation}")
                                     continue
                                 }
                                 val baseSeq = header.sequenceNumber
@@ -465,8 +465,8 @@ class AudioSinkService : Service() {
                             val isSilence = header.packetType == HatPacket.TYPE_SILENCE_HEARTBEAT
                             if (isSilence) {
                                 val activeConfig = configAuthority.currentConfig
-                                if (activeConfig != null && header.generation != 0L && header.generation != (activeConfig.generation and 0x7FL)) {
-                                    Log.w(TAG, "Dropping stale-generation silence heartbeat: packet gen=${header.generation}, active gen tag=${activeConfig.generation and 0x7FL}")
+                                if (activeConfig != null && !HatPacket.isGenerationValid(header.generation, activeConfig.generation)) {
+                                    Log.w(TAG, "Dropping stale-generation silence heartbeat: packet gen=${header.generation}, active gen=${activeConfig.generation}")
                                     continue
                                 }
                                 jitterBuffer.onSilenceHeartbeat()
@@ -499,9 +499,8 @@ class AudioSinkService : Service() {
                                 } ?: continue
 
                                 // Generation enforcement: drop audio packets from obsolete stream generations!
-                                val expectedGenTag = (activeConfig.generation and 0x7FL)
-                                if (header.generation != expectedGenTag && !(header.generation == 0L && expectedGenTag == 1L)) {
-                                    Log.w(TAG, "Dropping stale-generation audio packet: packet gen=${header.generation}, active gen tag=$expectedGenTag")
+                                if (!HatPacket.isGenerationValid(header.generation, activeConfig.generation)) {
+                                    Log.w(TAG, "Dropping stale-generation audio packet: packet gen=${header.generation}, active gen=${activeConfig.generation}")
                                     continue
                                 }
 
