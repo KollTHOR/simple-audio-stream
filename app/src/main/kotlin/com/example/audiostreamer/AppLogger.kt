@@ -175,6 +175,14 @@ object AppLogger {
         sb.appendLine("Status Detail: ${tel.statusDetail}")
         sb.appendLine("Remote Endpoint: ${tel.remoteEndpoint ?: "None"}")
         sb.appendLine()
+        // Structured HAT runtime diagnostics (sections, counters, timings, recent events). This is the same
+        // text HatDiagnostics.copySnapshotToClipboard() exposes, so the copy/share actions cover it too.
+        try {
+            sb.appendLine(HatDiagnostics.snapshot())
+        } catch (e: Exception) {
+            sb.appendLine("[HAT DIAGNOSTIC SNAPSHOT] unavailable: ${e.message}")
+        }
+        sb.appendLine()
         sb.appendLine("[IN-APP RECENT LOGS (${logBuffer.size} entries)]")
         sb.appendLine("--------------------------------------------------")
         for (entry in logBuffer) {

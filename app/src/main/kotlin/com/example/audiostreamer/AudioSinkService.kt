@@ -75,6 +75,8 @@ class AudioSinkService : Service() {
     @Volatile private var currentSampleRate: Int = AudioConfig.SAMPLE_RATE_48000
     @Volatile private var currentEncoding: Int = AudioConfig.ENCODING
     @Volatile private var currentPerformanceMode: Int = AudioTrack.PERFORMANCE_MODE_NONE
+    /** Performance mode the current AudioTrack was built with (what we asked the HAL for). */
+    @Volatile private var requestedPerformanceMode: Int = AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
     @Volatile private var currentIsServer24Bit: Boolean = false
     @Volatile private var currentIsAac: Boolean = false
     @Volatile private var currentIsOpus: Boolean = false
@@ -90,6 +92,24 @@ class AudioSinkService : Service() {
     @Volatile private var currentTrackProfile: String = ""
     @Volatile private var lastDecodeDurationNs: Long = 0L
     @Volatile private var lastLatencyLogTime: Long = 0L
+
+    // --- HAT runtime diagnostics ------------------------------------------------------------------
+    private val diagRxPackets = java.util.concurrent.atomic.AtomicLong(0L)
+    private val diagRxBytes = java.util.concurrent.atomic.AtomicLong(0L)
+    private val diagFecRecovered = java.util.concurrent.atomic.AtomicLong(0L)
+    private var diagStatsLastNs = 0L
+    private var diagStatsLastPackets = 0L
+    private var diagStatsLastBytes = 0L
+    private var diagStatsLastUnderruns = 0
+    private var diagStatsLastFecRecovered = 0L
+    private var diagStatsLastDrops = 0L
+    private var diagStatsLastDuplicates = 0L
+    private var diagStatsLastLate = 0L
+    private var diagStatsLastOutOfOrder = 0L
+    private var diagStatsLastConcealed = 0L
+    private var diagLastLatencyTargetMs = -1f
+    @Volatile private var firstDecodeGeneration: Long = -1L
+    @Volatile private var firstWriteGeneration: Long = -1L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -135,12 +155,29 @@ class AudioSinkService : Service() {
         }
     }
 
+    /** Builds an AudioTrack for the given performance mode. Kept separate so a refused LOW_LATENCY request can
+     *  be retried with PERFORMANCE_MODE_NONE without duplicating the builder call. */
+    private fun buildTrack(
+        attributes: AudioAttributes,
+        format: AudioFormat,
+        bufferSizeBytes: Int,
+        performanceMode: Int
+    ): AudioTrack = AudioTrack.Builder()
+        .setAudioAttributes(attributes)
+        .setAudioFormat(format)
+        .setBufferSizeInBytes(bufferSizeBytes)
+        .setPerformanceMode(performanceMode)
+        .setTransferMode(AudioTrack.MODE_STREAM)
+        .build()
+
     @Synchronized
     private fun configureAudioTrack(sampleRate: Int, encoding: Int, profile: String, currentVolume: Int): AudioTrack {
-        val isLowLatency = (profile == AudioConfig.PROFILE_VIDEO || profile == AudioConfig.PROFILE_LOW_LATENCY)
-        val perfMode = AudioTrack.PERFORMANCE_MODE_NONE
+        // HAT Phase 3.0 experiment: request the low-latency output path. Buffer sizing is deliberately
+        // unchanged in this phase. This is never a hard failure: a refused request falls back to
+        // PERFORMANCE_MODE_NONE and playback continues normally.
+        val perfMode = AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
         val existing = audioTrack
-        if (existing != null && currentSampleRate == sampleRate && currentEncoding == encoding && currentPerformanceMode == perfMode && existing.state == AudioTrack.STATE_INITIALIZED) {
+        if (existing != null && currentSampleRate == sampleRate && currentEncoding == encoding && requestedPerformanceMode == perfMode && existing.state == AudioTrack.STATE_INITIALIZED) {
             if (currentTrackProfile != profile) {
                 currentTrackProfile = profile
                 applyBufferSizeForProfile(existing, profile, sampleRate)
@@ -173,13 +210,30 @@ class AudioSinkService : Service() {
             else -> maxOf(minBufferSize * 4, packetSize * 40)
         }
 
-        val track = AudioTrack.Builder()
-            .setAudioAttributes(audioAttributes)
-            .setAudioFormat(audioFormat)
-            .setBufferSizeInBytes(bufferSize)
-            .setPerformanceMode(perfMode)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
+        val requestedTrack = buildTrack(audioAttributes, audioFormat, bufferSize, perfMode)
+        var actualPerfMode = perfMode
+        val track = if (requestedTrack.state == AudioTrack.STATE_INITIALIZED) {
+            requestedTrack
+        } else {
+            Log.w(
+                TAG,
+                "AudioTrack PERFORMANCE_MODE_LOW_LATENCY creation failed (state=${requestedTrack.state}, " +
+                    "sampleRate=$sampleRate, encoding=$encoding, bufferSizeBytes=$bufferSize); falling back to PERFORMANCE_MODE_NONE"
+            )
+            HatDiagnostics.warn(
+                "PLAYBACK_PERF_MODE_FALLBACK",
+                mapOf(
+                    "requestedPerformanceMode" to perfMode,
+                    "sampleRate" to sampleRate,
+                    "encoding" to encoding,
+                    "bufferSizeBytes" to bufferSize,
+                    "failedState" to requestedTrack.state
+                )
+            )
+            try { requestedTrack.release() } catch (ignored: Exception) {}
+            actualPerfMode = AudioTrack.PERFORMANCE_MODE_NONE
+            buildTrack(audioAttributes, audioFormat, bufferSize, actualPerfMode)
+        }
 
         if (track.state != AudioTrack.STATE_INITIALIZED && encoding != AudioConfig.ENCODING) {
             Log.w(TAG, "AudioTrack failed to initialize with encoding $encoding at $sampleRate Hz, falling back to 16-bit PCM")
@@ -209,7 +263,8 @@ class AudioSinkService : Service() {
             audioTrack = track
             currentSampleRate = sampleRate
             currentEncoding = encoding
-            currentPerformanceMode = perfMode
+            currentPerformanceMode = actualPerfMode
+            requestedPerformanceMode = perfMode
             currentBufferSizeInBytes = bufferSize
         }
 
@@ -224,13 +279,45 @@ class AudioSinkService : Service() {
             Log.w(TAG, "Error releasing previous AudioTrack: ${e.message}")
         }
 
-        Log.i(TAG, "Configured AudioTrack: sampleRate=$sampleRate, encoding=$encoding, perfMode=$perfMode, bufferSize=$bufferSize")
+        val activeFrames = try { track.bufferSizeInFrames } catch (e: Exception) { 0 }
+        val capacityFrames = try { track.bufferCapacityInFrames } catch (e: Exception) { 0 }
+        Log.i(
+            TAG,
+            "Configured AudioTrack: requestedPerformanceMode=$perfMode, actualPerformanceMode=$actualPerfMode, " +
+                "sampleRate=$sampleRate, channels=${AudioConfig.CHANNELS}, encoding=$encoding, " +
+                "bufferSizeFrames=$activeFrames, bufferCapacityFrames=$capacityFrames"
+        )
+        HatDiagnostics.info(
+            "PLAYBACK_TRACK_CONFIGURED",
+            mapOf(
+                "requestedPerformanceMode" to perfMode,
+                "actualPerformanceMode" to actualPerfMode,
+                "sampleRate" to sampleRate,
+                "channels" to AudioConfig.CHANNELS,
+                "encoding" to encoding,
+                "bufferSizeFrames" to activeFrames,
+                "bufferCapacityFrames" to capacityFrames,
+                "bufferSizeBytes" to bufferSize
+            )
+        )
         return track
     }
 
     private fun applyStreamConfiguration(config: NegotiatedStreamConfig) {
         val previousGen = currentStreamConfig?.generation
         currentStreamConfig = config
+        // Keep the run-wide diagnostics generation in step with the receiver's authoritative generation, so
+        // every subsequent receiver event carries the correct identifier. Emits once per generation change.
+        HatDiagnostics.setGeneration(
+            config.generation,
+            mapOf(
+                "role" to "receiver",
+                "profile" to config.transportProfile.latencyTarget.name,
+                "logicalCodec" to config.codec.name,
+                "sampleRate" to config.sampleRateHz,
+                "bitDepth" to config.bitDepthBits
+            )
+        )
         if (previousGen != null && previousGen != config.generation) {
             Log.i(TAG, "Stream generation transition from $previousGen to ${config.generation}: resetting jitter buffer and re-anchoring timeline")
             jitterBuffer.reset()
@@ -282,8 +369,8 @@ class AudioSinkService : Service() {
         } else {
             AudioConfig.ENCODING
         }
-        val targetPerfMode = AudioTrack.PERFORMANCE_MODE_NONE
-        if (targetSampleRate != currentSampleRate || targetEncoding != currentEncoding || targetPerfMode != currentPerformanceMode || profileChanged) {
+        val targetPerfMode = AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
+        if (targetSampleRate != currentSampleRate || targetEncoding != currentEncoding || targetPerfMode != requestedPerformanceMode || profileChanged) {
             configureAudioTrack(targetSampleRate, targetEncoding, serverProfile, currentRemoteVolume)
             currentTrackProfile = serverProfile
         }
@@ -314,6 +401,7 @@ class AudioSinkService : Service() {
             configureAudioTrack(AudioConfig.SAMPLE_RATE_48000, initialEncoding, currentProfile, currentRemoteVolume)
             jitterBuffer.reset()
             registerLocalVolumeObserver()
+            startDiagnosticsSession()
 
             // Bind UDP socket
             val socket = DatagramSocket(null).apply {
@@ -360,24 +448,37 @@ class AudioSinkService : Service() {
                 var smoothPps = 0f
                 var smoothBps = 0f
                 var lastTrackUnderrunCount = 0
+                var firstRxGeneration = -1L
 
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                     try {
                         packet.length = rawBuffer.size
+                        val recvStartNs = SystemClock.elapsedRealtimeNanos()
                         socket.receive(packet)
+                        HatDiagnostics.recordTime("receive", SystemClock.elapsedRealtimeNanos() - recvStartNs)
 
                         val length = packet.length
                         if (length >= HatPacket.HEADER_SIZE) {
                             val data = packet.data
                             val offset = packet.offset
+                            diagRxPackets.incrementAndGet()
+                            diagRxBytes.addAndGet(length.toLong())
 
                             val header = HatPacket.parseHeader(data, offset, length) ?: continue
+
+                            // GENERATION_FIRST_RX: tracked with a local Long so the hot receive path allocates
+                            // and formats nothing per packet.
+                            if (header.generation > 0L && header.generation != firstRxGeneration) {
+                                firstRxGeneration = header.generation
+                                HatDiagnostics.lifecycle("GENERATION_FIRST_RX", header.generation)
+                            }
 
                             // Check for XOR FEC Parity packet
                             if (header.packetType == HatPacket.TYPE_FEC_PARITY) {
                                 val activeConfig = configAuthority.currentConfig
                                 if (activeConfig != null && !HatPacket.isGenerationValid(header.generation, activeConfig.generation)) {
                                     Log.w(TAG, "Dropping stale-generation FEC parity packet: packet gen=${header.generation}, active gen=${activeConfig.generation}")
+                                    noteGenerationMismatch(header.generation, activeConfig.generation, "fec_parity")
                                     continue
                                 }
                                 val baseSeq = header.sequenceNumber
@@ -394,6 +495,7 @@ class AudioSinkService : Service() {
                                     )
                                     if (recovered) {
                                         fecRecoveredTotal++
+                                        diagFecRecovered.incrementAndGet()
                                     }
                                 }
                                 totalPackets++
@@ -423,6 +525,7 @@ class AudioSinkService : Service() {
                                     when (val result = configAuthority.applyUpdate(announcedConfig)) {
                                         is ConfigTransitionResult.RejectedStale -> {
                                             Log.w(TAG, "Rejected stale stream configuration generation ${result.incomingGeneration} (current: ${result.currentGeneration})")
+                                            noteGenerationMismatch(result.incomingGeneration, result.currentGeneration, "control_announcement")
                                         }
                                         is ConfigTransitionResult.IdempotentIgnored -> {
                                             // Repeated announcement of identical generation: idempotent no-op
@@ -470,6 +573,7 @@ class AudioSinkService : Service() {
                                 val activeConfig = configAuthority.currentConfig
                                 if (activeConfig != null && !HatPacket.isGenerationValid(header.generation, activeConfig.generation)) {
                                     Log.w(TAG, "Dropping stale-generation silence heartbeat: packet gen=${header.generation}, active gen=${activeConfig.generation}")
+                                    noteGenerationMismatch(header.generation, activeConfig.generation, "silence_heartbeat")
                                     continue
                                 }
                                 jitterBuffer.onSilenceHeartbeat()
@@ -497,6 +601,7 @@ class AudioSinkService : Service() {
                                         configAuthority.currentConfig
                                     } else {
                                         Log.w(TAG, "Rejected audio packet with invalid configuration: codec=${header.codec}, rate=${header.sampleRateHz}, bitDepth=${header.bitDepth}")
+                                        HatDiagnostics.increment("rx_invalid_config")
                                         null
                                     }
                                 } ?: continue
@@ -504,6 +609,7 @@ class AudioSinkService : Service() {
                                 // Generation enforcement: drop audio packets from obsolete stream generations!
                                 if (!HatPacket.isGenerationValid(header.generation, activeConfig.generation)) {
                                     Log.w(TAG, "Dropping stale-generation audio packet: packet gen=${header.generation}, active gen=${activeConfig.generation}")
+                                    noteGenerationMismatch(header.generation, activeConfig.generation, "audio")
                                     continue
                                 }
 
@@ -512,6 +618,7 @@ class AudioSinkService : Service() {
                                 val agreement = activeConfig.validatePacketAgreement(header)
                                 if (agreement !is AgreementResult.Agreed) {
                                     Log.w(TAG, "Dropping packet incompatible with active configuration: ${(agreement as AgreementResult.Disagreement).reason}")
+                                    HatDiagnostics.increment("rx_codec_mismatch")
                                     continue
                                 }
 
@@ -703,6 +810,22 @@ class AudioSinkService : Service() {
                                 if (underruns > lastTrackUnderrunCount && track != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                                     val delta = underruns - lastTrackUnderrunCount
                                     lastTrackUnderrunCount = underruns
+                                    HatDiagnostics.increment("playback_underruns", delta.toLong())
+                                    HatDiagnostics.warn(
+                                        "PLAYBACK_UNDERRUN",
+                                        mapOf(
+                                            "delta" to delta,
+                                            "total" to underruns,
+                                            "bufferMs" to atMs,
+                                            "jitterMs" to jbMs,
+                                            "targetLatencyMs" to jitterBuffer.getTargetWatermarkMs(),
+                                            "generation" to configAuthority.currentGeneration
+                                        )
+                                    )
+                                    HatDiagnostics.snapshotContext(
+                                        "PLAYBACK_UNDERRUN",
+                                        mapOf("delta" to delta, "total" to underruns, "bufferMs" to atMs)
+                                    )
                                     if (currentProfile == AudioConfig.PROFILE_LOW_LATENCY || currentProfile == AudioConfig.PROFILE_VIDEO) {
                                         val curFrames = track.bufferSizeInFrames
                                         val maxFrames = (currentSampleRate * 80) / 1000 // 80ms max safety cap
@@ -716,9 +839,8 @@ class AudioSinkService : Service() {
                                 } else if (underruns < lastTrackUnderrunCount) {
                                     lastTrackUnderrunCount = underruns
                                 }
-                                val decodeMsStr = String.format(Locale.US, "%.1f", lastDecodeDurationNs / 1_000_000.0)
-                                val estTotalMs = jbMs + atMs + (lastDecodeDurationNs / 1_000_000).toInt() + 5
-                                Log.i("LATENCY-RX", "JitterBuf: ${jbMs}ms ($usedSlots/$totalSlots slots) | AudioTrack: ${atMs}ms (${atFrames} frames, underruns: $underruns) | Decode: ${decodeMsStr}ms | Est. Total: ~${estTotalMs}ms | $pps pps ($bps B/s)")
+                                // Per-second latency detail is reported structurally by the diagnostics
+                                // JITTER_STATS / RX_STATS / PLAYBACK_STATS events instead of a formatted log line.
                             }
 
                             intervalPackets = 0
@@ -731,6 +853,8 @@ class AudioSinkService : Service() {
                         break
                     } catch (e: Exception) {
                         Log.e(TAG, "Error in receiver loop", e)
+                        HatDiagnostics.increment("rx_loop_errors")
+                        HatDiagnostics.error("THREAD_FAILURE", mapOf("thread" to "UdpReceiverThread"), e)
                     }
                 }
                 Log.i(TAG, "UDP receiver thread finished")
@@ -763,6 +887,12 @@ class AudioSinkService : Service() {
                                              opusDecoder?.decode(chunk, 0, bytesToPlay)
                                          } ?: emptyList()
                                          lastDecodeDurationNs = SystemClock.elapsedRealtimeNanos() - t0
+                                         HatDiagnostics.recordTime("decode", lastDecodeDurationNs)
+                                         val decodeGeneration = configAuthority.currentGeneration
+                                         if (decodeGeneration > 0L && decodeGeneration != firstDecodeGeneration) {
+                                             firstDecodeGeneration = decodeGeneration
+                                             HatDiagnostics.lifecycle("GENERATION_FIRST_DECODE", decodeGeneration)
+                                         }
                                          for (i in pcmList.indices) {
                                              val pcm = pcmList[i]
                                              if (pcm.isNotEmpty()) {
@@ -781,8 +911,8 @@ class AudioSinkService : Service() {
                                                      wasInSilenceFill = false
                                                  }
 
-                                                 track.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
-                                                 audioLevelMeter.analyze(pcm, 0, pcm.size, is24Bit = false)
+                                         writeToPlaybackTrack(track, pcm, pcm.size)
+                                         audioLevelMeter.analyze(pcm, 0, pcm.size, is24Bit = false)
                                              }
                                          }
                                          val lastPcm = pcmList.lastOrNull { it.size >= 4 }
@@ -811,7 +941,7 @@ class AudioSinkService : Service() {
                                          lastPlayedSampleLeft16 = 0
                                          lastPlayedSampleRight16 = 0
                                          wasInSilenceFill = true
-                                         track.write(silence, 0, silence.size, AudioTrack.WRITE_BLOCKING)
+                                         writeToPlaybackTrack(track, silence, silence.size)
                                      }
                                  } else if (currentIsAac) {
                                      val isAdts = (bytesToPlay >= 7 && (chunk[0].toInt() and 0xFF) == 0xFF && (chunk[1].toInt() and 0xF0) == 0xF0)
@@ -821,6 +951,12 @@ class AudioSinkService : Service() {
                                              aacDecoder?.decode(chunk, 0, bytesToPlay)
                                          } ?: emptyList()
                                          lastDecodeDurationNs = SystemClock.elapsedRealtimeNanos() - t0
+                                         HatDiagnostics.recordTime("decode", lastDecodeDurationNs)
+                                         val decodeGeneration = configAuthority.currentGeneration
+                                         if (decodeGeneration > 0L && decodeGeneration != firstDecodeGeneration) {
+                                             firstDecodeGeneration = decodeGeneration
+                                             HatDiagnostics.lifecycle("GENERATION_FIRST_DECODE", decodeGeneration)
+                                         }
                                          for (i in pcmList.indices) {
                                              val pcm = pcmList[i]
                                              if (pcm.isNotEmpty()) {
@@ -838,8 +974,8 @@ class AudioSinkService : Service() {
                                                      }
                                                      wasInSilenceFill = false
                                                  }
-                                                 track.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
-                                                 audioLevelMeter.analyze(pcm, 0, pcm.size, is24Bit = false)
+                                         writeToPlaybackTrack(track, pcm, pcm.size)
+                                         audioLevelMeter.analyze(pcm, 0, pcm.size, is24Bit = false)
                                              }
                                          }
                                          val lastPcm = pcmList.lastOrNull { it.size >= 4 }
@@ -867,9 +1003,9 @@ class AudioSinkService : Service() {
                                          lastPlayedSampleLeft16 = 0
                                          lastPlayedSampleRight16 = 0
                                          wasInSilenceFill = true
-                                         track.write(silence, 0, silence.size, AudioTrack.WRITE_BLOCKING)
+                                         writeToPlaybackTrack(track, silence, silence.size)
                                      }
-                                } else {
+                                 } else {
                                      audioLevelMeter.analyze(chunk, 0, bytesToPlay, is24Bit = currentIsServer24Bit)
                                      if (currentEncoding == AudioFormat.ENCODING_PCM_16BIT && currentIsServer24Bit && bytesToPlay >= 6) {
                                          val frames = bytesToPlay / 6
@@ -884,15 +1020,17 @@ class AudioSinkService : Service() {
                                              srcP += 6
                                              dstP += 4
                                          }
-                                         track.write(pcmTruncateBuf, 0, outLen, AudioTrack.WRITE_BLOCKING)
+                                         writeToPlaybackTrack(track, pcmTruncateBuf, outLen)
                                      } else {
-                                         track.write(chunk, 0, bytesToPlay, AudioTrack.WRITE_BLOCKING)
+                                         writeToPlaybackTrack(track, chunk, bytesToPlay)
                                      }
                                 }
                             }
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Error in playback loop", e)
+                        HatDiagnostics.increment("playback_write_errors")
+                        HatDiagnostics.error("PLAYBACK_ERROR", mapOf("thread" to "AudioPlaybackThread"), e)
                     }
                 }
                 Log.i(TAG, "Audio playback thread finished")
@@ -940,9 +1078,281 @@ class AudioSinkService : Service() {
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed initializing AudioSinkService", e)
+            HatDiagnostics.error("THREAD_FAILURE", mapOf("thread" to "AudioSinkService", "stage" to "init"), e)
             StreamState.update { it.copy(statusDetail = "Error: ${e.message}") }
             stopSink()
             stopSelf()
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // HAT runtime diagnostics wiring
+    // ---------------------------------------------------------------------------------------------
+
+    /** Opens the diagnostics run session for the receiver role and starts periodic RX/JITTER/PLAYBACK stats. */
+    private fun startDiagnosticsSession() {
+        HatDiagnostics.setMetadata(
+            HatDiagnostics.Metadata(
+                appVersion = BuildConfig.VERSION_NAME,
+                deviceModel = Build.MODEL,
+                manufacturer = Build.MANUFACTURER,
+                androidVersion = Build.VERSION.RELEASE,
+                apiLevel = Build.VERSION.SDK_INT,
+                audioOutputDevice = "AudioTrack (media)",
+                audioSampleRate = currentSampleRate,
+                audioChannelConfig = if (AudioConfig.CHANNELS == 2) "stereo" else AudioConfig.CHANNELS.toString(),
+                networkTransport = "UDP (unicast receive)"
+            )
+        )
+        HatDiagnostics.startRun(
+            streamId = "rx:${AudioConfig.DEFAULT_PORT}",
+            runId = HatDiagnostics.newRunId(Build.MODEL)
+        )
+        HatDiagnostics.registerSection("CONFIG") {
+            currentStreamConfig?.diagnosticFields(1) ?: emptyMap()
+        }
+        HatDiagnostics.registerSection("GENERATION") {
+            mapOf(
+                "generation" to configAuthority.currentGeneration,
+                "codec" to (currentStreamConfig?.codec?.name ?: "NONE"),
+                "profile" to currentProfile
+            )
+        }
+        HatDiagnostics.registerSection("JITTER") { jitterDiagnosticsSnapshot() }
+        HatDiagnostics.registerSection("PLAYBACK") { playbackDiagnosticsSnapshot() }
+        HatDiagnostics.registerSection("RX") { rxDiagnosticsSnapshot() }
+        HatDiagnostics.registerPeriodicTask("rxPlaybackStats") { emitReceiverStats() }
+        diagStatsLastNs = System.nanoTime()
+        diagStatsLastPackets = diagRxPackets.get()
+        diagStatsLastBytes = diagRxBytes.get()
+        HatDiagnostics.startPeriodicStats()
+        HatDiagnostics.info(
+            "NETWORK_CHANGED",
+            mapOf(
+                "role" to "receiver",
+                "transport" to "UDP",
+                "localIp" to (NetworkUtils.getLocalIpAddress() ?: "unknown")
+            )
+        )
+    }
+
+    private fun stopDiagnosticsSession() {
+        HatDiagnostics.unregisterPeriodicTask("rxPlaybackStats")
+        HatDiagnostics.unregisterSection("CONFIG")
+        HatDiagnostics.unregisterSection("GENERATION")
+        HatDiagnostics.unregisterSection("JITTER")
+        HatDiagnostics.unregisterSection("PLAYBACK")
+        HatDiagnostics.unregisterSection("RX")
+        HatDiagnostics.stopPeriodicStats()
+    }
+
+    private fun rxDiagnosticsSnapshot(): Map<String, Any?> = linkedMapOf(
+        "packetsReceived" to diagRxPackets.get(),
+        "bytesReceived" to diagRxBytes.get(),
+        "duplicates" to jitterBuffer.getDuplicatePackets(),
+        "outOfOrder" to jitterBuffer.getOutOfOrderPackets(),
+        "latePackets" to jitterBuffer.getLatePackets(),
+        "lostPackets" to jitterBuffer.getConcealedPackets(),
+        "fecRecovered" to diagFecRecovered.get(),
+        "decodeErrors" to HatDiagnostics.counter("rx_decode_errors"),
+        "unknownGeneration" to HatDiagnostics.counter("rx_generation_mismatch"),
+        "unknownCodec" to HatDiagnostics.counter("rx_codec_mismatch") + HatDiagnostics.counter("rx_invalid_config")
+    )
+
+    private fun jitterDiagnosticsSnapshot(): Map<String, Any?> {
+        val slots = jitterBuffer.getSlotCount()
+        val available = jitterBuffer.getAvailableCount()
+        val packetMs = jitterBuffer.getPacketDurationMs()
+        return linkedMapOf(
+            "generation" to configAuthority.currentGeneration,
+            "bufferPackets" to available,
+            "bufferFrames" to (available * AudioConfig.getFramesPerPacket(currentSampleRate)),
+            "bufferMs" to (available * packetMs),
+            "targetLatencyMs" to jitterBuffer.getTargetWatermarkMs(),
+            "minLatencyMs" to (jitterBuffer.getPreRollPackets() * packetMs),
+            "maxLatencyMs" to (slots * packetMs),
+            "jitterMs" to jitterBuffer.getEstimatedJitterMs(),
+            "estimatedDriftPpm" to ((jitterBuffer.getCorrectionRatio() - 1.0) * 1_000_000.0),
+            "corrections" to ((jitterBuffer.getCorrectionRatio() - 1.0) * 1_000_000.0).toLong(),
+            "drops" to jitterBuffer.getDroppedPackets(),
+            "duplicates" to jitterBuffer.getDuplicatePackets(),
+            "latePackets" to jitterBuffer.getLatePackets(),
+            "missingPackets" to jitterBuffer.getConcealedPackets(),
+            "fecRecovered" to diagFecRecovered.get()
+        )
+    }
+
+    private fun playbackDiagnosticsSnapshot(): Map<String, Any?> {
+        val track = audioTrack
+        return linkedMapOf(
+            "generation" to configAuthority.currentGeneration,
+            "sampleRate" to currentSampleRate,
+            "channels" to AudioConfig.CHANNELS,
+            "bufferSizeFrames" to (try { track?.bufferSizeInFrames ?: 0 } catch (e: Exception) { 0 }),
+            "bufferCapacityFrames" to (try { track?.bufferCapacityInFrames ?: 0 } catch (e: Exception) { 0 }),
+            "availableFrames" to (try {
+                val t = track
+                if (t != null) t.bufferCapacityInFrames - t.bufferSizeInFrames else 0
+            } catch (e: Exception) { 0 }),
+            "playbackHead" to (try { track?.playbackHeadPosition ?: 0 } catch (e: Exception) { 0 }),
+            "underruns" to (try { track?.underrunCount ?: 0 } catch (e: Exception) { 0 }),
+            "performanceMode" to currentPerformanceMode,
+            "requestedPerformanceMode" to requestedPerformanceMode,
+            "playState" to (try { track?.playState ?: 0 } catch (e: Exception) { 0 }),
+            "writeErrors" to HatDiagnostics.counter("playback_write_errors")
+        )
+    }
+
+    /**
+     * Periodic receiver statistics. Runs on the diagnostics thread, not on the UDP or playback threads, and
+     * emits RX_STATS, JITTER_STATS / JITTER_LATENCY_CHANGE and PLAYBACK_STATS once per interval.
+     */
+    private fun emitReceiverStats() {
+        val nowNs = System.nanoTime()
+        val elapsedNs = (nowNs - diagStatsLastNs).coerceAtLeast(1L)
+        val elapsedSec = elapsedNs / 1_000_000_000.0
+        val packets = diagRxPackets.get()
+        val bytes = diagRxBytes.get()
+        val fecRecovered = diagFecRecovered.get()
+        val generation = configAuthority.currentGeneration
+
+        HatDiagnostics.stats(
+            "RX_STATS",
+            linkedMapOf(
+                "packetsReceived" to packets,
+                "bytesReceived" to bytes,
+                "packetsPerSecond" to ((packets - diagStatsLastPackets) / elapsedSec).toInt(),
+                "bytesPerSecond" to ((bytes - diagStatsLastBytes) / elapsedSec).toInt(),
+                "duplicates" to jitterBuffer.getDuplicatePackets(),
+                "outOfOrder" to jitterBuffer.getOutOfOrderPackets(),
+                "latePackets" to jitterBuffer.getLatePackets(),
+                "lostPackets" to jitterBuffer.getConcealedPackets(),
+                "fecRecovered" to fecRecovered,
+                "decodeErrors" to HatDiagnostics.counter("rx_decode_errors"),
+                "unknownGeneration" to HatDiagnostics.counter("rx_generation_mismatch"),
+                "unknownCodec" to HatDiagnostics.counter("rx_codec_mismatch") + HatDiagnostics.counter("rx_invalid_config"),
+                "generation" to generation
+            )
+        )
+
+        val drops = jitterBuffer.getDroppedPackets()
+        val duplicates = jitterBuffer.getDuplicatePackets()
+        val late = jitterBuffer.getLatePackets()
+        val outOfOrder = jitterBuffer.getOutOfOrderPackets()
+        val concealed = jitterBuffer.getConcealedPackets()
+        HatDiagnostics.stats(
+            "JITTER_STATS",
+            linkedMapOf(
+                "generation" to generation,
+                "bufferPackets" to jitterBuffer.getAvailableCount(),
+                "bufferMs" to (jitterBuffer.getAvailableCount() * jitterBuffer.getPacketDurationMs()),
+                "targetLatencyMs" to jitterBuffer.getTargetWatermarkMs(),
+                "jitterMs" to jitterBuffer.getEstimatedJitterMs(),
+                "estimatedDriftPpm" to ((jitterBuffer.getCorrectionRatio() - 1.0) * 1_000_000.0),
+                "corrections" to (drops + duplicates),
+                "drops" to drops,
+                "duplicates" to duplicates,
+                "latePackets" to late,
+                "missingPackets" to concealed,
+                "outOfOrder" to outOfOrder,
+                "fecRecovered" to fecRecovered
+            )
+        )
+
+        // JITTER_LATENCY_CHANGE: only when the adaptive target latency actually moves. The latency algorithm
+        // itself is untouched; this only reports the change. Computed on the diagnostics thread, never in
+        // the jitter/audio path.
+        val targetMs = jitterBuffer.getTargetWatermarkMs()
+        if (diagLastLatencyTargetMs >= 0f && kotlin.math.abs(targetMs - diagLastLatencyTargetMs) >= 1f) {
+            HatDiagnostics.info(
+                "JITTER_LATENCY_CHANGE",
+                linkedMapOf(
+                    "oldMs" to diagLastLatencyTargetMs,
+                    "newMs" to targetMs,
+                    "reason" to "adaptive_watermark",
+                    "jitterMs" to jitterBuffer.getEstimatedJitterMs(),
+                    "lossRate" to if (packets > 0) concealed.toDouble() / packets.toDouble() else 0.0,
+                    "bufferMs" to (jitterBuffer.getAvailableCount() * jitterBuffer.getPacketDurationMs())
+                )
+            )
+        }
+        diagLastLatencyTargetMs = targetMs
+
+        val track = audioTrack
+        if (track != null) {
+            val underruns = try { track.underrunCount } catch (e: Exception) { 0 }
+            val activeFrames = try { track.bufferSizeInFrames } catch (e: Exception) { 0 }
+            val capacityFrames = try { track.bufferCapacityInFrames } catch (e: Exception) { 0 }
+            val playbackHead = try { track.playbackHeadPosition } catch (e: Exception) { 0 }
+            val playState = try { track.playState } catch (e: Exception) { 0 }
+            HatDiagnostics.stats(
+                "PLAYBACK_STATS",
+                linkedMapOf(
+                    "generation" to generation,
+                    "sampleRate" to currentSampleRate,
+                    "channels" to AudioConfig.CHANNELS,
+                    "bufferSizeFrames" to activeFrames,
+                    "bufferCapacityFrames" to capacityFrames,
+                    "availableFrames" to (capacityFrames - activeFrames),
+                    "playbackHead" to playbackHead,
+                    "underruns" to underruns,
+                    "performanceMode" to currentPerformanceMode,
+                    "playState" to playState,
+                    "writeErrors" to HatDiagnostics.counter("playback_write_errors"),
+                    "framesWritten" to playbackHead
+                )
+            )
+            diagStatsLastUnderruns = underruns
+        }
+
+        diagStatsLastNs = nowNs
+        diagStatsLastPackets = packets
+        diagStatsLastBytes = bytes
+        diagStatsLastFecRecovered = fecRecovered
+        diagStatsLastDrops = drops
+        diagStatsLastDuplicates = duplicates
+        diagStatsLastLate = late
+        diagStatsLastOutOfOrder = outOfOrder
+        diagStatsLastConcealed = concealed
+    }
+
+    /**
+     * Counts a packet rejected because its generation does not match the active one. Counted for every
+     * occurrence but only reported (with a diagnostic snapshot) on the first and then sparsely, so a burst of
+     * stale in-flight packets cannot flood the log.
+     */
+    private fun noteGenerationMismatch(packetGeneration: Long, activeGeneration: Long, where: String) {
+        val count = HatDiagnostics.increment("rx_generation_mismatch")
+        if (count == 1L || count % 250L == 0L) {
+            HatDiagnostics.info(
+                "GENERATION_MISMATCH",
+                mapOf(
+                    "where" to where,
+                    "packetGeneration" to packetGeneration,
+                    "activeGeneration" to activeGeneration,
+                    "count" to count
+                )
+            )
+            HatDiagnostics.snapshotContext(
+                "GENERATION_MISMATCH",
+                mapOf("where" to where, "count" to count, "packetGeneration" to packetGeneration)
+            )
+        }
+    }
+
+    /** Blocking AudioTrack write with aggregate timing and lifecycle reporting. Never throws from diagnostics. */
+    private fun writeToPlaybackTrack(track: AudioTrack, buffer: ByteArray, length: Int) {
+        if (length <= 0) return
+        val startNs = SystemClock.elapsedRealtimeNanos()
+        try {
+            track.write(buffer, 0, length, AudioTrack.WRITE_BLOCKING)
+        } finally {
+            HatDiagnostics.recordTime("audioTrackWrite", SystemClock.elapsedRealtimeNanos() - startNs)
+            val generation = configAuthority.currentGeneration
+            if (generation > 0L && generation != firstWriteGeneration) {
+                firstWriteGeneration = generation
+                HatDiagnostics.lifecycle("GENERATION_FIRST_AUDIO_WRITE", generation, mapOf("frames" to (length / 4)))
+            }
         }
     }
 
@@ -1069,6 +1479,12 @@ class AudioSinkService : Service() {
             return
         }
         Log.i(TAG, "Stopping audio sink")
+        HatDiagnostics.lifecycle(
+            "GENERATION_STOPPED",
+            configAuthority.currentGeneration,
+            mapOf("reason" to "sink_stopped")
+        )
+        stopDiagnosticsSession()
         unregisterLocalVolumeObserver()
 
         val hb = heartbeatThread
