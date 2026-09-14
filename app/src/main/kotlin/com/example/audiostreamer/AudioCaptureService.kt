@@ -91,7 +91,7 @@ class AudioCaptureService : Service() {
     val activeNegotiatedConfig: NegotiatedStreamConfig?
         get() = profileTransactionManager.activeTransmitterConfig
     private val socketSendLock = Any()
-    private var streamThread: Thread? = null
+    @Volatile private var streamThread: Thread? = null
     private var controlListenerThread: Thread? = null
     private var previousPhoneVolume: Int? = null
     private var currentTargetIp = "192.168.43.255"
@@ -554,22 +554,42 @@ class AudioCaptureService : Service() {
             }
         )
 
-        if (result is ProfileChangeResult.InitializationFailed) {
-            // The old producer has been stopped and no new producer exists: the service is in a clean
-            // stopped state, so the UI must not keep claiming an active stream.
-            Log.e(
-                TAG,
-                "Profile change to ${requestedTarget.name} aborted: capture pipeline initialization failed. " +
-                    "Previous generation ${result.previousConfig?.generation ?: 0L} remains authoritative; nothing announced."
-            )
-            StreamState.update {
-                it.copy(
-                    isActive = false,
-                    statusDetail = "Profile change failed - capture unavailable",
-                    packetsPerSec = 0,
-                    bytesPerSec = 0
+        when (result) {
+            is ProfileChangeResult.InitializationFailed -> {
+                // Nothing was committed or announced. The old producer has been stopped and no new producer
+                // exists: the service is in a clean stopped state, so the UI must not claim an active stream.
+                Log.e(
+                    TAG,
+                    "Profile change to ${requestedTarget.name} aborted: capture pipeline initialization failed. " +
+                        "Previous generation ${result.previousConfig?.generation ?: 0L} remains authoritative; nothing announced."
                 )
+                StreamState.update {
+                    it.copy(
+                        isActive = false,
+                        statusDetail = "Profile change failed - capture unavailable",
+                        packetsPerSec = 0,
+                        bytesPerSec = 0
+                    )
+                }
             }
+            is ProfileChangeResult.AnnouncementFailed -> {
+                // The generation was consumed but never became usable: the pipeline has been released and the
+                // transmitter stopped, so the UI must not claim an active stream either.
+                Log.e(
+                    TAG,
+                    "Profile change to ${requestedTarget.name} aborted after commit: generation " +
+                        "${result.abandonedGeneration} stays consumed and is not transmitting."
+                )
+                StreamState.update {
+                    it.copy(
+                        isActive = false,
+                        statusDetail = "Profile change failed - announcement error",
+                        packetsPerSec = 0,
+                        bytesPerSec = 0
+                    )
+                }
+            }
+            else -> Unit
         }
 
         return result
@@ -785,8 +805,8 @@ class AudioCaptureService : Service() {
         this.aacEncoder = pipeline.aacEncoder
         activeCaptureSampleRate = pipeline.audioRecord.sampleRate
 
-        // Arm capture while still inside the initialization phase so a profile change can only be committed
-        // once the producer has a live source to read from.
+        // Arm capture while still inside the initialization phase, so the transaction can only be committed
+        // once capture is initialized and recording. Producer startup remains the final activation step.
         try {
             pipeline.audioRecord.startRecording()
         } catch (t: Throwable) {
@@ -994,7 +1014,11 @@ class AudioCaptureService : Service() {
      *
      * Runs after the new generation/config has been committed and announced. The capture pipeline was
      * already fully initialized (and is recording) by [reconfigureCapturePipeline]; this only starts the
-     * producer that consumes it. Returns true only when the producer is actually running.
+     * producer that consumes it.
+     *
+     * Returns true only when the producer is actually running. Every failure mode (missing/unarmed capture,
+     * missing socket, worker construction or start failure) either returns false or propagates to the
+     * transaction, which converts it into a failed producer start and releases the initialized pipeline.
      */
     private fun resumeTransmissionPipeline(config: NegotiatedStreamConfig): Boolean {
         val record = this.audioRecord ?: run {
@@ -1430,6 +1454,15 @@ class AudioCaptureService : Service() {
                 StreamState.update { it.copy(statusDetail = "Error: ${e.message}") }
             } finally {
                 Log.i(TAG, "Audio streaming thread stopped")
+                // Only while this worker is still the active producer: a newer transaction may already have
+                // published a replacement, and nulling its reference would be wrong. This keeps streamThread
+                // null once the producer has exited, including termination immediately after startup, and keeps
+                // isTransmissionActive an accurate statement about a running producer. Capture resources stay
+                // owned by the service and are released by the next stop/transaction.
+                if (streamThread === Thread.currentThread()) {
+                    streamThread = null
+                    profileTransactionManager.markProducerStopped()
+                }
             }
         }, "AudioCaptureStreamer")
 
