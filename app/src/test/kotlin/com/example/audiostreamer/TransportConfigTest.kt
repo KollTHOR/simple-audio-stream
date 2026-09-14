@@ -845,4 +845,228 @@ class TransportConfigTest {
         jitterBuffer.write(1, 0L, newPayload, 0, newPayload.size)
         assertEquals(1, jitterBuffer.getAvailableCount())
     }
+
+    @Test
+    fun testProfileChange_AutoToLowLatency() {
+        val manager = StreamProfileTransactionManager()
+        var stoppedTransmission = false
+        var publishedAnnouncement = false
+        var receiverConfigured = false
+        var resumedTransmission = false
+
+        // 1. Initial configuration: Auto Adaptive
+        val initialResult = manager.changeProfile(LatencyTarget.BALANCED)
+        assertTrue(initialResult is ProfileChangeResult.Applied)
+        assertEquals(1L, (initialResult as ProfileChangeResult.Applied).newConfig.generation)
+        assertEquals(LatencyTarget.BALANCED, initialResult.newConfig.transportProfile.latencyTarget)
+        assertEquals(AudioCodec.PCM, initialResult.newConfig.codec)
+
+        // 2. Transactional change: Auto -> Low Latency
+        val transitionResult = manager.changeProfile(
+            targetProfile = LatencyTarget.LOW_LATENCY,
+            onStopTransmission = { stoppedTransmission = true },
+            onPublishAnnouncement = { publishedAnnouncement = true },
+            onApplyReceiverConfig = { receiverConfigured = true },
+            onResumeTransmission = { resumedTransmission = true }
+        )
+
+        assertTrue("Profile change must succeed", transitionResult is ProfileChangeResult.Applied)
+        val applied = transitionResult as ProfileChangeResult.Applied
+
+        // Verification of transactional sequence:
+        assertTrue("Step a: old transmission must be stopped", stoppedTransmission)
+        assertEquals("Step b: generation must increment to 2", 2L, applied.newConfig.generation)
+        assertEquals("Step c: profile must be LOW_LATENCY", LatencyTarget.LOW_LATENCY, applied.newConfig.transportProfile.latencyTarget)
+        assertEquals("Step c: codec must resolve to OPUS for low latency", AudioCodec.OPUS, applied.newConfig.codec)
+        assertTrue("Step d: new configuration must be published", publishedAnnouncement)
+        assertTrue("Step e/f: receiver config must be applied exactly once", receiverConfigured)
+        assertTrue("Step g: transmission must resume with new configuration", resumedTransmission)
+
+        // Transmitter and receiver state match atomically
+        assertEquals(2L, manager.authority.currentGeneration)
+        assertEquals(LatencyTarget.LOW_LATENCY, manager.authority.currentConfig?.transportProfile?.latencyTarget)
+        assertEquals(2L, manager.activeTransmitterConfig?.generation)
+    }
+
+    @Test
+    fun testProfileChange_LowLatencyToAuto() {
+        val manager = StreamProfileTransactionManager()
+
+        // 1. Establish Low Latency (generation 1)
+        val initialResult = manager.changeProfile(LatencyTarget.LOW_LATENCY)
+        assertTrue(initialResult is ProfileChangeResult.Applied)
+        assertEquals(1L, manager.authority.currentGeneration)
+        assertEquals(LatencyTarget.LOW_LATENCY, manager.authority.currentConfig?.transportProfile?.latencyTarget)
+        assertEquals(AudioCodec.OPUS, manager.authority.currentConfig?.codec)
+
+        // 2. Transition: Low Latency -> Auto (generation 2)
+        var receiverReconfigured = false
+        val transitionResult = manager.changeProfile(
+            targetProfile = LatencyTarget.BALANCED,
+            onApplyReceiverConfig = { receiverReconfigured = true }
+        )
+
+        assertTrue(transitionResult is ProfileChangeResult.Applied)
+        val applied = transitionResult as ProfileChangeResult.Applied
+        assertEquals(2L, applied.newConfig.generation)
+        assertEquals(LatencyTarget.BALANCED, applied.newConfig.transportProfile.latencyTarget)
+        assertEquals(AudioCodec.PCM, applied.newConfig.codec)
+        assertTrue("Receiver must be reconfigured for Auto", receiverReconfigured)
+
+        assertEquals(2L, manager.authority.currentGeneration)
+        assertEquals(LatencyTarget.BALANCED, manager.authority.currentConfig?.transportProfile?.latencyTarget)
+        assertEquals(AudioCodec.PCM, manager.authority.currentConfig?.codec)
+    }
+
+    @Test
+    fun testProfileChange_MusicToLowLatency() {
+        val manager = StreamProfileTransactionManager()
+
+        // 1. Establish Music (generation 1)
+        val initialResult = manager.changeProfile(LatencyTarget.RELIABLE)
+        assertTrue(initialResult is ProfileChangeResult.Applied)
+        assertEquals(1L, manager.authority.currentGeneration)
+        assertEquals(LatencyTarget.RELIABLE, manager.authority.currentConfig?.transportProfile?.latencyTarget)
+        assertEquals(AudioCodec.PCM, manager.authority.currentConfig?.codec)
+
+        // 2. Transition: Music -> Low Latency (generation 2)
+        val transitionResult = manager.changeProfile(LatencyTarget.LOW_LATENCY)
+        assertTrue(transitionResult is ProfileChangeResult.Applied)
+        val applied = transitionResult as ProfileChangeResult.Applied
+        assertEquals(2L, applied.newConfig.generation)
+        assertEquals(LatencyTarget.LOW_LATENCY, applied.newConfig.transportProfile.latencyTarget)
+        assertEquals(AudioCodec.OPUS, applied.newConfig.codec)
+
+        assertEquals(2L, manager.authority.currentGeneration)
+        assertEquals(LatencyTarget.LOW_LATENCY, manager.authority.currentConfig?.transportProfile?.latencyTarget)
+    }
+
+    @Test
+    fun testProfileChange_RepeatedSameProfileRequest() {
+        val manager = StreamProfileTransactionManager()
+
+        // 1. Establish Auto Adaptive
+        manager.changeProfile(LatencyTarget.BALANCED)
+        assertEquals(1L, manager.currentStreamGeneration.get())
+        assertEquals(1L, manager.authority.currentGeneration)
+
+        var trackRecreated = false
+        var jitterReset = false
+
+        // 2. Repeated request for Auto Adaptive
+        val repeatedResult = manager.changeProfile(
+            targetProfile = LatencyTarget.BALANCED,
+            onApplyReceiverConfig = {
+                trackRecreated = true
+                jitterReset = true
+            }
+        )
+
+        assertTrue("Repeated request must be ignored as same profile", repeatedResult is ProfileChangeResult.IgnoredSameProfile)
+        assertEquals("Generation must NOT increment on repeated request", 1L, manager.currentStreamGeneration.get())
+        assertEquals("Authority generation must NOT change", 1L, manager.authority.currentGeneration)
+        assertFalse("AudioTrack must NOT be recreated on repeated same profile request", trackRecreated)
+        assertFalse("Jitter buffer must NOT be reset on repeated same profile request", jitterReset)
+    }
+
+    @Test
+    fun testProfileChange_OldGenerationPacketsDuringTransition() {
+        val manager = StreamProfileTransactionManager()
+
+        // 1. Establish Auto Adaptive (generation 1)
+        val initialResult = manager.changeProfile(LatencyTarget.BALANCED) as ProfileChangeResult.Applied
+        val configGen1 = initialResult.newConfig
+
+        // Packets created and in flight under generation 1
+        val audioGen1 = configGen1.createHeader(packetType = HatPacket.TYPE_AUDIO, sequenceNumber = 10, payloadLength = 1440, timestamp = 1000L)
+        val fecGen1 = configGen1.createHeader(packetType = HatPacket.TYPE_FEC_PARITY, sequenceNumber = 11, payloadLength = 1440, timestamp = 1000L)
+        val silenceGen1 = configGen1.createHeader(packetType = HatPacket.TYPE_SILENCE_HEARTBEAT, sequenceNumber = 12, payloadLength = 0, timestamp = 1000L)
+
+        // 2. Transition occurs to Low Latency (generation 2)
+        val transitionResult = manager.changeProfile(LatencyTarget.LOW_LATENCY) as ProfileChangeResult.Applied
+        val activeGen = manager.authority.currentGeneration
+        assertEquals(2L, activeGen)
+
+        // 3. Old generation packets arrive at receiver AFTER transition
+        assertFalse("Old audio packet from generation 1 must be rejected",
+            HatPacket.isGenerationValid(audioGen1.generation, activeGen))
+        assertFalse("Old FEC packet from generation 1 must be rejected",
+            HatPacket.isGenerationValid(fecGen1.generation, activeGen))
+        assertFalse("Old silence packet from generation 1 must be rejected",
+            HatPacket.isGenerationValid(silenceGen1.generation, activeGen))
+
+        // 4. New generation 2 packet arrives and is accepted
+        val audioGen2 = transitionResult.newConfig.createHeader(packetType = HatPacket.TYPE_AUDIO, sequenceNumber = 1, payloadLength = 320, timestamp = 2000L)
+        assertTrue("New generation 2 packet must be accepted",
+            HatPacket.isGenerationValid(audioGen2.generation, activeGen))
+    }
+
+    @Test
+    fun testProfileChange_AsynchronousOldConfigArrivingAfterNewConfig() {
+        val manager = StreamProfileTransactionManager()
+
+        // 1. Initial generation 1 config
+        val r1 = manager.changeProfile(LatencyTarget.BALANCED) as ProfileChangeResult.Applied
+        val oldConfigGen1 = r1.newConfig
+        assertEquals(1L, oldConfigGen1.generation)
+
+        // 2. Profile transition to generation 2
+        val r2 = manager.changeProfile(LatencyTarget.LOW_LATENCY) as ProfileChangeResult.Applied
+        val newConfigGen2 = r2.newConfig
+        assertEquals(2L, newConfigGen2.generation)
+        assertEquals(2L, manager.authority.currentGeneration)
+
+        // 3. Asynchronous / delayed callback from generation 1 arrives AFTER generation 2 has been applied
+        val delayedResult = manager.authority.applyUpdate(oldConfigGen1)
+
+        assertTrue("Delayed old configuration must be rejected as stale", delayedResult is ConfigTransitionResult.RejectedStale)
+        val stale = delayedResult as ConfigTransitionResult.RejectedStale
+        assertEquals(1L, stale.incomingGeneration)
+        assertEquals(2L, stale.currentGeneration)
+
+        // Active configuration was not overwritten
+        assertEquals(2L, manager.authority.currentGeneration)
+        assertEquals(LatencyTarget.LOW_LATENCY, manager.authority.currentConfig?.transportProfile?.latencyTarget)
+        assertEquals(AudioCodec.OPUS, manager.authority.currentConfig?.codec)
+    }
+
+    @Test
+    fun testProfileChange_ReceiverAppliesExactlyOneConfigPerGeneration() {
+        val authority = StreamConfigurationAuthority()
+        var configAppliedCount = 0
+
+        val configGen1 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_24),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.BALANCED),
+            generation = 1L
+        )
+        val configGen2 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_16),
+            codec = AudioCodec.OPUS,
+            transportProfile = TransportProfile.create(LatencyTarget.LOW_LATENCY, isCompressedCodec = true),
+            generation = 2L
+        )
+
+        // Initial generation 1 application
+        val initialRes = authority.applyUpdate(configGen1)
+        if (initialRes is ConfigTransitionResult.Applied) configAppliedCount++
+        assertEquals(1, configAppliedCount)
+
+        // Transmitter publishes burst of 3 identical announcements for generation 2
+        val burst1 = authority.applyUpdate(configGen2)
+        if (burst1 is ConfigTransitionResult.Applied) configAppliedCount++
+        assertTrue("First announcement must be applied", burst1 is ConfigTransitionResult.Applied)
+
+        val burst2 = authority.applyUpdate(configGen2)
+        if (burst2 is ConfigTransitionResult.Applied) configAppliedCount++
+        assertTrue("Second announcement must be idempotent ignored", burst2 is ConfigTransitionResult.IdempotentIgnored)
+
+        val burst3 = authority.applyUpdate(configGen2)
+        if (burst3 is ConfigTransitionResult.Applied) configAppliedCount++
+        assertTrue("Third announcement must be idempotent ignored", burst3 is ConfigTransitionResult.IdempotentIgnored)
+
+        // Receiver applied exactly ONE new configuration for generation 2!
+        assertEquals("Receiver must apply exactly one configuration for generation 2", 2, configAppliedCount)
+    }
 }

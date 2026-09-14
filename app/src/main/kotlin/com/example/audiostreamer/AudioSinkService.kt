@@ -268,11 +268,13 @@ class AudioSinkService : Service() {
         val serverProfile = config.transportProfile.latencyTarget.name
         val currentCodec = config.codec.name
 
-        if (serverProfile != currentProfile || currentCodec != lastConfiguredCodec) {
+        val profileChanged = (serverProfile != currentProfile || serverProfile != currentTrackProfile)
+        val codecChanged = (currentCodec != lastConfiguredCodec)
+
+        if (profileChanged || codecChanged) {
             currentProfile = serverProfile
             lastConfiguredCodec = currentCodec
             audioTrack?.let { applyBufferSizeForProfile(it, serverProfile, currentSampleRate) }
-            currentTrackProfile = serverProfile
         }
 
         val targetEncoding = if (isServer24Bit && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -281,8 +283,9 @@ class AudioSinkService : Service() {
             AudioConfig.ENCODING
         }
         val targetPerfMode = AudioTrack.PERFORMANCE_MODE_NONE
-        if (targetSampleRate != currentSampleRate || targetEncoding != currentEncoding || targetPerfMode != currentPerformanceMode || serverProfile != currentTrackProfile) {
+        if (targetSampleRate != currentSampleRate || targetEncoding != currentEncoding || targetPerfMode != currentPerformanceMode || profileChanged) {
             configureAudioTrack(targetSampleRate, targetEncoding, serverProfile, currentRemoteVolume)
+            currentTrackProfile = serverProfile
         }
     }
 
@@ -425,7 +428,7 @@ class AudioSinkService : Service() {
                                             // Repeated announcement of identical generation: idempotent no-op
                                         }
                                         is ConfigTransitionResult.Applied -> {
-                                            Log.i(TAG, "Configuration transition: ${announcedConfig.transitionLogDescription}")
+                                            Log.i(TAG, "CONFIG_APPLIED: ${announcedConfig.toSummaryString()}")
                                             applyStreamConfiguration(announcedConfig)
                                         }
                                     }
@@ -488,7 +491,7 @@ class AudioSinkService : Service() {
                                     if (initialConfig != null) {
                                         val result = configAuthority.applyUpdate(initialConfig)
                                         if (result is ConfigTransitionResult.Applied) {
-                                            Log.i(TAG, "Configuration transition: ${initialConfig.transitionLogDescription}")
+                                            Log.i(TAG, "CONFIG_APPLIED: ${initialConfig.toSummaryString()}")
                                             applyStreamConfiguration(initialConfig)
                                         }
                                         configAuthority.currentConfig

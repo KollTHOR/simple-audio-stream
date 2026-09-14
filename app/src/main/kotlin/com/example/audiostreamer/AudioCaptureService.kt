@@ -431,7 +431,30 @@ class AudioCaptureService : Service() {
             Log.w(TAG, "Cannot restart streaming: mediaProjection is null")
             return
         }
+
+        val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+        val requestedProfileStr = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_AUTO) ?: AudioConfig.PROFILE_AUTO
+        val requestedTarget = LatencyTarget.fromString(requestedProfileStr)
+        val currentTarget = activeNegotiatedConfig?.transportProfile?.latencyTarget
+
+        // Requirement 5: Repeated requests for currently active profile must do nothing
+        if (activeNegotiatedConfig != null && currentTarget == requestedTarget) {
+            Log.i(TAG, "Repeated request for active profile ${requestedTarget.name}: doing nothing (no generation increment, no AudioTrack recreation, no jitter-buffer reset)")
+            return
+        }
+
+        // Requirement 8: PROFILE_CHANGE_BEGIN
+        val current = activeNegotiatedConfig
+        val currentGen = current?.generation ?: currentStreamGeneration.get()
+        val currentProfileName = current?.transportProfile?.latencyTarget?.name ?: "NONE"
+        val currentCodecName = current?.codec?.name ?: "NONE"
+        val currentRate = current?.sampleRateHz ?: activeCaptureSampleRate
+        val currentBits = current?.bitDepthBits ?: 16
+        val currentChannels = current?.channels ?: 2
+        Log.i(TAG, "PROFILE_CHANGE_BEGIN: targetProfile=${requestedTarget.name}, generation=$currentGen, profile=$currentProfileName, codec=$currentCodecName, sampleRate=$currentRate, bitDepth=$currentBits, channels=$currentChannels")
+
         Log.i(TAG, "Live restarting capture pipeline with existing MediaProjection...")
+        // Step a: Stop sending packets using the old configuration
         stopStreamingInternal(keepProjection = true)
         try { Thread.sleep(50) } catch (ignored: Exception) {}
         isRunning.set(true)
@@ -868,12 +891,17 @@ class AudioCaptureService : Service() {
                     generation = generation
                 )
                 activeNegotiatedConfig = negotiatedStreamConfig
-                Log.i(TAG, "Configuration transition: ${negotiatedStreamConfig.transitionLogDescription}")
+
+                // Requirement 8: GENERATION_CREATED
+                Log.i(TAG, "GENERATION_CREATED: ${negotiatedStreamConfig.toSummaryString()}")
 
                 // Broadcast authoritative stream configuration announcement burst for generation
                 repeat(3) {
                     sendStreamAnnouncement(negotiatedStreamConfig, remoteVolumePercent.get())
                 }
+
+                // Requirement 8: PROFILE_CHANGE_COMPLETE
+                Log.i(TAG, "PROFILE_CHANGE_COMPLETE: ${negotiatedStreamConfig.toSummaryString()}")
 
                 var sequence = 0
                 var streamTimelineFrames = 0L
