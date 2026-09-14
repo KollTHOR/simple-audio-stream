@@ -600,9 +600,15 @@ object StreamNegotiator {
  * Result of attempting a transactional runtime profile change.
  */
 sealed class ProfileChangeResult {
+    /**
+     * The transaction committed the new generation/config and announced it. [producerStarted] is false when
+     * the producer could not be started afterwards: the committed generation is then authoritative but the
+     * whole pipeline has been released and the transmitter is stopped.
+     */
     data class Applied(
         val previousConfig: NegotiatedStreamConfig?,
-        val newConfig: NegotiatedStreamConfig
+        val newConfig: NegotiatedStreamConfig,
+        val producerStarted: Boolean = true
     ) : ProfileChangeResult()
 
     data class IgnoredSameProfile(
@@ -611,7 +617,9 @@ sealed class ProfileChangeResult {
     ) : ProfileChangeResult()
 
     /**
-     * The transaction aborted because the new capture pipeline could not be fully initialized.
+     * The transaction aborted BEFORE committing anything, because the previous producer could not be stopped,
+     * the new configuration could not be negotiated, or the new capture pipeline could not be fully
+     * initialized ([cause] identifies the stage).
      *
      * Invariants guaranteed whenever this result is returned:
      * - [attemptedGeneration] was never committed: [StreamProfileTransactionManager.activeTransmitterConfig]
@@ -619,12 +627,32 @@ sealed class ProfileChangeResult {
      *   [StreamProfileTransactionManager.currentStreamGeneration] is unchanged.
      * - No announcement was emitted for [attemptedGeneration]: receivers never see a phantom generation.
      * - No producer was started and [StreamProfileTransactionManager.isTransmissionActive] is false.
-     * - Every resource created by the aborted attempt was released by the initializer.
+     * - Every resource created by the aborted attempt was released.
      */
     data class InitializationFailed(
         val previousConfig: NegotiatedStreamConfig?,
         val requestedProfile: LatencyTarget,
         val attemptedGeneration: Long,
+        val cause: Throwable? = null
+    ) : ProfileChangeResult()
+
+    /**
+     * The transaction committed [abandonedGeneration] but the announcement failed, so the generation can no
+     * longer be used: receivers may already have observed part of the announcement burst.
+     *
+     * Invariants guaranteed whenever this result is returned:
+     * - [abandonedGeneration] stays consumed: generation numbers remain monotonic and are never reused, so
+     *   the next successful transaction commits a strictly newer generation.
+     * - [StreamProfileTransactionManager.activeTransmitterConfig] is rolled back to [previousConfig] so the
+     *   transmitter advertises the last configuration that was fully committed AND announced.
+     * - The pipeline initialized for [abandonedGeneration] was released and no producer was started:
+     *   [StreamProfileTransactionManager.isTransmissionActive] is false.
+     * - The failure is never swallowed; [cause] carries the announcement exception.
+     */
+    data class AnnouncementFailed(
+        val previousConfig: NegotiatedStreamConfig?,
+        val requestedProfile: LatencyTarget,
+        val abandonedGeneration: Long,
         val cause: Throwable? = null
     ) : ProfileChangeResult()
 
@@ -642,14 +670,20 @@ sealed class ProfileChangeResult {
  * Step 3: Initialize the COMPLETE new capture pipeline (AudioRecord + required encoder resources) for the
  *         provisional config. Nothing is committed or announced until this succeeds.
  * Step 4: Commit the new generation + configuration as the transmitter's authoritative active state.
- * Step 5: Send/publish the new stream configuration announcement burst.
- * Step 6: Start the producer for the already initialized pipeline. Assert: every transmitted packet after
- *         resume uses the new generation and new configuration.
+ * Step 5: Announce the committed generation so receivers can configure themselves before packets arrive.
+ * Step 6: Start the producer for the already initialized pipeline (final activation step). Assert: every
+ *         transmitted packet after resume uses the new generation and new configuration.
  *
- * The commit/announcement boundary sits strictly AFTER successful pipeline initialization, therefore a
- * generation is never announced unless a producer for it exists. If step 3 fails, the transaction aborts
- * without committing, announcing or starting anything, and the transmitter is left in a clean stopped state
- * with the previous configuration (if any) still authoritative.
+ * Invariants held for EVERY exit path of this method (no unhandled exception may escape it):
+ * - A generation is announced only AFTER the complete capture pipeline for it has been initialized;
+ *   producer startup is the final activation step and may still fail afterwards.
+ * - Every pipeline created for a committed generation is either consumed by a successfully started producer
+ *   or fully released: the transmitter must never hold allocated capture resources without a producer.
+ * - [isTransmissionActive] is true only while a producer for the committed generation is running.
+ * - Pre-commit failures (step 1 or step 3) leave the previous configuration and generation fully
+ *   authoritative and consume no generation.
+ * - Post-commit failures keep the generation consumed (generation numbers are monotonic and never reused)
+ *   and leave the transmitter in a clean stopped state with no producer.
  */
 class StreamProfileTransactionManager(
     val currentStreamGeneration: java.util.concurrent.atomic.AtomicLong = java.util.concurrent.atomic.AtomicLong(0L)
@@ -716,29 +750,56 @@ class StreamProfileTransactionManager(
             // Assert: no old-generation packets produced. From this point until a successful commit no
             // producer exists and no generation is transmitting.
             isTransmissionActive = false
-            onStopTransmission?.invoke()
+            val provisionalGen = currentStreamGeneration.get() + 1L
+            val stopFailure: Throwable? = try {
+                onStopTransmission?.invoke()
+                null
+            } catch (t: Throwable) {
+                Log.e("AudioCaptureService", "PROFILE_CHANGE_STOP_FAILED: previous producer teardown failed", t)
+                t
+            }
+            if (stopFailure != null) {
+                // The previous producer's teardown is not trustworthy: abort before allocating anything new so
+                // the transmitter stays stopped with the previous config/generation authoritative.
+                return ProfileChangeResult.InitializationFailed(
+                    previousConfig = previousConfig,
+                    requestedProfile = targetProfile,
+                    attemptedGeneration = provisionalGen,
+                    cause = stopFailure
+                )
+            }
 
             // Step 2: Build the PROVISIONAL new generation + complete configuration. The generation counter
             // is only advanced at commit time so a failed attempt never consumes a generation.
-            val provisionalGen = currentStreamGeneration.get() + 1L
             val resolvedCodec = preferredCodec ?: when (targetProfile) {
                 LatencyTarget.LOW_LATENCY -> if (isOpusEncoderAvailable) AudioCodec.OPUS else AudioCodec.AAC
                 else -> AudioCodec.PCM
             }
-            val newConfig = StreamNegotiator.negotiate(
-                request = StreamNegotiator.NegotiationRequest(
-                    preferredProfile = targetProfile,
-                    preferredCodec = resolvedCodec,
-                    preferredSampleRateHz = preferredSampleRateHz,
-                    preferred24Bit = preferred24Bit && !resolvedCodec.isCompressed,
-                    txCapabilitiesMask = txCapabilitiesMask,
-                    rxCapabilitiesMask = rxCapabilitiesMask,
-                    rxCapabilitiesList = rxCapabilitiesList,
-                    fecEnabled = fecEnabled,
-                    isOpusEncoderAvailable = isOpusEncoderAvailable
-                ),
-                generation = provisionalGen
-            )
+            val newConfig = try {
+                StreamNegotiator.negotiate(
+                    request = StreamNegotiator.NegotiationRequest(
+                        preferredProfile = targetProfile,
+                        preferredCodec = resolvedCodec,
+                        preferredSampleRateHz = preferredSampleRateHz,
+                        preferred24Bit = preferred24Bit && !resolvedCodec.isCompressed,
+                        txCapabilitiesMask = txCapabilitiesMask,
+                        rxCapabilitiesMask = rxCapabilitiesMask,
+                        rxCapabilitiesList = rxCapabilitiesList,
+                        fecEnabled = fecEnabled,
+                        isOpusEncoderAvailable = isOpusEncoderAvailable
+                    ),
+                    generation = provisionalGen
+                )
+            } catch (t: Throwable) {
+                // Nothing has been allocated, committed or announced yet: abort with the previous state intact.
+                Log.e("AudioCaptureService", "PROFILE_CHANGE_NEGOTIATION_FAILED: targetProfile=${targetProfile.name}", t)
+                return ProfileChangeResult.InitializationFailed(
+                    previousConfig = previousConfig,
+                    requestedProfile = targetProfile,
+                    attemptedGeneration = provisionalGen,
+                    cause = t
+                )
+            }
 
             // Requirement 8: GENERATION_CREATED (provisional, NOT yet authoritative)
             Log.i(
@@ -788,10 +849,37 @@ class StreamProfileTransactionManager(
                 "CONFIG_APPLIED: ${newConfig.toSummaryString()}"
             )
 
-            // Step 5: Announce the committed generation.
-            onPublishAnnouncement?.invoke(newConfig)
+            // Step 5: Announce the committed generation so receivers can adopt it before packets arrive.
+            // An announcement failure must not be swallowed, and must not leave the generation half-live.
+            val announcementFailure: Throwable? = try {
+                onPublishAnnouncement?.invoke(newConfig)
+                null
+            } catch (t: Throwable) {
+                Log.e("AudioCaptureService", "PROFILE_CHANGE_ANNOUNCE_FAILED: ${newConfig.toSummaryString()}", t)
+                t
+            }
 
-            // Step 6: Start the producer for the already initialized pipeline.
+            if (announcementFailure != null) {
+                // The generation stays consumed (receivers may have seen part of the burst, so the number must
+                // never be reused), while the authoritative config is rolled back to the previous one that was
+                // fully committed AND announced. The pipeline is released and no producer runs.
+                activeTransmitterConfig = previousConfig
+                isTransmissionActive = false
+                releaseInitializedPipeline(onStopTransmission, provisionalGen)
+                Log.e(
+                    "AudioCaptureService",
+                    "PROFILE_CHANGE_ABORTED_AFTER_COMMIT: generation=$provisionalGen stays consumed, " +
+                        "authoritative config rolled back, pipeline released, transmitter stopped"
+                )
+                return ProfileChangeResult.AnnouncementFailed(
+                    previousConfig = previousConfig,
+                    requestedProfile = targetProfile,
+                    abandonedGeneration = provisionalGen,
+                    cause = announcementFailure
+                )
+            }
+
+            // Step 6: Start the producer for the already initialized pipeline. Final activation step.
             val producerStarted = try {
                 onResumeTransmission?.invoke(newConfig) ?: true
             } catch (t: Throwable) {
@@ -800,19 +888,14 @@ class StreamProfileTransactionManager(
             }
 
             if (!producerStarted) {
-                // The pipeline was initialized but the producer could not be started. Prefer a clean stopped
-                // state over an inconsistent running one: tear the pipeline back down and leave the service
-                // stopped (the committed generation simply transmits nothing until the user retries).
+                // The committed generation was announced, so it stays authoritative, but nothing may keep
+                // allocated capture resources without a producer: release the pipeline and stay stopped.
                 isTransmissionActive = false
                 Log.e(
                     "AudioCaptureService",
-                    "PROFILE_CHANGE_PRODUCER_START_FAILED: leaving transmitter stopped for ${newConfig.toSummaryString()}"
+                    "PROFILE_CHANGE_PRODUCER_START_FAILED: releasing pipeline and leaving transmitter stopped for ${newConfig.toSummaryString()}"
                 )
-                try {
-                    onStopTransmission?.invoke()
-                } catch (t: Throwable) {
-                    Log.w("AudioCaptureService", "Failed releasing pipeline after producer start failure: ${t.message}")
-                }
+                releaseInitializedPipeline(onStopTransmission, provisionalGen)
             } else {
                 isTransmissionActive = true
             }
@@ -820,16 +903,42 @@ class StreamProfileTransactionManager(
             // Requirement 8: PROFILE_CHANGE_COMPLETE
             Log.i(
                 "AudioCaptureService",
-                "PROFILE_CHANGE_COMPLETE: ${newConfig.toSummaryString()}"
+                "PROFILE_CHANGE_COMPLETE: ${newConfig.toSummaryString()}, producerStarted=$producerStarted"
             )
 
             return ProfileChangeResult.Applied(
                 previousConfig = previousConfig,
-                newConfig = newConfig
+                newConfig = newConfig,
+                producerStarted = producerStarted
             )
         } finally {
             profileChangeLock.unlock()
         }
+    }
+
+    /**
+     * Best-effort release of a capture pipeline that was initialized for a generation which will not transmit.
+     * A release failure must never propagate out of the transaction: the transmitter is already being left
+     * stopped and [isTransmissionActive] is false on every path that calls this.
+     */
+    private fun releaseInitializedPipeline(onStopTransmission: (() -> Unit)?, generation: Long) {
+        try {
+            onStopTransmission?.invoke()
+        } catch (t: Throwable) {
+            Log.e("AudioCaptureService", "PIPELINE_RELEASE_FAILED: generation=$generation release callback threw", t)
+        }
+    }
+
+    /**
+     * Records that the active producer is no longer running, e.g. because the stream worker terminated on its
+     * own after a streaming error. Keeps [isTransmissionActive] an accurate statement about whether a producer
+     * is actually running without touching the committed configuration or generation.
+     *
+     * Deliberately lock-free: it is called from the terminating producer thread while a profile transaction may
+     * hold [profileChangeLock] and wait for that very thread to finish.
+     */
+    fun markProducerStopped() {
+        isTransmissionActive = false
     }
 
     fun reset() {
