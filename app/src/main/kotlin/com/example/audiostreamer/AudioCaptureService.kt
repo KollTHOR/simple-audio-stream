@@ -108,6 +108,35 @@ class AudioCaptureService : Service() {
     private var activeCaptureSampleRate = AudioConfig.SAMPLE_RATE_48000
     @Volatile private var lastLiveAdaptTime = 0L
 
+    // --- HAT runtime diagnostics ------------------------------------------------------------------
+    private val diagPacketsGenerated = java.util.concurrent.atomic.AtomicLong(0L)
+    private val diagTxPackets = java.util.concurrent.atomic.AtomicLong(0L)
+    private val diagTxBytes = java.util.concurrent.atomic.AtomicLong(0L)
+    private val diagTxErrors = java.util.concurrent.atomic.AtomicLong(0L)
+    private val diagCaptureFrames = java.util.concurrent.atomic.AtomicLong(0L)
+    private val diagCaptureFramesDropped = java.util.concurrent.atomic.AtomicLong(0L)
+    private val diagCapturePcmBytes = java.util.concurrent.atomic.AtomicLong(0L)
+    private val diagCaptureReadCalls = java.util.concurrent.atomic.AtomicLong(0L)
+    private val diagCaptureReadErrors = java.util.concurrent.atomic.AtomicLong(0L)
+    private val clientDiag = ConcurrentHashMap<ClientEndpoint, TxReceiverStats>()
+    private var diagStatsLastNs = 0L
+    private var diagStatsLastPackets = 0L
+    private var diagStatsLastBytes = 0L
+    @Volatile private var txFirstPacketGeneration: Long = -1L
+
+    /** Per-receiver transmit counters sampled once per diagnostics interval. */
+    private class TxReceiverStats(val label: String) {
+        val packets = java.util.concurrent.atomic.AtomicLong(0L)
+        val bytes = java.util.concurrent.atomic.AtomicLong(0L)
+        val sendErrors = java.util.concurrent.atomic.AtomicLong(0L)
+        val unreachable = java.util.concurrent.atomic.AtomicLong(0L)
+        val timeouts = java.util.concurrent.atomic.AtomicLong(0L)
+        val otherErrors = java.util.concurrent.atomic.AtomicLong(0L)
+        var lastPackets = 0L
+        var lastBytes = 0L
+        var lastSampleNs = 0L
+    }
+
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
             Log.w(TAG, "MediaProjection revoked or stopped by system")
@@ -223,21 +252,60 @@ class AudioCaptureService : Service() {
                 val entry = iter.next()
                 if (entry.value != Long.MAX_VALUE && (now - entry.value > 10_000L)) {
                     Log.i(TAG, "Pruning inactive multi-unicast client: ${entry.key}")
+                    HatDiagnostics.info("RECEIVER_STALE", mapOf("receiver" to entry.key.toString(), "idleMs" to (now - entry.value)))
+                    clientDiag.remove(entry.key)
                     iter.remove()
                 }
             }
         }
 
-        synchronized(socketSendLock) {
-            for (client in clientRegistry.keys) {
-                packet.address = client.address
-                packet.port = client.port
-                try {
-                    socket.send(packet)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed sending datagram to $client: ${e.message}")
+        // One produced packet per broadcast: counts FEC parity/heartbeat datagrams too, unlike per-socket sends.
+        diagPacketsGenerated.incrementAndGet()
+        val pendingFirstTx = txFirstPacketGeneration
+        if (pendingFirstTx >= 0L) {
+            txFirstPacketGeneration = -1L
+            HatDiagnostics.lifecycle("GENERATION_FIRST_TX", pendingFirstTx)
+        }
+        val sendStartNs = SystemClock.elapsedRealtimeNanos()
+        try {
+            synchronized(socketSendLock) {
+                for (client in clientRegistry.keys) {
+                    packet.address = client.address
+                    packet.port = client.port
+                    val stats = clientDiag.getOrPut(client) { TxReceiverStats(client.toString()) }
+                    try {
+                        socket.send(packet)
+                        stats.packets.incrementAndGet()
+                        stats.bytes.addAndGet(packet.length.toLong())
+                        diagTxPackets.incrementAndGet()
+                        diagTxBytes.addAndGet(packet.length.toLong())
+                    } catch (e: Exception) {
+                        stats.sendErrors.incrementAndGet()
+                        diagTxErrors.incrementAndGet()
+                        when {
+                            e is java.net.SocketTimeoutException -> stats.timeouts.incrementAndGet()
+                            e.message?.contains("unreachable", ignoreCase = true) == true -> stats.unreachable.incrementAndGet()
+                            else -> stats.otherErrors.incrementAndGet()
+                        }
+                        // Counted for every failure, but only reported (with structured context) on the first
+                        // and then sparsely: a persistently unreachable receiver must not produce per-packet spam.
+                        val sendErrorCount = HatDiagnostics.increment("tx_send_errors")
+                        if (sendErrorCount == 1L || sendErrorCount % 100L == 0L) {
+                            HatDiagnostics.warn(
+                                "RECEIVER_SEND_FAILURE",
+                                mapOf(
+                                    "receiver" to client.toString(),
+                                    "error" to (e.message ?: e.javaClass.simpleName),
+                                    "count" to sendErrorCount
+                                )
+                            )
+                        }
+                        Log.w(TAG, "Failed sending datagram to $client: ${e.message}")
+                    }
                 }
             }
+        } finally {
+            HatDiagnostics.recordTime("send", SystemClock.elapsedRealtimeNanos() - sendStartNs)
         }
     }
 
@@ -411,6 +479,7 @@ class AudioCaptureService : Service() {
 
         acquireLocks()
         registerVolumeClampGuard()
+        startDiagnosticsSession()
 
         val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val projection = projectionManager.getMediaProjection(resultCode, resultData)
@@ -745,6 +814,16 @@ class AudioCaptureService : Service() {
                                         clientRegistry[endpoint] = SystemClock.elapsedRealtime()
                                         val capsDesc = if (byteVal != 0) AudioCapabilities.describeCapabilitiesMask(byteVal) else "default"
                                         Log.i(TAG, "Registered new compatible receiver: $endpoint (Caps: $capsDesc)")
+                                        HatDiagnostics.info(
+                                            "RECEIVER_JOIN",
+                                            mapOf(
+                                                "receiver" to endpoint.toString(),
+                                                "capabilities" to byteVal,
+                                                "capabilityDesc" to capsDesc,
+                                                "generation" to currentConfig.generation,
+                                                "activeReceivers" to clientRegistry.size
+                                            )
+                                        )
                                         sendStreamAnnouncement(currentConfig, remoteVolumePercent.get(), endpoint)
                                     }
                                 } else {
@@ -763,6 +842,15 @@ class AudioCaptureService : Service() {
                                 Log.i(TAG, "Received client disconnect signal from $endpoint. Pausing media.")
                                 clientRegistry.remove(endpoint)
                                 clientCapabilities.remove(endpoint)
+                                clientDiag.remove(endpoint)
+                                HatDiagnostics.info(
+                                    "RECEIVER_LEAVE",
+                                    mapOf(
+                                        "receiver" to endpoint.toString(),
+                                        "reason" to "client_disconnect",
+                                        "activeReceivers" to clientRegistry.size
+                                    )
+                                )
                                 if (clientRegistry.isEmpty()) {
                                     pauseSystemMediaPlayback()
                                 }
@@ -1145,7 +1233,11 @@ class AudioCaptureService : Service() {
                         val tRead0 = SystemClock.elapsedRealtimeNanos()
                         val pcmBytesRead = record.read(pcmReadBuffer, 0, targetReadBytes, AudioRecord.READ_BLOCKING)
                         lastReadDurationNs = SystemClock.elapsedRealtimeNanos() - tRead0
+                        diagCaptureReadCalls.incrementAndGet()
+                        HatDiagnostics.recordTime("captureRead", lastReadDurationNs)
                         if (pcmBytesRead > 0) {
+                            diagCaptureFrames.addAndGet((pcmBytesRead / 4).toLong())
+                            diagCapturePcmBytes.addAndGet(pcmBytesRead.toLong())
                             val metrics = audioMeter.analyze(pcmReadBuffer, 0, pcmBytesRead, is24Bit = false)
                             val chunkPeak = metrics.peak
 
@@ -1171,6 +1263,7 @@ class AudioCaptureService : Service() {
                                     aacEnc?.encode(pcmReadBuffer, 0, pcmBytesRead) ?: emptyList()
                                 }
                                 lastEncodeDurationNs = SystemClock.elapsedRealtimeNanos() - tEnc0
+                                HatDiagnostics.recordTime("encode", lastEncodeDurationNs)
                                 for (frame in encodedFrames) {
                                     val frameLen = frame.size
                                     if (frameLen > 0 && frameLen <= AudioConfig.MAX_PACKET_SIZE) {
@@ -1269,13 +1362,6 @@ class AudioCaptureService : Service() {
                                     )
                                 }
 
-                                if (nowStats - lastLatencyLogTime >= 1000L) {
-                                    lastLatencyLogTime = nowStats
-                                    val readMsStr = String.format(Locale.US, "%.1f", lastReadDurationNs / 1_000_000.0)
-                                    val encMsStr = String.format(Locale.US, "%.1f", lastEncodeDurationNs / 1_000_000.0)
-                                    Log.i("LATENCY-TX", "Record: ${readMsStr}ms | Encode: ${encMsStr}ms | Sent: $pps pps ($bps B/s)")
-                                }
-
                                 intervalPackets = 0
                                 intervalBytes = 0
                                 lastStatsTime = nowStats
@@ -1284,14 +1370,28 @@ class AudioCaptureService : Service() {
                             Thread.sleep(2)
                         } else if (pcmBytesRead < 0) {
                             Log.e(TAG, "AudioRecord read error (compressed): $pcmBytesRead")
+                            diagCaptureReadErrors.incrementAndGet()
+                            HatDiagnostics.increment("capture_read_errors")
+                            HatDiagnostics.error(
+                                "AUDIO_RECORD_ERROR",
+                                mapOf(
+                                    "pcmBytesRead" to pcmBytesRead,
+                                    "sampleRate" to captureSampleRate,
+                                    "codec" to negotiatedStreamConfig.codec.name,
+                                    "recordingState" to record.recordingState
+                                )
+                            )
                             break
                         }
                     } else {
                         val tRead0 = SystemClock.elapsedRealtimeNanos()
                         val bytesRead = record.read(rawPcmBuffer, 0, activePayloadSize, AudioRecord.READ_BLOCKING)
                         lastReadDurationNs = SystemClock.elapsedRealtimeNanos() - tRead0
+                        diagCaptureReadCalls.incrementAndGet()
+                        HatDiagnostics.recordTime("captureRead", lastReadDurationNs)
 
                         if (bytesRead > 0) {
+                            diagCapturePcmBytes.addAndGet(bytesRead.toLong())
                             val isEffective24 = is24BitActive
                             val bytesPerFrame = if (isEffective24) 6 else 4
                             val framesRead = bytesRead / bytesPerFrame
@@ -1315,8 +1415,11 @@ class AudioCaptureService : Service() {
                             } else {
                                 if (isSilenceSuppressed && (config.transportProfile.latencyTarget == LatencyTarget.LOW_LATENCY)) {
                                     val drainBuf = ByteArray(activePayloadSize)
-                                    while (record.read(drainBuf, 0, drainBuf.size, AudioRecord.READ_NON_BLOCKING) > 0) {
+                                    var drained = record.read(drainBuf, 0, drainBuf.size, AudioRecord.READ_NON_BLOCKING)
+                                    while (drained > 0) {
                                         // Drain stale backlog frames
+                                        diagCaptureFramesDropped.addAndGet((drained / bytesPerFrame).toLong())
+                                        drained = record.read(drainBuf, 0, drainBuf.size, AudioRecord.READ_NON_BLOCKING)
                                     }
                                 }
                                 silentPacketsCount = 0
@@ -1430,13 +1533,6 @@ class AudioCaptureService : Service() {
                                     )
                                 }
 
-                                if (nowStats - lastLatencyLogTime >= 1000L) {
-                                    lastLatencyLogTime = nowStats
-                                    val readMsStr = String.format(Locale.US, "%.1f", lastReadDurationNs / 1_000_000.0)
-                                    val encMsStr = String.format(Locale.US, "%.1f", lastEncodeDurationNs / 1_000_000.0)
-                                    Log.i("LATENCY-TX", "Record: ${readMsStr}ms | Encode: ${encMsStr}ms | Sent: $pps pps ($bps B/s)")
-                                }
-
                                 intervalPackets = 0
                                 intervalBytes = 0
                                 lastStatsTime = nowStats
@@ -1445,12 +1541,27 @@ class AudioCaptureService : Service() {
                             Thread.sleep(2)
                         } else if (bytesRead < 0) {
                             Log.e(TAG, "AudioRecord read error: $bytesRead")
+                            diagCaptureReadErrors.incrementAndGet()
+                            HatDiagnostics.increment("capture_read_errors")
+                            HatDiagnostics.error(
+                                "AUDIO_RECORD_ERROR",
+                                mapOf(
+                                    "bytesRead" to bytesRead,
+                                    "sampleRate" to captureSampleRate,
+                                    "recordingState" to record.recordingState
+                                )
+                            )
                             break
                         }
                     }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Audio streaming exception", e)
+                HatDiagnostics.error(
+                    "THREAD_FAILURE",
+                    mapOf("thread" to "AudioCaptureStreamer", "generation" to negotiatedStreamConfig.generation),
+                    e
+                )
                 StreamState.update { it.copy(statusDetail = "Error: ${e.message}") }
             } finally {
                 Log.i(TAG, "Audio streaming thread stopped")
@@ -1468,14 +1579,199 @@ class AudioCaptureService : Service() {
 
         streamThread = worker
         worker.isDaemon = true
+        txFirstPacketGeneration = config.generation
         try {
             worker.start()
         } catch (t: Throwable) {
             streamThread = null
             Log.e(TAG, "Failed to start stream thread for generation ${config.generation}", t)
+            HatDiagnostics.error(
+                "THREAD_FAILURE",
+                mapOf("thread" to "AudioCaptureStreamer", "stage" to "Thread.start", "generation" to config.generation),
+                t
+            )
             return false
         }
         return true
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // HAT runtime diagnostics wiring
+    // ---------------------------------------------------------------------------------------------
+
+    /** Opens the diagnostics run session: metadata, run id, snapshot sections and the periodic stats task. */
+    private fun startDiagnosticsSession() {
+        HatDiagnostics.setMetadata(
+            HatDiagnostics.Metadata(
+                appVersion = BuildConfig.VERSION_NAME,
+                deviceModel = Build.MODEL,
+                manufacturer = Build.MANUFACTURER,
+                androidVersion = Build.VERSION.RELEASE,
+                apiLevel = Build.VERSION.SDK_INT,
+                audioOutputDevice = "MediaProjection playback capture",
+                audioSampleRate = activeCaptureSampleRate,
+                audioChannelConfig = if (AudioConfig.CHANNELS == 2) "stereo" else AudioConfig.CHANNELS.toString(),
+                networkTransport = "UDP (unicast/broadcast)"
+            )
+        )
+        HatDiagnostics.startRun(
+            streamId = "tx:${currentTargetIp}:$currentTargetPort",
+            runId = HatDiagnostics.newRunId(Build.MODEL)
+        )
+        HatDiagnostics.registerSection("CONFIG") { activeNegotiatedConfig?.diagnosticFields(clientRegistry.size) ?: emptyMap() }
+        HatDiagnostics.registerSection("GENERATION") {
+            mapOf(
+                "generation" to currentStreamGeneration.get(),
+                "isTransmissionActive" to profileTransactionManager.isTransmissionActive,
+                "producerThreadAlive" to (streamThread?.isAlive ?: false)
+            )
+        }
+        HatDiagnostics.registerSection("CAPTURE") { captureDiagnosticsSnapshot() }
+        HatDiagnostics.registerSection("TX") { txDiagnosticsSnapshot() }
+        HatDiagnostics.registerSection("RECEIVERS") {
+            clientDiag.entries.associate { entry ->
+                entry.key.toString() to ("packets=${entry.value.packets.get()} bytes=${entry.value.bytes.get()} " +
+                    "errors=${entry.value.sendErrors.get()} port=${entry.key.port}")
+            }
+        }
+        HatDiagnostics.registerPeriodicTask("captureTxStats") { emitCaptureTxStats() }
+        diagStatsLastNs = System.nanoTime()
+        diagStatsLastPackets = diagPacketsGenerated.get()
+        diagStatsLastBytes = diagTxBytes.get()
+        HatDiagnostics.startPeriodicStats()
+        HatDiagnostics.info(
+            "NETWORK_CHANGED",
+            mapOf(
+                "targetIp" to currentTargetIp,
+                "targetPort" to currentTargetPort,
+                "transport" to "UDP",
+                "localIp" to (NetworkUtils.getLocalIpAddress() ?: "unknown"),
+                "interface" to NetworkUtils.findMatchingLocalIp(currentTargetIp).orEmpty()
+            )
+        )
+    }
+
+    /** Detaches this service from the diagnostics facility and closes the run session. */
+    private fun stopDiagnosticsSession() {
+        HatDiagnostics.unregisterPeriodicTask("captureTxStats")
+        HatDiagnostics.unregisterSection("CONFIG")
+        HatDiagnostics.unregisterSection("GENERATION")
+        HatDiagnostics.unregisterSection("TX")
+        HatDiagnostics.unregisterSection("CAPTURE")
+        HatDiagnostics.unregisterSection("RECEIVERS")
+        HatDiagnostics.stopPeriodicStats()
+        clientDiag.clear()
+    }
+
+    private fun captureDiagnosticsSnapshot(): Map<String, Any?> {
+        val record = audioRecord
+        val config = activeNegotiatedConfig
+        val audioFormatCode = try {
+            record?.audioFormat ?: 0
+        } catch (e: Exception) {
+            0
+        }
+        val is24 = audioFormatCode == AudioFormat.ENCODING_PCM_24BIT_PACKED
+        val bytesPerFrame = if (is24) 6 else 4
+        val bufferFrames = try {
+            record?.bufferSizeInFrames ?: 0
+        } catch (e: Exception) {
+            0
+        }
+        val read = HatDiagnostics.timing("captureRead")?.snapshot()
+        return linkedMapOf(
+            "sampleRate" to (try { record?.sampleRate ?: activeCaptureSampleRate } catch (e: Exception) { activeCaptureSampleRate }),
+            "channels" to AudioConfig.CHANNELS,
+            "bitDepth" to (if (is24) 24 else (config?.bitDepthBits ?: 16)),
+            "audioRecordState" to (try { record?.state ?: 0 } catch (e: Exception) { 0 }),
+            "recordingState" to (try { record?.recordingState ?: 0 } catch (e: Exception) { 0 }),
+            "bufferSizeBytes" to bufferFrames * bytesPerFrame,
+            "bufferSizeFrames" to bufferFrames,
+            "framesCaptured" to diagCaptureFrames.get(),
+            "framesDropped" to diagCaptureFramesDropped.get(),
+            "readCalls" to diagCaptureReadCalls.get(),
+            "readErrors" to diagCaptureReadErrors.get(),
+            "avgReadMs" to ((read?.avgNs ?: 0L) / 1_000_000.0),
+            "maxReadMs" to ((read?.maxNs ?: 0L) / 1_000_000.0),
+            "packetsGenerated" to diagPacketsGenerated.get(),
+            "packetsSent" to diagTxPackets.get(),
+            "bytesSent" to diagTxBytes.get(),
+            "compressionRatio" to compressionRatio()
+        )
+    }
+
+    private fun compressionRatio(): Double {
+        val pcm = diagCapturePcmBytes.get()
+        if (pcm <= 0L) return 0.0
+        return diagTxBytes.get().toDouble() / pcm.toDouble()
+    }
+
+    private fun txDiagnosticsSnapshot(): Map<String, Any?> {
+        val send = HatDiagnostics.timing("send")?.snapshot()
+        return linkedMapOf(
+            "packetsGenerated" to diagPacketsGenerated.get(),
+            "packetsSent" to diagTxPackets.get(),
+            "bytesSent" to diagTxBytes.get(),
+            "sendErrors" to diagTxErrors.get(),
+            "sendCalls" to (send?.count ?: 0L),
+            "avgSendMs" to ((send?.avgNs ?: 0L) / 1_000_000.0),
+            "maxSendMs" to ((send?.maxNs ?: 0L) / 1_000_000.0),
+            "receivers" to clientRegistry.size
+        )
+    }
+
+    /**
+     * Periodic transport/capture statistics. Runs on the diagnostics thread (never on the audio loop) and
+     * emits one CAPTURE_STATS plus one TX_STATS per active receiver per interval.
+     */
+    private fun emitCaptureTxStats() {
+        val nowNs = System.nanoTime()
+        val elapsedNs = (nowNs - diagStatsLastNs).coerceAtLeast(1L)
+        val elapsedSec = elapsedNs / 1_000_000_000.0
+        val packetsGenerated = diagPacketsGenerated.get()
+        val bytesSent = diagTxBytes.get()
+
+        val captureFields = captureDiagnosticsSnapshot().toMutableMap()
+        captureFields["packetsPerSecond"] = ((packetsGenerated - diagStatsLastPackets) / elapsedSec).toInt()
+        captureFields["bytesPerSecond"] = ((bytesSent - diagStatsLastBytes) / elapsedSec).toInt()
+        HatDiagnostics.stats("CAPTURE_STATS", captureFields)
+
+        val config = activeNegotiatedConfig
+        for ((endpoint, stats) in clientDiag) {
+            val packets = stats.packets.get()
+            val bytes = stats.bytes.get()
+            if (packets == 0L && stats.lastPackets == 0L && stats.lastSampleNs == 0L) {
+                continue
+            }
+            val receiverElapsedSec = if (stats.lastSampleNs == 0L) elapsedSec else (nowNs - stats.lastSampleNs) / 1_000_000_000.0
+            val safeElapsed = receiverElapsedSec.coerceAtLeast(0.001)
+            val packetsDelta = packets - stats.lastPackets
+            val bytesDelta = bytes - stats.lastBytes
+            HatDiagnostics.stats(
+                "TX_STATS",
+                linkedMapOf(
+                    "receiver" to stats.label,
+                    "packets" to packets,
+                    "bytes" to bytes,
+                    "packetsPerSecond" to (packetsDelta / safeElapsed).toInt(),
+                    "bytesPerSecond" to (bytesDelta / safeElapsed).toInt(),
+                    "sendErrors" to stats.sendErrors.get(),
+                    "enetUnreach" to stats.unreachable.get(),
+                    "timeouts" to stats.timeouts.get(),
+                    "otherErrors" to stats.otherErrors.get(),
+                    "avgPayloadBytes" to (if (packetsDelta > 0) bytesDelta / packetsDelta else 0),
+                    "generation" to (config?.generation ?: 0L),
+                    "port" to endpoint.port
+                )
+            )
+            stats.lastPackets = packets
+            stats.lastBytes = bytes
+            stats.lastSampleNs = nowNs
+        }
+
+        diagStatsLastNs = nowNs
+        diagStatsLastPackets = packetsGenerated
+        diagStatsLastBytes = bytesSent
     }
 
     private fun stopStreaming() {
@@ -1491,6 +1787,7 @@ class AudioCaptureService : Service() {
         AudioPlaybackDetector.stopMonitoring(this)
 
         stopProducerSynchronously()
+        stopDiagnosticsSession()
 
         val cThread = controlListenerThread
         controlListenerThread = null
@@ -1501,6 +1798,11 @@ class AudioCaptureService : Service() {
         } catch (ignored: Exception) {}
         udpSocket = null
         profileTransactionManager.reset()
+        HatDiagnostics.lifecycle(
+            "GENERATION_STOPPED",
+            currentStreamGeneration.get(),
+            mapOf("reason" to "service_stopped")
+        )
 
         try {
             cThread?.join(300)

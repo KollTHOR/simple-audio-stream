@@ -311,6 +311,25 @@ data class NegotiatedStreamConfig(
     fun toSummaryString(): String =
         "generation=$generation, profile=${transportProfile.latencyTarget.name}, codec=${codec.name}, sampleRate=$sampleRateHz, bitDepth=$bitDepthBits, channels=$channels"
 
+    /**
+     * Structured field set used by the runtime diagnostics lifecycle events (CONFIG_* / GENERATION_*).
+     */
+    fun diagnosticFields(receiverCount: Int = 0): Map<String, Any?> = linkedMapOf(
+        "generation" to generation,
+        "profile" to transportProfile.latencyTarget.name,
+        "logicalCodec" to codec.name,
+        "wireCodec" to codec.wireCode,
+        "sampleRate" to sampleRateHz,
+        "bitDepth" to bitDepthBits,
+        "channels" to channels,
+        "frameSize" to getFramesPerPacket(),
+        "packetSize" to getNominalPcmPayloadSize(),
+        "fecEnabled" to transportProfile.fec.enabled,
+        "fecBlockSize" to transportProfile.fec.blockSize,
+        "targetLatencyMs" to transportProfile.jitter.targetWatermarkMs,
+        "receiverCount" to receiverCount
+    )
+
     val transitionLogDescription: String
         get() = toSummaryString()
 
@@ -745,6 +764,27 @@ class StreamProfileTransactionManager(
                 "AudioCaptureService",
                 "PROFILE_CHANGE_BEGIN: targetProfile=${targetProfile.name}, generation=$currentGen, profile=$currentProfileName, codec=$currentCodecName, sampleRate=$currentRate, bitDepth=$currentBits, channels=$currentChannels"
             )
+            HatDiagnostics.info(
+                "CONFIG_REQUESTED",
+                linkedMapOf(
+                    "targetProfile" to targetProfile.name,
+                    "requestedCodec" to (preferredCodec?.name ?: "AUTO"),
+                    "requestedSampleRate" to preferredSampleRateHz,
+                    "requested24Bit" to preferred24Bit,
+                    "fecEnabled" to fecEnabled,
+                    "receiverCount" to rxCapabilitiesList.size,
+                    "previousGeneration" to currentGen,
+                    "previousProfile" to currentProfileName,
+                    "previousCodec" to currentCodecName,
+                    "previousSampleRate" to currentRate,
+                    "previousBitDepth" to currentBits,
+                    "previousChannels" to currentChannels
+                )
+            )
+            val transactionStartNs = System.nanoTime()
+            val stopStartNs = System.nanoTime()
+            var stopDurationNs = 0L
+            var initDurationNs = 0L
 
             // Step 1: Stop the old producer synchronously (streamThread.join(), release/stop old AudioRecord).
             // Assert: no old-generation packets produced. From this point until a successful commit no
@@ -758,9 +798,20 @@ class StreamProfileTransactionManager(
                 Log.e("AudioCaptureService", "PROFILE_CHANGE_STOP_FAILED: previous producer teardown failed", t)
                 t
             }
+            stopDurationNs = System.nanoTime() - stopStartNs
             if (stopFailure != null) {
                 // The previous producer's teardown is not trustworthy: abort before allocating anything new so
                 // the transmitter stays stopped with the previous config/generation authoritative.
+                HatDiagnostics.error(
+                    "CONFIG_FAILURE",
+                    linkedMapOf(
+                        "stage" to "stop_previous_producer",
+                        "targetProfile" to targetProfile.name,
+                        "attemptedGeneration" to provisionalGen,
+                        "stopMs" to (stopDurationNs / 1_000_000.0)
+                    ),
+                    stopFailure
+                )
                 return ProfileChangeResult.InitializationFailed(
                     previousConfig = previousConfig,
                     requestedProfile = targetProfile,
@@ -793,6 +844,15 @@ class StreamProfileTransactionManager(
             } catch (t: Throwable) {
                 // Nothing has been allocated, committed or announced yet: abort with the previous state intact.
                 Log.e("AudioCaptureService", "PROFILE_CHANGE_NEGOTIATION_FAILED: targetProfile=${targetProfile.name}", t)
+                HatDiagnostics.error(
+                    "CONFIG_FAILURE",
+                    linkedMapOf(
+                        "stage" to "negotiation",
+                        "targetProfile" to targetProfile.name,
+                        "attemptedGeneration" to provisionalGen
+                    ),
+                    t
+                )
                 return ProfileChangeResult.InitializationFailed(
                     previousConfig = previousConfig,
                     requestedProfile = targetProfile,
@@ -806,6 +866,9 @@ class StreamProfileTransactionManager(
                 "AudioCaptureService",
                 "GENERATION_CREATED: ${newConfig.toSummaryString()}"
             )
+            HatDiagnostics.info("CONFIG_NEGOTIATED", newConfig.diagnosticFields(rxCapabilitiesList.size))
+            HatDiagnostics.lifecycle("GENERATION_CREATED", provisionalGen)
+            val initStartNs = System.nanoTime()
 
             // Step 3: Initialize the COMPLETE new capture pipeline (AudioRecord + required encoder
             // resources) BEFORE committing or announcing anything. A failure here aborts the transaction.
@@ -822,6 +885,7 @@ class StreamProfileTransactionManager(
                 false
             }
 
+            initDurationNs = System.nanoTime() - initStartNs
             if (!pipelineReady) {
                 // Rollback: the previous configuration/generation stay authoritative, nothing is announced,
                 // no producer is started and transmission stays inactive (clean stopped state).
@@ -830,6 +894,19 @@ class StreamProfileTransactionManager(
                     "AudioCaptureService",
                     "PROFILE_CHANGE_ABORTED: ${newConfig.toSummaryString()} was never committed or announced; " +
                         "previousGeneration=$currentGen remains authoritative"
+                )
+                HatDiagnostics.increment("config_init_failures")
+                HatDiagnostics.error(
+                    "CONFIG_FAILURE",
+                    linkedMapOf(
+                        "stage" to "capture_pipeline_init",
+                        "attemptedGeneration" to provisionalGen,
+                        "profile" to targetProfile.name,
+                        "initMs" to (initDurationNs / 1_000_000.0),
+                        "committed" to false,
+                        "announced" to false
+                    ),
+                    initFailure
                 )
                 return ProfileChangeResult.InitializationFailed(
                     previousConfig = previousConfig,
@@ -848,6 +925,17 @@ class StreamProfileTransactionManager(
                 "AudioCaptureService",
                 "CONFIG_APPLIED: ${newConfig.toSummaryString()}"
             )
+            HatDiagnostics.setGeneration(provisionalGen, newConfig.diagnosticFields(rxCapabilitiesList.size))
+            HatDiagnostics.info(
+                "CONFIG_COMMITTED",
+                newConfig.diagnosticFields(rxCapabilitiesList.size) +
+                    mapOf(
+                        "stopMs" to (stopDurationNs / 1_000_000.0),
+                        "initMs" to (initDurationNs / 1_000_000.0),
+                        "transactionMs" to ((System.nanoTime() - transactionStartNs) / 1_000_000.0)
+                    )
+            )
+            HatDiagnostics.lifecycle("GENERATION_COMMITTED", provisionalGen)
 
             // Step 5: Announce the committed generation so receivers can adopt it before packets arrive.
             // An announcement failure must not be swallowed, and must not leave the generation half-live.
@@ -871,6 +959,20 @@ class StreamProfileTransactionManager(
                     "PROFILE_CHANGE_ABORTED_AFTER_COMMIT: generation=$provisionalGen stays consumed, " +
                         "authoritative config rolled back, pipeline released, transmitter stopped"
                 )
+                HatDiagnostics.increment("config_announce_failures")
+                HatDiagnostics.error(
+                    "CONFIG_FAILURE",
+                    linkedMapOf(
+                        "stage" to "announcement",
+                        "abandonedGeneration" to provisionalGen,
+                        "profile" to targetProfile.name,
+                        "committed" to true,
+                        "announced" to false,
+                        "producerStarted" to false
+                    ),
+                    announcementFailure
+                )
+                HatDiagnostics.lifecycle("GENERATION_STOPPED", provisionalGen, mapOf("reason" to "announcement_failed"))
                 return ProfileChangeResult.AnnouncementFailed(
                     previousConfig = previousConfig,
                     requestedProfile = targetProfile,
@@ -879,11 +981,26 @@ class StreamProfileTransactionManager(
                 )
             }
 
+            // Announcement succeeded exactly now: this is the boundary receivers have observed.
+            HatDiagnostics.info("CONFIG_ANNOUNCED", newConfig.diagnosticFields(rxCapabilitiesList.size))
+            HatDiagnostics.lifecycle("GENERATION_ANNOUNCED", provisionalGen)
+
             // Step 6: Start the producer for the already initialized pipeline. Final activation step.
             val producerStarted = try {
                 onResumeTransmission?.invoke(newConfig) ?: true
             } catch (t: Throwable) {
                 Log.e("AudioCaptureService", "PRODUCER_START_FAILED: ${newConfig.toSummaryString()}", t)
+                HatDiagnostics.error(
+                    "CONFIG_FAILURE",
+                    linkedMapOf(
+                        "stage" to "producer_start",
+                        "generation" to provisionalGen,
+                        "profile" to targetProfile.name,
+                        "committed" to true,
+                        "announced" to true
+                    ),
+                    t
+                )
                 false
             }
 
@@ -895,9 +1012,18 @@ class StreamProfileTransactionManager(
                     "AudioCaptureService",
                     "PROFILE_CHANGE_PRODUCER_START_FAILED: releasing pipeline and leaving transmitter stopped for ${newConfig.toSummaryString()}"
                 )
+                HatDiagnostics.increment("config_producer_start_failures")
+                HatDiagnostics.lifecycle("GENERATION_STOPPED", provisionalGen, mapOf("reason" to "producer_start_failed"))
                 releaseInitializedPipeline(onStopTransmission, provisionalGen)
             } else {
                 isTransmissionActive = true
+                HatDiagnostics.info(
+                    "CONFIG_ACTIVE",
+                    newConfig.diagnosticFields(rxCapabilitiesList.size) + mapOf(
+                        "producerStarted" to true,
+                        "transactionMs" to ((System.nanoTime() - transactionStartNs) / 1_000_000.0)
+                    )
+                )
             }
 
             // Requirement 8: PROFILE_CHANGE_COMPLETE
@@ -939,6 +1065,11 @@ class StreamProfileTransactionManager(
      */
     fun markProducerStopped() {
         isTransmissionActive = false
+        HatDiagnostics.lifecycle(
+            "GENERATION_STOPPED",
+            HatDiagnostics.generation(),
+            mapOf("reason" to "worker_exited")
+        )
     }
 
     fun reset() {

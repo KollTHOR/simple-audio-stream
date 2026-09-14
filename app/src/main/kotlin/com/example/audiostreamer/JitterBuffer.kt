@@ -45,6 +45,14 @@ class JitterBuffer(
     private val plc = PacketLossConcealment()
     private val fecHistory = FecHistoryBuffer(32)
 
+    // Bounded diagnostic counters (instrumentation only: no algorithm behaviour change). Sampled once per
+    // statistics interval by HatDiagnostics, never logged per packet.
+    private val droppedPackets = java.util.concurrent.atomic.AtomicLong(0L)
+    private val duplicatePackets = java.util.concurrent.atomic.AtomicLong(0L)
+    private val latePackets = java.util.concurrent.atomic.AtomicLong(0L)
+    private val concealedPackets = java.util.concurrent.atomic.AtomicLong(0L)
+    private val outOfOrderPackets = java.util.concurrent.atomic.AtomicLong(0L)
+
     private var currentProfile: String = initialProfile
     private var slotCount: Int = AudioConfig.getJitterBufferSlots(initialProfile)
     private var preRollThreshold: Int = AudioConfig.getPreRollPackets(initialProfile)
@@ -98,6 +106,7 @@ class JitterBuffer(
             sequenceTracker.advanceExpectedReadSeq()
             currSeq = sequenceTracker.expectedReadSeq
             if (wasFilled) {
+                droppedPackets.incrementAndGet()
                 val frames = calculateFramesForPayload(len)
                 playbackScheduler.advanceExpectedReadTimestamp(frames, ts)
                 break
@@ -209,6 +218,7 @@ class JitterBuffer(
                     playbackScheduler.setExpectedReadTimestamp(timestamp)
                 } else {
                     // Outdated packet already passed playback point
+                    latePackets.incrementAndGet()
                     return
                 }
             }
@@ -222,6 +232,7 @@ class JitterBuffer(
             val slot = packetBuffer.getSlot(sequence)
             if (packetBuffer.isSlotOccupiedBy(slot, sequence)) {
                 // Duplicate packet
+                duplicatePackets.incrementAndGet()
                 return
             }
 
@@ -233,6 +244,11 @@ class JitterBuffer(
             fecHistory.record(sequence, timestamp, data, offset, length)
 
             driftController.updateFill(packetBuffer.availableCount, jitterEstimator.targetWatermarkSlots)
+
+            val previousPacketSeq = jitterEstimator.lastPacketSeq
+            if (previousPacketSeq != -1 && SequenceTracker.diff(sequence, previousPacketSeq) < 0) {
+                outOfOrderPackets.incrementAndGet()
+            }
 
             jitterEstimator.onPacketArrived(
                 nowNanos = System.nanoTime(),
@@ -479,6 +495,7 @@ class JitterBuffer(
                     return len
                 }
 
+                concealedPackets.incrementAndGet()
                 plc.synthesizeLossConcealment(output, len, is24BitStream)
                 return len
             }
@@ -511,4 +528,15 @@ class JitterBuffer(
     fun getCurrentProfile(): String = lock.withLock { currentProfile }
     fun getEstimatedJitterMs(): Double = lock.withLock { jitterEstimator.estimatedJitterMs }
     fun getTargetWatermarkMs(): Float = lock.withLock { jitterEstimator.targetWatermarkMs }
+
+    // --- Diagnostics accessors (read-only telemetry; do not affect buffering behaviour) ---
+    fun getDroppedPackets(): Long = droppedPackets.get()
+    fun getDuplicatePackets(): Long = duplicatePackets.get()
+    fun getLatePackets(): Long = latePackets.get()
+    fun getConcealedPackets(): Long = concealedPackets.get()
+    fun getOutOfOrderPackets(): Long = outOfOrderPackets.get()
+    fun getCorrectionRatio(): Double = lock.withLock { driftController.correctionRatio }
+    fun getPreRollPackets(): Int = lock.withLock { preRollThreshold }
+    fun getPacketDurationMs(): Float = lock.withLock { packetDurationMs }
+    fun calculateFramesForCurrentPayload(length: Int): Int = lock.withLock { calculateFramesForPayload(length) }
 }
