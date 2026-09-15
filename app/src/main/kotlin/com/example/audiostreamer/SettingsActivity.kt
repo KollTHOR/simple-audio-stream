@@ -543,19 +543,37 @@ class SettingsActivity : AppCompatActivity() {
     private fun renderHatTestProgress(progress: HatTestProgress) {
         val stateText = when (progress.state) {
             HatTestState.IDLE -> "Idle"
-            HatTestState.PREPARING -> "Preparing"
+            HatTestState.PREPARING -> if (progress.receiverParticipating) "Preparing" else "Waiting for receiver..."
             HatTestState.RUNNING -> "Running"
             HatTestState.COMPLETING -> "Completing"
             HatTestState.EXPORTING -> "Exporting"
             HatTestState.COMPLETED -> "Completed"
             HatTestState.FAILED -> "Failed"
             HatTestState.CANCELLED -> "Cancelled"
+            HatTestState.NOT_EXECUTED -> "Not Executed"
         }
-        val verdict = progress.report?.summary?.verdict?.let { " ($it)" } ?: ""
+        val rawVerdict = progress.report?.summary?.verdict
+        // Block displaying PASS until receiver participation is verified
+        val verdict = when {
+            rawVerdict == null -> ""
+            rawVerdict == "PASS" && !progress.receiverParticipating -> " (INCOMPLETE)"
+            else -> " ($rawVerdict)"
+        }
         tvHatTestState.text = "State: $stateText$verdict"
         pbHatTest.progress = (progress.overallProgress * 100f).toInt().coerceIn(0, 100)
 
         tvHatTestProgress.text = buildString {
+            if (progress.testSessionId != null) {
+                append("Session: ${progress.testSessionId}\n")
+            }
+            if (progress.txDevice != null || progress.rxDevice != null) {
+                val tx = progress.txDevice ?: "Transmitter"
+                val rx = progress.rxDevice ?: if (progress.receiverParticipating) "Receiver" else "Waiting for receiver..."
+                append("TX: $tx • RX: $rx\n")
+            }
+            if (progress.currentGeneration > 0L) {
+                append("Generation: ${progress.currentGeneration}\n")
+            }
             if (progress.scenarioCount > 0 && progress.scenarioIndex > 0) {
                 append("Scenario ${progress.scenarioIndex}/${progress.scenarioCount}")
                 progress.scenarioName?.let { append(": $it") }
@@ -566,8 +584,8 @@ class SettingsActivity : AppCompatActivity() {
             if (progress.exportedFiles.isNotEmpty()) {
                 append("\nExported: ${progress.exportedFiles.joinToString(", ")}")
             }
-            if (progress.state == HatTestState.FAILED) {
-                progress.error?.takeIf { it.isNotBlank() }?.let { append("\nError: $it") }
+            if (progress.state == HatTestState.FAILED || progress.state == HatTestState.NOT_EXECUTED) {
+                progress.error?.takeIf { it.isNotBlank() }?.let { append("\nReason: $it") }
             }
         }
 

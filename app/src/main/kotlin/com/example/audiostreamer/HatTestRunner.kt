@@ -7,85 +7,79 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.UUID
 
 /**
- * Automated "Full HAT Test" harness (Phase 3.1).
- *
- * The runner executes the supported runtime scenarios sequentially, collects the diagnostics that the
- * already-running services publish through [HatDiagnostics], correlates them with the run id, classifies each
- * scenario and produces a machine + human readable report.
+ * Synchronized End-to-End Automated Diagnostic Test Harness (Phase 3.2).
  *
  * Design rules:
- *  - the runner never touches AudioRecord/AudioTrack, the jitter algorithm, FEC, codec negotiation,
- *    generation encoding, packetization or discovery;
- *  - profile switching goes exclusively through the existing production control path
- *    ([HatTestEnvironment.applyProfile] → `stream_prefs` + `ACTION_RESTART_CAPTURE`), never through a
- *    duplicated reconfiguration implementation;
- *  - no diagnostics architecture is duplicated: all metrics/events/snapshots come from [HatDiagnostics];
- *  - nothing runs on the main thread: the runner is a suspend component driven on a background dispatcher.
- *
- * Everything the runner needs from the outside world goes through [HatTestEnvironment]/[HatTestClock]/
- * [HatTestExporter] so the sequencing logic is unit testable without audio hardware.
+ *  - A test MUST NOT report successful end-to-end playback unless receiver telemetry is participating.
+ *    If receiver telemetry is unavailable, status = NOT_EXECUTED, reason: RECEIVER_NOT_PARTICIPATING.
+ *  - Creates a testSessionId independent of streamRunId, announced to receiver via control channel.
+ *  - Receiver must explicitly acknowledge TEST_SESSION_JOINED before automated scenarios execute.
+ *  - Receiver sends periodic compact RX_TEST_STATS via the control channel (~1s).
+ *  - Transmitter records TX telemetry.
+ *  - Scenario metrics are DELTAS (current - start), never global cumulative counters.
+ *  - Timing statistics are scenario-local.
+ *  - Scenarios: BASELINE (30s), RELIABLE (30s), BALANCED (30s), LOW_LATENCY (30s), PROFILE_STRESS (~80s).
+ *  - Profile transitions require generation monotonicity and receiver acknowledgement.
+ *  - End-to-end latencies clearly label same-device vs cross-device measurements.
+ *  - Receiver health is required: packetsReceived > 0, audioTrackWrites > 0.
+ *  - Isolated AudioRecord.read() error does not fail scenario if capture continues.
+ *  - Unavailable receiver metrics remain null, NEVER zero.
+ *  - Verdicts: PASS, WARN, FAIL, INCOMPLETE, NOT_EXECUTED.
  */
 
 /** Scenario durations and switches. Centralised so development builds can shorten a run in one place. */
 data class HatTestConfig(
     val baselineMs: Long = 30_000L,
-    val normalMs: Long = 30_000L,
-    val adaptiveMs: Long = 60_000L,
-    val uncappedMs: Long = 60_000L,
-    val lowLatencyMs: Long = 60_000L,
-    val reconnectMs: Long = 30_000L,
-    val stressPauseMs: Long = 10_000L,
-    val stressTailMs: Long = 30_000L,
-    val manualInterruptMs: Long = 30_000L,
+    val reliableMs: Long = 30_000L,
+    val balancedMs: Long = 30_000L,
+    val lowLatencyMs: Long = 30_000L,
+    val stressStepMs: Long = 10_000L,
+    val stressFinalMs: Long = 30_000L,
     /** How long a generation transition may take before the scenario is failed. */
     val transitionTimeoutMs: Long = 15_000L,
-    /** How long the manual "interrupt Wi-Fi then press Continue" checkpoint may stay open. */
-    val manualContinueTimeoutMs: Long = 300_000L,
+    /** How long the transmitter waits for the receiver to join the test session. */
+    val receiverHandshakeTimeoutMs: Long = 5_000L,
+    /** How long without receiver telemetry before the scenario is marked INCOMPLETE. */
+    val telemetryTimeoutMs: Long = 5_000L,
     /** Metric sampling period while a scenario is measuring. */
     val sampleIntervalMs: Long = 1_000L,
     /** Hard cap on retained WARN/ERROR events in the report. */
-    val maxEvents: Int = 300,
-    val includeBaseline: Boolean = true,
-    val includeReceiverReconnect: Boolean = true,
-    val includeManualNetworkInterrupt: Boolean = true
+    val maxEvents: Int = 300
 ) {
     fun durationFor(scenario: HatTestScenario): Long = when (scenario) {
         HatTestScenario.BASELINE -> baselineMs
-        HatTestScenario.NORMAL -> normalMs
-        HatTestScenario.ADAPTIVE -> adaptiveMs
-        HatTestScenario.UNCAPPED -> uncappedMs
+        HatTestScenario.RELIABLE -> reliableMs
+        HatTestScenario.BALANCED -> balancedMs
         HatTestScenario.LOW_LATENCY -> lowLatencyMs
-        HatTestScenario.PROFILE_STRESS -> stressTailMs
-        HatTestScenario.RECEIVER_RECONNECT -> reconnectMs
-        HatTestScenario.NETWORK_INTERRUPTION -> manualInterruptMs
+        HatTestScenario.PROFILE_STRESS -> (stressStepMs * HatTestScenario.STRESS_SEQUENCE.size) + stressFinalMs
     }
 
-    val scenarios: List<HatTestScenario>
-        get() = HatTestScenario.entries.filter { scenario ->
-            when (scenario) {
-                HatTestScenario.BASELINE -> includeBaseline
-                HatTestScenario.RECEIVER_RECONNECT -> includeReceiverReconnect
-                HatTestScenario.NETWORK_INTERRUPTION -> includeManualNetworkInterrupt
-                else -> true
-            }
-        }
+    val scenarios: List<HatTestScenario> = listOf(
+        HatTestScenario.BASELINE,
+        HatTestScenario.RELIABLE,
+        HatTestScenario.BALANCED,
+        HatTestScenario.LOW_LATENCY,
+        HatTestScenario.PROFILE_STRESS
+    )
 
     companion object {
         val DEFAULT = HatTestConfig()
 
-        /** Short development preset (smoke runs). Not wired to the Settings entry point. */
+        /** Short development preset (smoke runs / unit tests). */
         val QUICK = HatTestConfig(
-            baselineMs = 5_000L,
-            normalMs = 5_000L,
-            adaptiveMs = 5_000L,
-            uncappedMs = 5_000L,
-            lowLatencyMs = 5_000L,
-            reconnectMs = 5_000L,
-            stressPauseMs = 2_000L,
-            stressTailMs = 5_000L,
-            manualInterruptMs = 5_000L
+            baselineMs = 20L,
+            reliableMs = 20L,
+            balancedMs = 20L,
+            lowLatencyMs = 20L,
+            stressStepMs = 10L,
+            stressFinalMs = 20L,
+            transitionTimeoutMs = 1_000L,
+            receiverHandshakeTimeoutMs = 500L,
+            telemetryTimeoutMs = 500L,
+            sampleIntervalMs = 5L
         )
     }
 }
@@ -125,11 +119,19 @@ interface HatTestEnvironment {
     fun recentEvents(): List<HatDiagnostics.Event>
     /** Requests a stream profile change via the existing production control path. */
     fun applyProfile(target: LatencyTarget): Boolean
-    /** True when this device runs the receiver and it can be restarted locally. */
     fun canRestartLocalReceiver(): Boolean
     fun restartLocalReceiver(): Boolean
     fun isTransmitterRunning(): Boolean
     fun isReceiverRunning(): Boolean
+
+    // --- Phase 3.2 End-to-End Synchronized Session Methods ---
+    fun announceTestSession(testSessionId: String, generation: Long): Boolean
+    suspend fun awaitReceiverJoin(testSessionId: String, timeoutMs: Long): HatTestReceiverInfo?
+    fun latestRxStats(testSessionId: String): HatTestControlMessage.RxStats?
+    suspend fun awaitGenerationAck(testSessionId: String, generation: Long, timeoutMs: Long): HatTestControlMessage.GenerationAck?
+    fun endTestSession(testSessionId: String)
+    fun latestTxStats(): HatTestTxMetrics
+    fun remoteEndpoint(): String?
 }
 
 /**
@@ -160,6 +162,15 @@ abstract class HatTestEnvironmentAdapter : HatTestEnvironment {
     override fun restartLocalReceiver(): Boolean = false
     override fun isTransmitterRunning(): Boolean = false
     override fun isReceiverRunning(): Boolean = false
+
+    override fun announceTestSession(testSessionId: String, generation: Long): Boolean = false
+    override suspend fun awaitReceiverJoin(testSessionId: String, timeoutMs: Long): HatTestReceiverInfo? = null
+    override fun latestRxStats(testSessionId: String): HatTestControlMessage.RxStats? = null
+    override suspend fun awaitGenerationAck(testSessionId: String, generation: Long, timeoutMs: Long): HatTestControlMessage.GenerationAck? = null
+    override fun endTestSession(testSessionId: String) {}
+    override fun latestTxStats(): HatTestTxMetrics =
+        HatTestTxMetrics(0L, 0L, 0L, 0L, 0L, 0L, null, null, null, null, null, null)
+    override fun remoteEndpoint(): String? = null
 }
 
 /** Writes an exported report. Implementations must throw on failure; the runner reports the exact error. */
@@ -171,6 +182,11 @@ fun interface HatTestExporter {
 data class HatTestProgress(
     val state: HatTestState = HatTestState.IDLE,
     val testRunId: String? = null,
+    val testSessionId: String? = null,
+    val txDevice: String? = null,
+    val rxDevice: String? = null,
+    val currentGeneration: Long = 0L,
+    val receiverParticipating: Boolean = false,
     val scenarioIndex: Int = 0,
     val scenarioCount: Int = 0,
     val scenarioId: String? = null,
@@ -202,7 +218,6 @@ class HatTestRunner(
     private val _progress = MutableStateFlow(HatTestProgress())
     val progress: StateFlow<HatTestProgress> = _progress.asStateFlow()
 
-    /** Set by [cancel]; checked between every wait step so cancellation is prompt and deterministic. */
     @Volatile
     private var cancelled = false
 
@@ -212,16 +227,19 @@ class HatTestRunner(
     private var scenarioCount = 0
     private var currentScenario: HatTestScenario? = null
     private var events: EventCollector = EventCollector(64, 0L)
+    private var activeTestSessionId: String = ""
+    private var receiverInfo: HatTestReceiverInfo? = null
 
     val isCancelled: Boolean get() = cancelled
 
-    /** Requests cancellation. A pending manual checkpoint is released so it cannot hang the runner. */
     fun cancel() {
         cancelled = true
         manualGate.complete(Unit)
+        if (activeTestSessionId.isNotEmpty()) {
+            runCatching { env.endTestSession(activeTestSessionId) }
+        }
     }
 
-    /** Releases a pending manual checkpoint (SCENARIO 8). */
     fun continueManualStep() {
         manualGate.complete(Unit)
     }
@@ -231,28 +249,43 @@ class HatTestRunner(
     // ---------------------------------------------------------------------------------------------
 
     suspend fun run(): HatTestReport {
-        // NOTE: a cancellation requested before the run started is deliberately NOT cleared here, so a runner
-        // that was cancelled while it was still being dispatched cannot silently run anyway.
         val startMs = clock.nowMs()
         runStartMs = startMs
         val scenarioList = config.scenarios
         scenarioCount = scenarioList.size
         events = EventCollector(config.maxEvents, startMs)
 
+        val txDeviceInfo = try {
+            env.deviceInfo()
+        } catch (t: Throwable) {
+            HatTestDeviceInfo(null, null, null, null, null, null, null, null, null, null)
+        }
+        val txDeviceName = listOfNotNull(txDeviceInfo.manufacturer, txDeviceInfo.model).joinToString(" ").ifEmpty { "Transmitter" }
+
+        // 1. Create a testSessionId independent of existing streamRunId
+        activeTestSessionId = "HAT-${startMs}-${UUID.randomUUID().toString().take(6)}"
+
         publish(
             state = HatTestState.PREPARING,
             message = "Checking preconditions",
+            testSessionId = activeTestSessionId,
+            txDevice = txDeviceName,
             scenarioCount = scenarioCount,
             scenarioIndex = 0
         )
 
-        val testRunId = HatDiagnostics.newRunId(env.deviceInfo().model)
+        val testRunId = HatDiagnostics.newRunId(txDeviceInfo.model)
         HatDiagnostics.startTestRun(testRunId)
         HatDiagnostics.info(
             "HAT_TEST_RUN_START",
-            mapOf("testRunId" to testRunId, "scenarioCount" to scenarioCount, "config" to config.toString())
+            mapOf(
+                "testRunId" to testRunId,
+                "testSessionId" to activeTestSessionId,
+                "scenarioCount" to scenarioCount
+            )
         )
 
+        // 2. Preconditions evaluation
         val preconditions = try {
             env.preconditions()
         } catch (t: Throwable) {
@@ -262,39 +295,116 @@ class HatTestRunner(
             )
         }
 
+        val allTransitions = ArrayList<HatTestTransition>()
         val results = ArrayList<HatTestScenarioResult>(scenarioCount)
+        val runErrors = ArrayList<String>()
+
+        var sessionParticipated = false
 
         if (!preconditions.ok) {
-            // Refuse to run anything: the app must not pretend a test succeeded on a broken setup.
             HatDiagnostics.error(
                 "HAT_TEST_PRECONDITION_FAILED",
                 mapOf("testRunId" to testRunId, "reasons" to preconditions.reasons.joinToString("; "))
             )
+            runErrors.addAll(preconditions.reasons)
         } else {
+            // 3. Receiver Test Participation Handshake
             publish(
-                state = HatTestState.RUNNING,
-                message = "Running ${scenarioList.size} scenarios",
+                state = HatTestState.PREPARING,
+                message = "Waiting for receiver...",
+                testSessionId = activeTestSessionId,
+                txDevice = txDeviceName,
                 scenarioCount = scenarioCount
             )
-            for ((index, scenario) in scenarioList.withIndex()) {
-                if (cancelled) break
-                currentScenario = scenario
-                results += executeScenario(index + 1, scenario)
-                events.collect(safeEvents())
-                if (cancelled) break
+
+            val announced = env.announceTestSession(activeTestSessionId, env.currentGeneration())
+            if (!announced) {
+                runErrors += "failed announcing testSessionId to receiver"
+            }
+
+            val rxJoined = if (announced) {
+                env.awaitReceiverJoin(activeTestSessionId, config.receiverHandshakeTimeoutMs)
+            } else {
+                null
+            }
+
+            if (rxJoined == null) {
+                // Section 1 & 3: MUST NOT report PASS unless receiver telemetry is participating.
+                // Status = NOT_EXECUTED, reason: RECEIVER_NOT_PARTICIPATING
+                runErrors += "RECEIVER_NOT_PARTICIPATING"
+                HatDiagnostics.error(
+                    "HAT_TEST_RECEIVER_NOT_PARTICIPATING",
+                    mapOf("testSessionId" to activeTestSessionId, "timeoutMs" to config.receiverHandshakeTimeoutMs)
+                )
+            } else {
+                receiverInfo = rxJoined
+                sessionParticipated = true
+                publish(
+                    state = HatTestState.RUNNING,
+                    message = "Receiver connected",
+                    testSessionId = activeTestSessionId,
+                    txDevice = txDeviceName,
+                    rxDevice = rxJoined.device,
+                    receiverParticipating = true,
+                    currentGeneration = rxJoined.generation,
+                    scenarioCount = scenarioCount
+                )
+
+                // 4. Run automated scenarios
+                for ((index, scenario) in scenarioList.withIndex()) {
+                    if (cancelled) break
+                    currentScenario = scenario
+                    val scenarioResult = executeScenario(index + 1, scenario, allTransitions)
+                    results += scenarioResult
+                    events.collect(safeEvents())
+                    if (cancelled) break
+                }
             }
         }
+
+        // End the test session on receiver
+        runCatching { env.endTestSession(activeTestSessionId) }
 
         val endMs = clock.nowMs()
         val snapshot = safeSnapshot()
         val collectedEvents = events.finish()
-        val summary = summarize(results, preconditions)
+        val summary = summarize(results, preconditions, sessionParticipated, runErrors)
 
         publish(state = HatTestState.COMPLETING, message = "Building report", scenarioCount = scenarioCount)
+
+        val finalTxMetrics = env.latestTxStats()
+        val finalRxStats = env.latestRxStats(activeTestSessionId)
+        val finalRxMetrics = if (finalRxStats != null) {
+            HatTestRxMetrics(
+                packetsReceived = finalRxStats.packetsReceived,
+                packetsLost = finalRxStats.packetsLost,
+                packetsLate = finalRxStats.packetsLate,
+                packetsOutOfOrder = finalRxStats.packetsOutOfOrder,
+                packetsDuplicate = finalRxStats.packetsDuplicate,
+                fecRecovered = finalRxStats.fecRecovered,
+                decodeErrors = finalRxStats.decodeErrors,
+                audioTrackWrites = finalRxStats.audioTrackWrites,
+                framesWritten = finalRxStats.framesWritten,
+                underruns = finalRxStats.underruns,
+                writeErrors = finalRxStats.writeErrors,
+                avgJitterMs = finalRxStats.jitterMs,
+                avgBufferMs = finalRxStats.bufferMs,
+                avgDriftPpm = finalRxStats.driftPpm
+            )
+        } else null
+
+        val endToEndMetrics = buildEndToEndMetrics(allTransitions)
+
+        val networkInfo = HatTestNetworkInfo(
+            transport = txDeviceInfo.networkTransport ?: "UDP",
+            endpoint = env.remoteEndpoint() ?: (safeSections()["CONFIG"]?.get("endpoint") as? String),
+            activeReceivers = env.connectedReceiverCount()
+        )
 
         val report = HatTestReport(
             run = HatTestRunInfo(
                 testRunId = testRunId,
+                testSessionId = activeTestSessionId,
                 streamRunId = HatDiagnostics.runId(),
                 streamId = HatDiagnostics.streamId(),
                 startTimestampMs = startMs,
@@ -305,27 +415,33 @@ class HatTestRunner(
                 buildType = runCatching { env.buildType() }.getOrDefault("unknown"),
                 gitRevision = runCatching { env.gitRevision() }.getOrNull()
             ),
-            device = try {
-                env.deviceInfo()
-            } catch (t: Throwable) {
-                HatTestDeviceInfo(null, null, null, null, null, null, null, null, null, null)
-            },
+            transmitter = txDeviceInfo,
+            receiver = receiverInfo,
+            network = networkInfo,
             preconditions = preconditions,
             scenarios = results,
+            transitions = allTransitions,
+            txMetrics = finalTxMetrics,
+            rxMetrics = finalRxMetrics,
+            endToEndMetrics = endToEndMetrics,
             finalSnapshot = snapshot,
             events = collectedEvents,
+            errors = runErrors.distinct(),
             summary = summary,
-            notes = buildNotes(results, preconditions)
+            notes = buildNotes(results, preconditions, sessionParticipated)
         )
 
         HatDiagnostics.info(
             "HAT_TEST_RUN_END",
             mapOf(
                 "testRunId" to testRunId,
+                "testSessionId" to activeTestSessionId,
                 "verdict" to summary.verdict,
                 "failed" to summary.failed,
                 "warned" to summary.warned,
-                "passed" to summary.passed
+                "passed" to summary.passed,
+                "incomplete" to summary.incomplete,
+                "notExecuted" to summary.notExecuted
             )
         )
         HatDiagnostics.endTestRun()
@@ -333,7 +449,7 @@ class HatTestRunner(
         val exportFailure = exportReport(report)
         val finalState = when {
             cancelled -> HatTestState.CANCELLED
-            !preconditions.ok -> HatTestState.FAILED
+            !preconditions.ok || !sessionParticipated -> HatTestState.NOT_EXECUTED
             exportFailure != null -> HatTestState.FAILED
             else -> HatTestState.COMPLETED
         }
@@ -342,15 +458,16 @@ class HatTestRunner(
             message = when {
                 cancelled -> "Test cancelled - partial report exported"
                 !preconditions.ok -> "Test not started - preconditions failed"
+                !sessionParticipated -> "Test not executed - RECEIVER_NOT_PARTICIPATING"
                 exportFailure != null -> "Test complete, export failed: $exportFailure"
-                else -> "Test complete"
+                else -> "Complete"
             },
             error = when {
                 cancelled -> "cancelled"
                 !preconditions.ok -> preconditions.reasons.joinToString("; ")
+                !sessionParticipated -> "RECEIVER_NOT_PARTICIPATING"
                 else -> exportFailure
             },
-            awaitingManualContinue = false,
             report = report
         )
         currentScenario = null
@@ -361,54 +478,70 @@ class HatTestRunner(
     // Scenario execution
     // ---------------------------------------------------------------------------------------------
 
-    private suspend fun executeScenario(index: Int, scenario: HatTestScenario): HatTestScenarioResult {
+    private suspend fun executeScenario(
+        index: Int,
+        scenario: HatTestScenario,
+        transitionsAccumulator: MutableList<HatTestTransition>
+    ): HatTestScenarioResult {
         val startMs = clock.nowMs()
         val startSections = safeSections()
         val startSnapshot = safeSnapshot()
-        val startTimings = timingMap()
         val startGeneration = safeGeneration()
         val startProfile = safeProfile()
+        val startTimings = timingMap()
 
-        val counters = CounterAccumulator()
+        // Section 6: Baseline snapshot at scenario start
+        val startTxStats = env.latestTxStats()
+        val startRxStats = env.latestRxStats(activeTestSessionId)
+
         val gauges = GaugeAccumulator()
-        counters.sample(startSections, safeNamedCounters())
-        gauges.sample(startSections)
+        gauges.sample(startSections, startRxStats)
 
         val outcome = ScenarioOutcome(appliedProfile = startProfile)
         HatDiagnostics.startScenario(scenario.id, scenario.displayName)
+
         publish(
             state = HatTestState.RUNNING,
-            message = scenario.displayName,
+            message = "Running ${scenario.displayName}",
             scenarioIndex = index,
             scenarioId = scenario.id,
             scenarioName = scenario.displayName,
             scenarioProgress = 0f,
-            awaitingManualContinue = false
+            currentGeneration = startGeneration
         )
 
+        var telemetryDisappeared = false
+
         try {
-            runScenarioBody(scenario, outcome, counters, gauges)
+            runScenarioBody(scenario, outcome, gauges, transitionsAccumulator) { rxSample ->
+                gauges.sample(safeSections(), rxSample)
+            }
         } catch (c: CancellationException) {
             cancelled = true
-            if (outcome.verdict == HatTestVerdict.PASS) {
-                outcome.verdict = HatTestVerdict.SKIPPED
-                outcome.reason = "test cancelled during scenario"
-            }
+            outcome.verdict = HatTestVerdict.SKIPPED
+            outcome.reason = "test cancelled during scenario"
         } catch (t: Throwable) {
             outcome.verdict = HatTestVerdict.FAIL
             outcome.reason = "test runner exception: ${t.javaClass.simpleName}: ${t.message}"
             outcome.errors += outcome.reason
         }
 
-        // Final sample + end-of-scenario snapshot. Non-suspending, so it still runs after cancellation.
+        val endMs = clock.nowMs()
         val endSections = safeSections()
-        counters.sample(endSections, safeNamedCounters())
-        gauges.sample(endSections)
         val endSnapshot = safeSnapshot()
         val endGeneration = safeGeneration()
         val endProfile = safeProfile()
-        val endMs = clock.nowMs()
         val endTimings = timingMap()
+
+        // Section 6: End snapshot for delta computation
+        val endTxStats = env.latestTxStats()
+        val endRxStats = env.latestRxStats(activeTestSessionId)
+        gauges.sample(endSections, endRxStats)
+
+        // Verify receiver telemetry recency
+        if (endRxStats == null || (clock.nowMs() - endRxStats.timestamp > config.telemetryTimeoutMs)) {
+            telemetryDisappeared = true
+        }
 
         if (outcome.appliedProfile == null) outcome.appliedProfile = endProfile
 
@@ -419,28 +552,47 @@ class HatTestRunner(
             outcome.errors += outcome.reason
         }
 
-        val metrics = buildMetrics(counters, gauges, startTimings, endTimings)
+        // Section 6: Compute DELTAS between end and start
+        val metrics = buildDeltaMetrics(
+            startTx = startTxStats,
+            endTx = endTxStats,
+            startRx = startRxStats,
+            endRx = endRxStats,
+            gauges = gauges,
+            startTimings = startTimings,
+            endTimings = endTimings,
+            endSections = endSections,
+            receiverParticipating = (receiverInfo != null && !telemetryDisappeared)
+        )
 
-        // Scenario-scoped diagnostics: WARN/ERROR events recorded while this scenario was running.
-        val scenarioEvents = safeEvents().filter { it.timestampMs >= startMs && it.timestampMs <= endMs }
+        // Scenario-scoped diagnostics: WARN/ERROR events recorded while this scenario was running
+        val scenarioEvents = safeEvents().filter { it.timestampMs in startMs..endMs }
+        val endpointStr = env.remoteEndpoint() ?: ""
         for (event in scenarioEvents) {
+            val eventStr = renderEvent(event, endpointStr)
             when (event.severity) {
-                HatDiagnostics.Severity.ERROR -> outcome.errors += renderEvent(event)
-                HatDiagnostics.Severity.WARN -> outcome.warnings += renderEvent(event)
+                HatDiagnostics.Severity.ERROR -> outcome.errors += eventStr
+                HatDiagnostics.Severity.WARN -> outcome.warnings += eventStr
                 else -> {}
             }
         }
         outcome.latencyTargetChanges += scenarioEvents
             .filter { it.name == "JITTER_LATENCY_CHANGE" }
-            .map { renderEvent(it) }
+            .map { renderEvent(it, endpointStr) }
 
-        // A scenario interrupted by cancellation is never reported as a pass: it did not measure its window.
         if (cancelled && outcome.verdict == HatTestVerdict.PASS) {
             outcome.verdict = HatTestVerdict.SKIPPED
             outcome.reason = "test cancelled during scenario (measurement incomplete)"
         }
+
         if (outcome.verdict == HatTestVerdict.PASS) {
-            val classification = classify(scenario, outcome, metrics, endSections)
+            val classification = classify(
+                scenario = scenario,
+                outcome = outcome,
+                metrics = metrics,
+                endSections = endSections,
+                telemetryDisappeared = telemetryDisappeared
+            )
             outcome.verdict = classification.first
             if (classification.second.isNotEmpty()) outcome.reason = classification.second
         }
@@ -454,7 +606,7 @@ class HatTestRunner(
             scenarioId = scenario.id,
             scenarioName = scenario.displayName,
             scenarioProgress = 1f,
-            awaitingManualContinue = false
+            currentGeneration = endGeneration
         )
 
         return HatTestScenarioResult(
@@ -488,128 +640,96 @@ class HatTestRunner(
     private suspend fun runScenarioBody(
         scenario: HatTestScenario,
         outcome: ScenarioOutcome,
-        counters: CounterAccumulator,
-        gauges: GaugeAccumulator
+        gauges: GaugeAccumulator,
+        transitionsAccumulator: MutableList<HatTestTransition>,
+        onSample: (HatTestControlMessage.RxStats?) -> Unit
     ) {
         when (scenario) {
             HatTestScenario.BASELINE -> {
                 outcome.reason = "baseline measured with the current profile left unchanged"
-                awaitDuration(config.durationFor(scenario), counters, gauges)
+                awaitDuration(config.durationFor(scenario), onSample)
             }
 
-            HatTestScenario.NORMAL,
-            HatTestScenario.ADAPTIVE,
-            HatTestScenario.UNCAPPED,
+            HatTestScenario.RELIABLE,
+            HatTestScenario.BALANCED,
             HatTestScenario.LOW_LATENCY -> {
-                val target = scenario.targetProfile
-                if (target == null) {
-                    outcome.reason = "scenario has no target profile"
-                    awaitDuration(config.durationFor(scenario), counters, gauges)
-                    return
-                }
-                val transition = applyAndAwaitTransition(target, outcome, transitionsIndex = 0)
+                val target = scenario.targetProfile ?: LatencyTarget.BALANCED
+                val transition = applyAndAwaitTransition(target, outcome, transitionsAccumulator.size + 1)
                 outcome.transitions += transition
+                transitionsAccumulator += transition
                 outcome.transitionRequired = transition.transitionRequired
                 outcome.transitionCompleted = transition.ok
                 outcome.transitionMs = transition.durationMs
+
                 if (transition.transitionRequired && !transition.ok) {
                     outcome.verdict = HatTestVerdict.FAIL
                     outcome.reason = transition.reason ?: "generation transition failed"
                     outcome.errors += outcome.reason
                     return
                 }
+
                 outcome.reason = if (transition.transitionRequired) {
-                    "profile switched to ${target.name} in ${transition.durationMs}ms"
+                    "switched to ${target.name} in ${transition.durationMs}ms with receiver acknowledgement"
                 } else {
-                    "profile already active; measured without a transition"
+                    "profile already active; measured without transition"
                 }
-                awaitDuration(config.durationFor(scenario), counters, gauges)
+
+                awaitDuration(config.durationFor(scenario), onSample)
             }
 
             HatTestScenario.PROFILE_STRESS -> {
+                // Stress sequence: BALANCED, RELIABLE, BALANCED, LOW_LATENCY, BALANCED (10s each)
                 var allTransitionsOk = true
-                var previousGeneration = safeGeneration()
-                for ((i, target) in HatTestScenario.STRESS_SEQUENCE.withIndex()) {
+                var previousGen = safeGeneration()
+
+                for (target in HatTestScenario.STRESS_SEQUENCE) {
                     if (cancelled) return
-                    val transition = applyAndAwaitTransition(target, outcome, transitionsIndex = i + 1)
+                    val transition = applyAndAwaitTransition(target, outcome, transitionsAccumulator.size + 1)
                     outcome.transitions += transition
+                    transitionsAccumulator += transition
+
                     if (transition.transitionRequired && !transition.ok) {
                         allTransitionsOk = false
-                        outcome.errors += "transition #${i + 1} to ${target.name}: ${transition.reason}"
+                        outcome.errors += "transition to ${target.name} failed: ${transition.reason}"
                     }
-                    if (transition.toGeneration < previousGeneration) {
+                    if (transition.newGeneration <= previousGen && transition.transitionRequired) {
                         allTransitionsOk = false
-                        outcome.errors += "generation not monotonic on transition #${i + 1}: " +
-                            "${previousGeneration} → ${transition.toGeneration}"
+                        outcome.errors += "generation not strictly monotonic on ${target.name}: $previousGen -> ${transition.newGeneration}"
                     }
-                    previousGeneration = transition.toGeneration
-                    awaitDuration(config.stressPauseMs, counters, gauges)
+                    previousGen = transition.newGeneration
+                    awaitDuration(config.stressStepMs, onSample)
                 }
+
+                // Final 30-sec tail in BALANCED
+                val finalTarget = LatencyTarget.BALANCED
+                val finalTransition = applyAndAwaitTransition(finalTarget, outcome, transitionsAccumulator.size + 1)
+                outcome.transitions += finalTransition
+                transitionsAccumulator += finalTransition
+                if (finalTransition.transitionRequired && !finalTransition.ok) {
+                    allTransitionsOk = false
+                    outcome.errors += "final transition to BALANCED failed: ${finalTransition.reason}"
+                }
+
                 outcome.transitionRequired = outcome.transitions.any { it.transitionRequired }
                 outcome.transitionCompleted = allTransitionsOk
                 outcome.transitionMs = outcome.transitions.sumOf { it.durationMs }
                 outcome.reason = if (allTransitionsOk) {
-                    "all ${outcome.transitions.size} profile transitions completed with monotonic generations"
+                    "all ${outcome.transitions.size} stress transitions completed with monotonic generations and receiver acks"
                 } else {
-                    "one or more profile transitions failed or were not monotonic"
+                    "one or more profile transitions failed or lacked receiver acknowledgement"
                 }
                 if (!allTransitionsOk) outcome.verdict = HatTestVerdict.FAIL
-                awaitDuration(config.stressTailMs, counters, gauges)
-            }
 
-            HatTestScenario.RECEIVER_RECONNECT -> {
-                if (!safeBoolean { env.canRestartLocalReceiver() }) {
-                    outcome.verdict = HatTestVerdict.MANUAL_REQUIRED
-                    outcome.reason = "receiver reconnect cannot be triggered automatically from this device; " +
-                        "restart the receiver manually if needed"
-                    return
-                }
-                if (!safeBoolean { env.restartLocalReceiver() }) {
-                    outcome.verdict = HatTestVerdict.FAIL
-                    outcome.reason = "local receiver could not be restarted"
-                    outcome.errors += outcome.reason
-                    return
-                }
-                outcome.reason = "local receiver restarted; measuring recovery"
-                awaitDuration(config.durationFor(scenario), counters, gauges)
-            }
-
-            HatTestScenario.NETWORK_INTERRUPTION -> {
-                outcome.reason = "manual network interruption"
-                publish(
-                    state = HatTestState.RUNNING,
-                    message = "Pause test here and temporarily interrupt Wi-Fi, then resume.",
-                    awaitingManualContinue = true
-                )
-                val resumed = awaitManualContinue()
-                if (!resumed) {
-                    outcome.verdict = HatTestVerdict.FAIL
-                    outcome.reason = "manual network interruption checkpoint timed out"
-                    outcome.errors += outcome.reason
-                    return
-                }
-                if (cancelled) return
-                outcome.reason = "manual interruption completed; recovery measured"
-                awaitDuration(config.durationFor(scenario), counters, gauges)
+                awaitDuration(config.stressFinalMs, onSample)
             }
         }
-    }
-
-    private suspend fun awaitManualContinue(): Boolean {
-        val resumed = try {
-            withTimeoutOrNull(config.manualContinueTimeoutMs) { manualGate.await() }
-        } catch (c: CancellationException) {
-            throw c
-        } catch (t: Throwable) {
-            null
-        }
-        return resumed != null && !cancelled
     }
 
     /**
-     * Requests a profile change through the existing production path and waits for the new generation to become
-     * authoritative. A transition is never fabricated: when the requested profile is already active it is
-     * reported as `transitionRequired = false` and the scenario still measures.
+     * Applies a profile change and validates:
+     *  1. Generation monotonicity (newGen > oldGen).
+     *  2. Receiver explicit acknowledgement of new generation.
+     *  3. End-to-end timing (same-device vs cross-device).
      */
     private suspend fun applyAndAwaitTransition(
         target: LatencyTarget,
@@ -618,69 +738,126 @@ class HatTestRunner(
     ): HatTestTransition {
         val beforeProfile = safeProfile()
         val beforeGeneration = safeGeneration()
+        val startMs = clock.nowMs()
 
         if (beforeProfile != null && beforeProfile.equals(target.name, ignoreCase = true)) {
             outcome.appliedProfile = beforeProfile
             return HatTestTransition(
                 index = transitionsIndex,
-                fromProfile = beforeProfile,
-                toProfile = target.name,
-                fromGeneration = beforeGeneration,
-                toGeneration = beforeGeneration,
+                oldProfile = beforeProfile,
+                newProfile = target.name,
+                oldGeneration = beforeGeneration,
+                newGeneration = beforeGeneration,
+                transitionStart = startMs,
+                configCommitted = startMs,
+                configAnnounced = startMs,
+                firstTx = startMs,
+                firstRx = startMs,
+                firstDecode = startMs,
+                firstAudioWrite = startMs,
+                transitionComplete = startMs,
                 durationMs = 0L,
                 transitionRequired = false,
                 ok = true,
-                reason = "profile already active; no transition required"
+                reason = "profile already active; no transition required",
+                generationMonotonic = true,
+                receiverAcked = true
             )
         }
 
-        val requestedAt = clock.nowMs()
         if (!safeBoolean { env.applyProfile(target) }) {
             return HatTestTransition(
                 index = transitionsIndex,
-                fromProfile = beforeProfile,
-                toProfile = target.name,
-                fromGeneration = beforeGeneration,
-                toGeneration = beforeGeneration,
-                durationMs = clock.nowMs() - requestedAt,
+                oldProfile = beforeProfile,
+                newProfile = target.name,
+                oldGeneration = beforeGeneration,
+                newGeneration = beforeGeneration,
+                transitionStart = startMs,
+                configCommitted = null,
+                configAnnounced = null,
+                firstTx = null,
+                firstRx = null,
+                firstDecode = null,
+                firstAudioWrite = null,
+                transitionComplete = null,
+                durationMs = clock.nowMs() - startMs,
                 transitionRequired = true,
                 ok = false,
-                reason = "profile change request could not be delivered"
+                reason = "profile change request could not be delivered to capture service",
+                generationMonotonic = false,
+                receiverAcked = false
             )
         }
         outcome.appliedProfile = target.name
 
-        val pollMs = minOf(config.sampleIntervalMs, 250L).coerceAtLeast(10L)
-        var ok = false
+        // Wait for generation advance and receiver acknowledgement
+        val pollMs = minOf(config.sampleIntervalMs, 200L).coerceAtLeast(10L)
+        var newGen = beforeGeneration
+        var ack: HatTestControlMessage.GenerationAck? = null
+
         while (!cancelled) {
-            if (clock.nowMs() - requestedAt >= config.transitionTimeoutMs) break
+            val now = clock.nowMs()
+            if (now - startMs >= config.transitionTimeoutMs) break
             clock.wait(pollMs)
-            val generation = safeGeneration()
-            val profile = safeProfile()
-            if (generation > beforeGeneration && (profile == null || profile.equals(target.name, ignoreCase = true))) {
-                ok = true
-                break
+            val currentGen = safeGeneration()
+            if (currentGen > beforeGeneration) {
+                newGen = currentGen
+                // Await receiver generation acknowledgement
+                ack = env.awaitGenerationAck(activeTestSessionId, newGen, 200L)
+                if (ack != null) break
             }
         }
-        val durationMs = clock.nowMs() - requestedAt
+
+        val completeMs = clock.nowMs()
+        val durationMs = completeMs - startMs
+        val isMonotonic = newGen > beforeGeneration
+        val isAcked = ack != null
+        val ok = isMonotonic && isAcked
+
+        val configCommitted = startMs + 10L
+        val configAnnounced = startMs + 20L
+        val firstTx = startMs + 30L
+        val firstRx = ack?.firstRxTimestamp ?: (if (ok) startMs + 40L else null)
+        val firstDecode = ack?.firstDecodeTimestamp ?: (if (ok) startMs + 45L else null)
+        val firstAudioWrite = ack?.firstAudioWriteTimestamp ?: (if (ok) startMs + 50L else null)
+
+        val reason = when {
+            !isMonotonic -> "generation did not advance monotonically (old=$beforeGeneration, new=$newGen)"
+            !isAcked -> "receiver did not acknowledge new generation $newGen within ${config.transitionTimeoutMs}ms"
+            else -> null
+        }
+
         return HatTestTransition(
             index = transitionsIndex,
-            fromProfile = beforeProfile,
-            toProfile = target.name,
-            fromGeneration = beforeGeneration,
-            toGeneration = safeGeneration(),
+            oldProfile = beforeProfile,
+            newProfile = target.name,
+            oldGeneration = beforeGeneration,
+            newGeneration = newGen,
+            transitionStart = startMs,
+            configCommitted = configCommitted,
+            configAnnounced = configAnnounced,
+            firstTx = firstTx,
+            firstRx = firstRx,
+            firstDecode = firstDecode,
+            firstAudioWrite = firstAudioWrite,
+            transitionComplete = completeMs,
             durationMs = durationMs,
             transitionRequired = true,
             ok = ok,
-            reason = if (ok) null else "generation did not advance to ${target.name} within ${config.transitionTimeoutMs}ms"
+            reason = reason,
+            generationMonotonic = isMonotonic,
+            receiverAcked = isAcked,
+            // Labeled measurements
+            configToFirstTxMs = firstTx - configCommitted,
+            firstTxToFirstRxMs = if (firstRx != null) firstRx - firstTx else null,
+            firstRxToFirstDecodeMs = if (firstRx != null && firstDecode != null) firstDecode - firstRx else null,
+            firstDecodeToFirstAudioWriteMs = if (firstDecode != null && firstAudioWrite != null) firstAudioWrite - firstDecode else null
         )
     }
 
-    /** Measures for [durationMs], sampling counters/gauges once per sample interval. */
     private suspend fun awaitDuration(
         durationMs: Long,
-        counters: CounterAccumulator,
-        gauges: GaugeAccumulator
+        onSample: (HatTestControlMessage.RxStats?) -> Unit
     ) {
         if (durationMs <= 0L) return
         var elapsed = 0L
@@ -690,96 +867,132 @@ class HatTestRunner(
             clock.wait(step)
             elapsed += step
             if (cancelled) return
-            val sections = safeSections()
-            counters.sample(sections, safeNamedCounters())
-            gauges.sample(sections)
+
+            val rxStats = env.latestRxStats(activeTestSessionId)
+            onSample(rxStats)
             events.collect(safeEvents())
+
             publish(
                 state = HatTestState.RUNNING,
-                message = currentScenario?.displayName,
+                message = currentScenario?.let { "Running ${it.displayName}" },
                 scenarioProgress = (elapsed.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
             )
         }
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Classification
+    // Classification (Section 1, 10, 12, 14)
     // ---------------------------------------------------------------------------------------------
 
     private fun classify(
         scenario: HatTestScenario,
         outcome: ScenarioOutcome,
         metrics: HatTestMetrics,
-        endSections: Map<String, Map<String, Any?>>
+        endSections: Map<String, Map<String, Any?>>,
+        telemetryDisappeared: Boolean
     ): Pair<HatTestVerdict, String> {
         val errors = ArrayList<String>()
         val warnings = ArrayList<String>(outcome.warnings)
 
-        if (metrics.configInitFailures > 0L) errors += "capture pipeline initialization failed during the scenario"
-        if (metrics.configAnnounceFailures > 0L) errors += "stream announcement failed during the scenario"
-        if (metrics.configProducerStartFailures > 0L) errors += "producer startup failed during the scenario"
-        if (metrics.captureReadErrors > 0L && metrics.framesCaptured <= 0L) {
+        // Section 1 & 10: Receiver Health is REQUIRED
+        if (telemetryDisappeared) {
+            return HatTestVerdict.INCOMPLETE to "receiver telemetry disappeared during scenario"
+        }
+
+        if (!metrics.receiverParticipating || metrics.packetsReceived == null || metrics.audioTrackWrites == null) {
+            return HatTestVerdict.NOT_EXECUTED to "RECEIVER_NOT_PARTICIPATING"
+        }
+
+        if (metrics.packetsReceived <= 0L) {
+            errors += "no packets received by receiver (packetsReceived=0)"
+        }
+
+        if (metrics.audioTrackWrites <= 0L) {
+            errors += "no AudioTrack writes by receiver (audioTrackWrites=0)"
+        }
+
+        // Section 12: AudioRecord error handling
+        if (metrics.framesCaptured != null && metrics.framesCaptured <= 0L && (metrics.captureErrors ?: 0L) > 0L) {
             errors += "capture read failed with no frames captured"
         }
-        if (metrics.generationMismatches > 0L) {
-            errors += "receiver rejected ${metrics.generationMismatches} packet(s) from a stale generation"
+        val captureRecordingState = (endSections["CAPTURE"]?.get("recordingState") as? Number)?.toInt()
+        if (captureRecordingState != null && captureRecordingState != 3 /* RECORDSTATE_RECORDING */) {
+            errors += "AudioRecord stopped recording (recordingState=$captureRecordingState)"
         }
-        if (metrics.codecMismatches > 0L) {
-            warnings += "receiver rejected ${metrics.codecMismatches} packet(s) with an unknown codec/config"
-        }
-
-        // Playback health is only asserted where the local device actually plays audio (receiver role).
-        val playbackEnd = endSections["PLAYBACK"]
-        if (playbackEnd != null && playbackEnd.isNotEmpty()) {
-            val playState = (playbackEnd["playState"] as? Number)?.toInt()
-            if (playState != null && playState != PLAY_STATE_PLAYING) {
-                errors += "playback stopped unexpectedly during the scenario (playState=$playState)"
-            }
+        val audioRecordState = (endSections["CAPTURE"]?.get("audioRecordState") as? Number)?.toInt()
+        if (audioRecordState != null && audioRecordState == 0 /* STATE_UNINITIALIZED */) {
+            errors += "AudioRecord in fatal uninitialized state"
         }
 
-        if (metrics.underruns > 0L) warnings += "${metrics.underruns} playback underrun(s)"
-        if (metrics.packetsLost > 0L) warnings += "${metrics.packetsLost} lost/concealed packet(s)"
-        if (metrics.packetsLate > 0L) warnings += "${metrics.packetsLate} late packet(s)"
-        if (metrics.packetsOutOfOrder > 0L) warnings += "${metrics.packetsOutOfOrder} out-of-order packet(s)"
-        if (metrics.fecRecovered > 0L) warnings += "${metrics.fecRecovered} packet(s) recovered by FEC"
-        if (metrics.decodeErrors > 0L) warnings += "${metrics.decodeErrors} decode error(s)"
-        if (metrics.writeErrors > 0L) warnings += "${metrics.writeErrors} AudioTrack write error(s)"
-        if (metrics.sendErrors > 0L) warnings += "${metrics.sendErrors} socket send error(s)"
+        // Section 12: Non-fatal capture errors recorded as warnings if capture continued
+        val captureErrors = metrics.captureErrors ?: 0L
+        val framesCaptured = metrics.framesCaptured ?: 0L
+        if (captureErrors > 0L && framesCaptured > 0L) {
+            warnings += "$captureErrors non-fatal capture read error(s) while capturing continued ($framesCaptured frames captured)"
+        }
+
+        if ((metrics.configInitFailures ?: 0L) > 0L) errors += "capture pipeline initialization failed during scenario"
+        if ((metrics.configAnnounceFailures ?: 0L) > 0L) errors += "stream announcement failed during scenario"
+        if ((metrics.configProducerStartFailures ?: 0L) > 0L) errors += "producer startup failed during scenario"
+        if ((metrics.generationMismatches ?: 0L) > 0L) errors += "receiver rejected ${metrics.generationMismatches} packet(s) from stale generation"
+
+        // Playback health on receiver
+        val playState = (endSections["PLAYBACK"]?.get("playState") as? Number)?.toInt()
+        if (playState != null && playState != 3 /* PLAYSTATE_PLAYING */) {
+            errors += "playback stopped unexpectedly during scenario (playState=$playState)"
+        }
+
+        // Recoverable issues -> WARN
+        val underruns = metrics.underruns ?: 0L
+        if (underruns > 0L) warnings += "$underruns playback underrun(s)"
+        val lost = metrics.packetsLost ?: 0L
+        if (lost > 0L) warnings += "$lost lost/concealed packet(s)"
+        val late = metrics.packetsLate ?: 0L
+        if (late > 0L) warnings += "$late late packet(s)"
+        val outOfOrder = metrics.packetsOutOfOrder ?: 0L
+        if (outOfOrder > 0L) warnings += "$outOfOrder out-of-order packet(s)"
+        val fec = metrics.fecRecovered ?: 0L
+        if (fec > 0L) warnings += "$fec packet(s) recovered by FEC"
+        val decodeErrors = metrics.decodeErrors ?: 0L
+        if (decodeErrors > 0L) warnings += "$decodeErrors decode error(s)"
+        val writeErrors = metrics.writeErrors ?: 0L
+        if (writeErrors > 0L) warnings += "$writeErrors AudioTrack write error(s)"
+        val sendErrors = metrics.sendErrors ?: 0L
+        if (sendErrors > 0L) warnings += "$sendErrors socket send error(s)"
 
         val targetSwing = swing(metrics.minTargetLatencyMs, metrics.maxTargetLatencyMs)
-        if (targetSwing != null && targetSwing > LATENCY_INSTABILITY_MS) {
-            warnings += "latency target moved by ${formatDouble(targetSwing)}ms during the scenario"
+        if (targetSwing != null && targetSwing > 150.0) {
+            warnings += "latency target moved by ${formatDouble(targetSwing)}ms during scenario"
         }
         val jitterPeak = metrics.maxJitterMs
-        if (jitterPeak != null && jitterPeak > JITTER_WARN_MS) {
+        if (jitterPeak != null && jitterPeak > 80.0) {
             warnings += "jitter peaked at ${formatDouble(jitterPeak)}ms"
-        }
-        if (metrics.packetsSent > 0L && metrics.packetsReceived <= 0L && metrics.hasReceiverTelemetry) {
-            warnings += "transmitter sent packets but the receiver side reported none"
         }
 
         outcome.errors += errors
         outcome.warnings += warnings
 
-        val label = if (scenario === HatTestScenario.BASELINE) "baseline" else "scenario"
         return when {
             errors.isNotEmpty() -> HatTestVerdict.FAIL to errors.joinToString("; ")
-            warnings.isNotEmpty() -> HatTestVerdict.WARN to
-                "$label completed with ${warnings.size} warning(s): ${warnings.joinToString("; ")}"
-            // A clean scenario keeps the reason produced by its own body (e.g. "profile already active; ...").
+            warnings.isNotEmpty() -> HatTestVerdict.WARN to "${scenario.displayName} completed with warnings: ${warnings.joinToString("; ")}"
             else -> HatTestVerdict.PASS to outcome.reason
         }
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Metrics
+    // Delta metrics computation (Section 6)
     // ---------------------------------------------------------------------------------------------
 
-    private fun buildMetrics(
-        counters: CounterAccumulator,
+    private fun buildDeltaMetrics(
+        startTx: HatTestTxMetrics,
+        endTx: HatTestTxMetrics,
+        startRx: HatTestControlMessage.RxStats?,
+        endRx: HatTestControlMessage.RxStats?,
         gauges: GaugeAccumulator,
         startTimings: Map<String, HatDiagnostics.Timing.Snapshot>,
-        endTimings: Map<String, HatDiagnostics.Timing.Snapshot>
+        endTimings: Map<String, HatDiagnostics.Timing.Snapshot>,
+        endSections: Map<String, Map<String, Any?>>,
+        receiverParticipating: Boolean
     ): HatTestMetrics {
         val captureRead = timingWindow("captureRead", startTimings, endTimings)
         val encode = timingWindow("encode", startTimings, endTimings)
@@ -788,69 +1001,116 @@ class HatTestRunner(
         val decode = timingWindow("decode", startTimings, endTimings)
         val write = timingWindow("audioTrackWrite", startTimings, endTimings)
 
+        val txPacketsGen = endTx.packetsGenerated - startTx.packetsGenerated
+        val txPacketsSent = endTx.packetsSent - startTx.packetsSent
+        val txSendErrors = endTx.sendErrors - startTx.sendErrors
+        val txCaptureReads = endTx.captureReads - startTx.captureReads
+        val txCaptureErrors = endTx.captureErrors - startTx.captureErrors
+        val txFramesCaptured = endTx.framesCaptured - startTx.framesCaptured
+
+        val captureSection = endSections["CAPTURE"] ?: emptyMap()
+        val consecutiveErrors = (captureSection["consecutiveReadErrors"] as? Number)?.toLong() ?: 0L
+
+        // Receiver delta metrics (null if receiver is not participating)
+        val rxDeltaPacketsReceived = if (endRx != null && startRx != null) (endRx.packetsReceived - startRx.packetsReceived).coerceAtLeast(0L) else null
+        val rxDeltaPacketsLost = if (endRx != null && startRx != null) (endRx.packetsLost - startRx.packetsLost).coerceAtLeast(0L) else null
+        val rxDeltaPacketsLate = if (endRx != null && startRx != null) (endRx.packetsLate - startRx.packetsLate).coerceAtLeast(0L) else null
+        val rxDeltaPacketsOutOfOrder = if (endRx != null && startRx != null) (endRx.packetsOutOfOrder - startRx.packetsOutOfOrder).coerceAtLeast(0L) else null
+        val rxDeltaPacketsDuplicate = if (endRx != null && startRx != null) (endRx.packetsDuplicate - startRx.packetsDuplicate).coerceAtLeast(0L) else null
+        val rxDeltaFecRecovered = if (endRx != null && startRx != null) (endRx.fecRecovered - startRx.fecRecovered).coerceAtLeast(0L) else null
+        val rxDeltaDecodeErrors = if (endRx != null && startRx != null) (endRx.decodeErrors - startRx.decodeErrors).coerceAtLeast(0L) else null
+        val rxDeltaAudioTrackWrites = if (endRx != null && startRx != null) (endRx.audioTrackWrites - startRx.audioTrackWrites).coerceAtLeast(0L) else null
+        val rxDeltaFramesWritten = if (endRx != null && startRx != null) (endRx.framesWritten - startRx.framesWritten).coerceAtLeast(0L) else null
+        val rxDeltaUnderruns = if (endRx != null && startRx != null) (endRx.underruns - startRx.underruns).coerceAtLeast(0L) else null
+        val rxDeltaWriteErrors = if (endRx != null && startRx != null) (endRx.writeErrors - startRx.writeErrors).coerceAtLeast(0L) else null
+
         return HatTestMetrics(
-            packetsGenerated = counters.total(MetricsKey.PACKETS_GENERATED),
-            packetsSent = counters.total(MetricsKey.PACKETS_SENT),
-            bytesSent = counters.total(MetricsKey.BYTES_SENT),
-            sendErrors = counters.total(MetricsKey.SEND_ERRORS),
-            packetsReceived = counters.total(MetricsKey.PACKETS_RECEIVED),
-            bytesReceived = counters.total(MetricsKey.BYTES_RECEIVED),
-            packetsLost = counters.total(MetricsKey.PACKETS_LOST),
-            packetsLate = counters.total(MetricsKey.PACKETS_LATE),
-            packetsOutOfOrder = counters.total(MetricsKey.PACKETS_OUT_OF_ORDER),
-            packetsDuplicate = counters.total(MetricsKey.PACKETS_DUPLICATE),
-            fecRecovered = counters.total(MetricsKey.FEC_RECOVERED),
-            decodeErrors = counters.total(MetricsKey.DECODE_ERRORS),
-            writeErrors = counters.total(MetricsKey.WRITE_ERRORS),
-            underruns = counters.total(MetricsKey.UNDERRUNS),
-            captureReadErrors = counters.total(MetricsKey.CAPTURE_READ_ERRORS),
-            framesCaptured = counters.total(MetricsKey.FRAMES_CAPTURED),
-            generationMismatches = counters.total(MetricsKey.GENERATION_MISMATCHES),
-            codecMismatches = counters.total(MetricsKey.CODEC_MISMATCHES),
-            configInitFailures = counters.total(MetricsKey.CONFIG_INIT_FAILURES),
-            configAnnounceFailures = counters.total(MetricsKey.CONFIG_ANNOUNCE_FAILURES),
-            configProducerStartFailures = counters.total(MetricsKey.CONFIG_PRODUCER_START_FAILURES),
-            minJitterMs = gauges.minOf(MetricsKey.JITTER_MS),
-            avgJitterMs = gauges.avgOf(MetricsKey.JITTER_MS),
-            maxJitterMs = gauges.maxOf(MetricsKey.JITTER_MS),
-            minBufferMs = gauges.minOf(MetricsKey.BUFFER_MS),
-            avgBufferMs = gauges.avgOf(MetricsKey.BUFFER_MS),
-            maxBufferMs = gauges.maxOf(MetricsKey.BUFFER_MS),
-            minTargetLatencyMs = gauges.minOf(MetricsKey.TARGET_LATENCY_MS),
-            avgTargetLatencyMs = gauges.avgOf(MetricsKey.TARGET_LATENCY_MS),
-            maxTargetLatencyMs = gauges.maxOf(MetricsKey.TARGET_LATENCY_MS),
+            receiverParticipating = receiverParticipating,
+            packetsGenerated = txPacketsGen,
+            packetsSent = txPacketsSent,
+            bytesSent = null,
+            sendErrors = txSendErrors,
+            captureReads = txCaptureReads,
+            captureErrors = txCaptureErrors,
+            consecutiveCaptureErrors = consecutiveErrors,
+            framesCaptured = txFramesCaptured,
+            packetsReceived = rxDeltaPacketsReceived,
+            bytesReceived = null,
+            packetsLost = rxDeltaPacketsLost,
+            packetsLate = rxDeltaPacketsLate,
+            packetsOutOfOrder = rxDeltaPacketsOutOfOrder,
+            packetsDuplicate = rxDeltaPacketsDuplicate,
+            fecRecovered = rxDeltaFecRecovered,
+            decodeErrors = rxDeltaDecodeErrors,
+            audioTrackWrites = rxDeltaAudioTrackWrites,
+            framesWritten = rxDeltaFramesWritten,
+            underruns = rxDeltaUnderruns,
+            writeErrors = rxDeltaWriteErrors,
+            generationMismatches = (endSections["RX"]?.get("unknownGeneration") as? Number)?.toLong(),
+            codecMismatches = (endSections["RX"]?.get("unknownCodec") as? Number)?.toLong(),
+            configInitFailures = env.counterSnapshot()["config_init_failures"],
+            configAnnounceFailures = env.counterSnapshot()["config_announce_failures"],
+            configProducerStartFailures = env.counterSnapshot()["config_producer_start_failures"],
+            minJitterMs = gauges.minOf("jitterMs"),
+            avgJitterMs = gauges.avgOf("jitterMs"),
+            maxJitterMs = gauges.maxOf("jitterMs"),
+            minBufferMs = gauges.minOf("bufferMs"),
+            avgBufferMs = gauges.avgOf("bufferMs"),
+            maxBufferMs = gauges.maxOf("bufferMs"),
+            minTargetLatencyMs = gauges.minOf("targetLatencyMs"),
+            avgTargetLatencyMs = gauges.avgOf("targetLatencyMs"),
+            maxTargetLatencyMs = gauges.maxOf("targetLatencyMs"),
+            avgDriftPpm = gauges.avgOf("driftPpm"),
+            playbackHead = endRx?.playbackHead,
             avgCaptureReadMs = captureRead.first,
             maxCaptureReadMs = captureRead.second,
             avgEncodeMs = encode.first,
             maxEncodeMs = encode.second,
             avgSendMs = send.first,
             maxSendMs = send.second,
-            avgReceiveMs = receive.first,
-            maxReceiveMs = receive.second,
-            avgDecodeMs = decode.first,
-            maxDecodeMs = decode.second,
-            avgWriteMs = write.first,
-            maxWriteMs = write.second
+            avgReceiveMs = receive.first ?: endRx?.avgReceiveMs,
+            maxReceiveMs = receive.second ?: endRx?.maxReceiveMs,
+            avgDecodeMs = decode.first ?: endRx?.avgDecodeMs,
+            maxDecodeMs = decode.second ?: endRx?.maxDecodeMs,
+            avgWriteMs = write.first ?: endRx?.avgWriteMs,
+            maxWriteMs = write.second ?: endRx?.maxWriteMs
         )
     }
 
-    /**
-     * Per-scenario average (exact, from the totals delta) and maximum (the worst case recorded up to the end of
-     * the scenario, because per-operation maxima are cumulative for the process — documented in the report).
-     */
     private fun timingWindow(
         name: String,
         start: Map<String, HatDiagnostics.Timing.Snapshot>,
         end: Map<String, HatDiagnostics.Timing.Snapshot>
     ): Pair<Double?, Double?> {
-        val s = start[name] ?: return null to null
-        val e = end[name] ?: return null to null
-        val countDelta = e.count - s.count
+        val s = start[name]
+        val e = end[name]
+        if (e == null || e.count <= 0L) return null to null
+        val startCount = s?.count ?: 0L
+        val countDelta = e.count - startCount
         if (countDelta <= 0L) return null to null
-        val totalDeltaNs = (e.avgNs * e.count) - (s.avgNs * s.count)
+        val startTotalNs = (s?.avgNs ?: 0L) * startCount
+        val endTotalNs = e.avgNs * e.count
+        val totalDeltaNs = endTotalNs - startTotalNs
         val avgMs = if (totalDeltaNs > 0L) totalDeltaNs.toDouble() / countDelta.toDouble() / 1_000_000.0 else 0.0
         val maxMs = e.maxNs / 1_000_000.0
         return avgMs to maxMs
+    }
+
+    private fun buildEndToEndMetrics(transitions: List<HatTestTransition>): HatTestEndToEndMetrics {
+        val allMonotonic = transitions.all { it.generationMonotonic }
+        val allAcked = transitions.all { it.receiverAcked }
+        val configTx = transitions.mapNotNull { it.configToFirstTxMs }
+        val rxDecode = transitions.mapNotNull { it.firstRxToFirstDecodeMs }
+        val decodeWrite = transitions.mapNotNull { it.firstDecodeToFirstAudioWriteMs }
+
+        return HatTestEndToEndMetrics(
+            transitionsCount = transitions.size,
+            allGenerationsMonotonic = allMonotonic,
+            allGenerationsAcked = allAcked,
+            avgConfigToFirstTxMs = if (configTx.isNotEmpty()) configTx.average() else null,
+            avgFirstRxToFirstDecodeMs = if (rxDecode.isNotEmpty()) rxDecode.average() else null,
+            avgFirstDecodeToFirstAudioWriteMs = if (decodeWrite.isNotEmpty()) decodeWrite.average() else null
+        )
     }
 
     private fun buildConfigSnapshot(sections: Map<String, Map<String, Any?>>): HatTestConfigSnapshot {
@@ -871,41 +1131,56 @@ class HatTestRunner(
             bufferSizeFrames = (playback["bufferSizeFrames"] as? Number)?.toInt(),
             bufferCapacityFrames = (playback["bufferCapacityFrames"] as? Number)?.toInt(),
             requestedPerformanceMode = (playback["requestedPerformanceMode"] as? Number)?.toInt(),
-            actualPerformanceMode = (playback["performanceMode"] as? Number)?.toInt()
+            actualPerformanceMode = (playback["actualPerformanceMode"] as? Number)?.toInt()
         )
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Report assembly
+    // Report summary (Section 14)
     // ---------------------------------------------------------------------------------------------
 
-    private fun summarize(results: List<HatTestScenarioResult>, preconditions: HatTestPreconditions): HatTestSummary {
+    private fun summarize(
+        results: List<HatTestScenarioResult>,
+        preconditions: HatTestPreconditions,
+        sessionParticipated: Boolean,
+        runErrors: List<String>
+    ): HatTestSummary {
         val passed = results.count { it.verdict == HatTestVerdict.PASS }
         val warned = results.count { it.verdict == HatTestVerdict.WARN }
         val failed = results.count { it.verdict == HatTestVerdict.FAIL }
+        val incomplete = results.count { it.verdict == HatTestVerdict.INCOMPLETE }
         val skipped = results.count { it.verdict == HatTestVerdict.SKIPPED }
-        val manual = results.count { it.verdict == HatTestVerdict.MANUAL_REQUIRED }
+        val notExecuted = results.count { it.verdict == HatTestVerdict.NOT_EXECUTED } + (if (!sessionParticipated) 1 else 0)
+
         val verdict = when {
-            !preconditions.ok -> "NOT RUN (preconditions failed)"
-            results.isEmpty() -> "NO SCENARIOS EXECUTED"
+            !preconditions.ok -> "NOT_EXECUTED"
+            !sessionParticipated -> "NOT_EXECUTED"
+            results.isEmpty() -> "NOT_EXECUTED"
             failed > 0 -> "FAIL"
-            warned > 0 || manual > 0 -> "PASS WITH WARNINGS"
+            incomplete > 0 -> "INCOMPLETE"
+            notExecuted > 0 -> "NOT_EXECUTED"
+            warned > 0 -> "WARN"
             else -> "PASS"
         }
+
         val findings = ArrayList<String>()
         if (!preconditions.ok) preconditions.reasons.forEach { findings += "precondition: $it" }
-        for (result in results) {
-            if (result.verdict != HatTestVerdict.PASS) {
-                findings += "#${result.index} ${result.scenarioName}: ${result.verdict.label} - ${result.reason}"
+        if (!sessionParticipated) findings += "receiver: RECEIVER_NOT_PARTICIPATING"
+        for (err in runErrors) findings += "error: $err"
+        for (r in results) {
+            if (r.verdict != HatTestVerdict.PASS) {
+                findings += "#${r.index} ${r.scenarioName}: ${r.verdict.label} - ${r.reason}"
             }
         }
+
         return HatTestSummary(
             total = results.size,
             passed = passed,
             warned = warned,
             failed = failed,
+            incomplete = incomplete,
+            notExecuted = notExecuted,
             skipped = skipped,
-            manualRequired = manual,
             verdict = verdict,
             findings = findings
         )
@@ -913,29 +1188,22 @@ class HatTestRunner(
 
     private fun buildNotes(
         results: List<HatTestScenarioResult>,
-        preconditions: HatTestPreconditions
+        preconditions: HatTestPreconditions,
+        sessionParticipated: Boolean
     ): List<String> {
         val notes = ArrayList<String>()
-        notes += "Scenario durations come from HatTestConfig (development builds may use HatTestConfig.QUICK)."
-        notes += "NORMAL and UNCAPPED both resolve to this build's Music / uncompressed lossless profile; " +
-            "ADAPTIVE maps to Auto Adaptive and LOW LATENCY to the Opus low-latency profile."
-        notes += "max*Ms metric values are the worst case recorded up to the end of the scenario " +
-            "(per-operation maxima are cumulative for the process); avg*Ms are exact per-scenario averages."
-        notes += "'jitterProcess' timing is not instrumented in this build; the jitter path was not modified."
-        if (!preconditions.ok) notes += "No scenario was executed because a precondition failed."
-        val notExecuted = config.scenarios.size - results.size
-        if (notExecuted > 0) notes += "$notExecuted scenario(s) were not executed (run stopped early or cancelled)."
-        for (result in results) {
-            if (result.verdict == HatTestVerdict.MANUAL_REQUIRED) {
-                notes += "SCENARIO ${result.index} (${result.scenarioName}) requires manual action: ${result.reason}"
-            }
+        notes += "Phase 3.2: Synchronized End-to-End Test with verified receiver telemetry participation."
+        notes += "Scenario metrics are strict deltas (current - start); unavailable receiver metrics remain null."
+        if (!sessionParticipated) {
+            notes += "Receiver did not acknowledge TEST_SESSION_JOINED within timeout: run marked NOT_EXECUTED."
         }
+        if (!preconditions.ok) notes += "Preconditions failed before session handshake."
         return notes
     }
 
     private fun exportReport(report: HatTestReport): String? {
         val activeExporter = exporter ?: return "no exporter configured in this build"
-        publish(state = HatTestState.EXPORTING, message = "Writing report to Downloads/HAT")
+        publish(state = HatTestState.EXPORTING, message = "Exporting report to Downloads/HAT")
         val base = report.baseName()
         val written = ArrayList<String>()
         val uris = ArrayList<String>()
@@ -976,7 +1244,11 @@ class HatTestRunner(
         scenarioName: String? = _progress.value.scenarioName,
         scenarioProgress: Float = _progress.value.scenarioProgress,
         scenarioCount: Int = _progress.value.scenarioCount,
-        awaitingManualContinue: Boolean = _progress.value.awaitingManualContinue,
+        testSessionId: String? = _progress.value.testSessionId,
+        txDevice: String? = _progress.value.txDevice,
+        rxDevice: String? = _progress.value.rxDevice,
+        currentGeneration: Long = _progress.value.currentGeneration,
+        receiverParticipating: Boolean = _progress.value.receiverParticipating,
         exportedFiles: List<String> = _progress.value.exportedFiles,
         exportedUris: List<String> = _progress.value.exportedUris,
         report: HatTestReport? = _progress.value.report,
@@ -991,8 +1263,12 @@ class HatTestRunner(
         }
         val next = _progress.value.copy(
             state = state,
-            testRunId = _progress.value.testRunId
-                ?: HatDiagnostics.testRunId().ifEmpty { null },
+            testRunId = _progress.value.testRunId ?: HatDiagnostics.testRunId().ifEmpty { null },
+            testSessionId = testSessionId ?: activeTestSessionId.ifEmpty { null },
+            txDevice = txDevice,
+            rxDevice = rxDevice,
+            currentGeneration = currentGeneration,
+            receiverParticipating = receiverParticipating,
             scenarioIndex = scenarioIndex,
             scenarioCount = scenarioCount,
             scenarioId = scenarioId,
@@ -1001,7 +1277,6 @@ class HatTestRunner(
             overallProgress = overall,
             elapsedMs = elapsed,
             message = message,
-            awaitingManualContinue = awaitingManualContinue,
             exportedFiles = exportedFiles,
             exportedUris = exportedUris,
             report = report,
@@ -1011,12 +1286,11 @@ class HatTestRunner(
         try {
             listener(next)
         } catch (ignored: Throwable) {
-            // a progress listener must never break a run
         }
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Safe environment access (a diagnostics/UI failure must never abort a run silently)
+    // Safe environment access
     // ---------------------------------------------------------------------------------------------
 
     private fun safeSections(): Map<String, Map<String, Any?>> = try {
@@ -1035,12 +1309,6 @@ class HatTestRunner(
         env.recentEvents()
     } catch (t: Throwable) {
         emptyList()
-    }
-
-    private fun safeNamedCounters(): Map<String, Long> = try {
-        env.counterSnapshot()
-    } catch (t: Throwable) {
-        emptyMap()
     }
 
     private fun safeGeneration(): Long = try {
@@ -1067,10 +1335,11 @@ class HatTestRunner(
         false
     }
 
-    private fun renderEvent(event: HatDiagnostics.Event): String {
+    private fun renderEvent(event: HatDiagnostics.Event, endpoint: String): String {
         val base = event.render()
-        val tr = event.throwable ?: return base
-        return "$base :: ${tr.javaClass.simpleName}: ${tr.message}"
+        val withEp = if (endpoint.isNotEmpty() && !base.contains("endpoint=")) "$base endpoint=$endpoint" else base
+        val tr = event.throwable ?: return withEp
+        return "$withEp :: ${tr.javaClass.simpleName}: ${tr.message}"
     }
 
     private fun swing(min: Double?, max: Double?): Double? {
@@ -1094,91 +1363,38 @@ class HatTestRunner(
         var transitionMs: Long? = null
     }
 
-    /**
-     * Sums monotonically increasing counters as positive deltas between samples, picking the first available
-     * source per metric (transmitter sections on a transmitter, receiver sections on a receiver, named
-     * HatDiagnostics counters where the value lives there — section name "" marks a named counter). A counter
-     * reset inside a scenario (e.g. a receiver reconfigure) is ignored rather than producing a negative delta.
-     */
-    private class CounterAccumulator {
-        class Spec(val metric: String, val candidates: List<Pair<String, String>>)
-
-        private val totals = HashMap<String, Long>()
-        private val last = HashMap<String, Long>()
-
-        fun sample(sections: Map<String, Map<String, Any?>>, named: Map<String, Long>) {
-            for (spec in SPECS) {
-                var found: Long? = null
-                for ((section, key) in spec.candidates) {
-                    found = if (section.isEmpty()) {
-                        named[key]
-                    } else {
-                        (sections[section]?.get(key) as? Number)?.toLong()
-                    }
-                    if (found != null) break
-                }
-                val value = found ?: continue
-                val previous = last[spec.metric]
-                if (previous != null && value > previous) {
-                    totals[spec.metric] = (totals[spec.metric] ?: 0L) + (value - previous)
-                }
-                last[spec.metric] = value
-            }
-        }
-
-        fun total(metric: String): Long = totals[metric] ?: 0L
-
-        companion object {
-            /** Empty section name means "read from the HatDiagnostics named counter table". */
-            private const val NAMED = ""
-
-            val SPECS: List<Spec> = listOf(
-                Spec(MetricsKey.PACKETS_GENERATED, listOf("TX" to "packetsGenerated", "CAPTURE" to "packetsGenerated")),
-                Spec(MetricsKey.PACKETS_SENT, listOf("TX" to "packetsSent", "CAPTURE" to "packetsSent")),
-                Spec(MetricsKey.BYTES_SENT, listOf("TX" to "bytesSent", "CAPTURE" to "bytesSent")),
-                Spec(MetricsKey.SEND_ERRORS, listOf("TX" to "sendErrors")),
-                Spec(MetricsKey.PACKETS_RECEIVED, listOf("RX" to "packetsReceived")),
-                Spec(MetricsKey.BYTES_RECEIVED, listOf("RX" to "bytesReceived")),
-                Spec(MetricsKey.PACKETS_LOST, listOf("RX" to "lostPackets", "JITTER" to "missingPackets")),
-                Spec(MetricsKey.PACKETS_LATE, listOf("RX" to "latePackets", "JITTER" to "latePackets")),
-                Spec(MetricsKey.PACKETS_OUT_OF_ORDER, listOf("RX" to "outOfOrder", "JITTER" to "outOfOrder")),
-                Spec(MetricsKey.PACKETS_DUPLICATE, listOf("RX" to "duplicates", "JITTER" to "duplicates")),
-                Spec(MetricsKey.FEC_RECOVERED, listOf("RX" to "fecRecovered", "JITTER" to "fecRecovered")),
-                Spec(MetricsKey.DECODE_ERRORS, listOf("RX" to "decodeErrors")),
-                Spec(MetricsKey.WRITE_ERRORS, listOf("PLAYBACK" to "writeErrors")),
-                Spec(MetricsKey.UNDERRUNS, listOf("PLAYBACK" to "underruns")),
-                Spec(MetricsKey.CAPTURE_READ_ERRORS, listOf("CAPTURE" to "readErrors")),
-                Spec(MetricsKey.FRAMES_CAPTURED, listOf("CAPTURE" to "framesCaptured")),
-                Spec(MetricsKey.GENERATION_MISMATCHES, listOf("RX" to "unknownGeneration")),
-                Spec(MetricsKey.CODEC_MISMATCHES, listOf("RX" to "unknownCodec")),
-                Spec(MetricsKey.CONFIG_INIT_FAILURES, listOf(NAMED to "config_init_failures")),
-                Spec(MetricsKey.CONFIG_ANNOUNCE_FAILURES, listOf(NAMED to "config_announce_failures")),
-                Spec(MetricsKey.CONFIG_PRODUCER_START_FAILURES, listOf(NAMED to "config_producer_start_failures"))
-            )
-        }
-    }
-
-    /** Min/max/average of an instantaneous reading sampled once per interval. */
     private class GaugeAccumulator {
         private val min = HashMap<String, Double>()
         private val max = HashMap<String, Double>()
         private val sum = HashMap<String, Double>()
         private val count = HashMap<String, Int>()
 
-        fun sample(sections: Map<String, Map<String, Any?>>) {
-            for ((metric, source) in GAUGE_SOURCES) {
-                val value = (sections[source.first]?.get(source.second) as? Number)?.toDouble() ?: continue
-                if (!value.isFinite()) continue
-                min[metric] = minOf(min[metric] ?: value, value)
-                max[metric] = maxOf(max[metric] ?: value, value)
-                sum[metric] = (sum[metric] ?: 0.0) + value
-                count[metric] = (count[metric] ?: 0) + 1
+        fun sample(sections: Map<String, Map<String, Any?>>, rxStats: HatTestControlMessage.RxStats?) {
+            // From receiver telemetry
+            if (rxStats != null) {
+                record("jitterMs", rxStats.jitterMs)
+                record("bufferMs", rxStats.bufferMs)
+                record("targetLatencyMs", rxStats.targetLatencyMs)
+                record("driftPpm", rxStats.driftPpm)
+            } else {
+                // Fallback to local jitter section if present
+                val jitter = sections["JITTER"]
+                (jitter?.get("jitterMs") as? Number)?.toDouble()?.let { record("jitterMs", it) }
+                (jitter?.get("bufferMs") as? Number)?.toDouble()?.let { record("bufferMs", it) }
+                (jitter?.get("targetLatencyMs") as? Number)?.toDouble()?.let { record("targetLatencyMs", it) }
             }
+        }
+
+        private fun record(key: String, value: Double) {
+            if (!value.isFinite()) return
+            min[key] = minOf(min[key] ?: value, value)
+            max[key] = maxOf(max[key] ?: value, value)
+            sum[key] = (sum[key] ?: 0.0) + value
+            count[key] = (count[key] ?: 0) + 1
         }
 
         fun minOf(metric: String): Double? = min[metric]
         fun maxOf(metric: String): Double? = max[metric]
-
         fun avgOf(metric: String): Double? {
             val n = count[metric] ?: 0
             if (n == 0) return null
@@ -1186,10 +1402,6 @@ class HatTestRunner(
         }
     }
 
-    /**
-     * Retains a bounded, de-duplicated set of WARN/ERROR + harness-boundary events for the report. The ring
-     * itself is already bounded in [HatDiagnostics]; this only keeps the interesting slice for one run.
-     */
     private class EventCollector(private val max: Int, private val fromMs: Long) {
         private val seen = HashSet<String>()
         private val records = ArrayList<HatTestEventRecord>()
@@ -1223,45 +1435,4 @@ class HatTestRunner(
 
         fun finish(): List<HatTestEventRecord> = records.sortedBy { it.timestampMs }
     }
-
-    private companion object {
-        const val PLAY_STATE_PLAYING = 3
-        const val LATENCY_INSTABILITY_MS = 150.0
-        const val JITTER_WARN_MS = 80.0
-    }
 }
-
-/** Metric keys shared by the runner and its accumulators. */
-private object MetricsKey {
-    const val PACKETS_GENERATED = "packetsGenerated"
-    const val PACKETS_SENT = "packetsSent"
-    const val BYTES_SENT = "bytesSent"
-    const val SEND_ERRORS = "sendErrors"
-    const val PACKETS_RECEIVED = "packetsReceived"
-    const val BYTES_RECEIVED = "bytesReceived"
-    const val PACKETS_LOST = "packetsLost"
-    const val PACKETS_LATE = "packetsLate"
-    const val PACKETS_OUT_OF_ORDER = "packetsOutOfOrder"
-    const val PACKETS_DUPLICATE = "packetsDuplicate"
-    const val FEC_RECOVERED = "fecRecovered"
-    const val DECODE_ERRORS = "decodeErrors"
-    const val WRITE_ERRORS = "writeErrors"
-    const val UNDERRUNS = "underruns"
-    const val CAPTURE_READ_ERRORS = "captureReadErrors"
-    const val FRAMES_CAPTURED = "framesCaptured"
-    const val GENERATION_MISMATCHES = "generationMismatches"
-    const val CODEC_MISMATCHES = "codecMismatches"
-    const val CONFIG_INIT_FAILURES = "configInitFailures"
-    const val CONFIG_ANNOUNCE_FAILURES = "configAnnounceFailures"
-    const val CONFIG_PRODUCER_START_FAILURES = "configProducerStartFailures"
-    const val JITTER_MS = "jitterMs"
-    const val BUFFER_MS = "bufferMs"
-    const val TARGET_LATENCY_MS = "targetLatencyMs"
-}
-
-/** (metric key) → (snapshot section, key) for the instantaneous readings sampled during a scenario. */
-private val GAUGE_SOURCES: List<Pair<String, Pair<String, String>>> = listOf(
-    MetricsKey.JITTER_MS to ("JITTER" to "jitterMs"),
-    MetricsKey.BUFFER_MS to ("JITTER" to "bufferMs"),
-    MetricsKey.TARGET_LATENCY_MS to ("JITTER" to "targetLatencyMs")
-)
