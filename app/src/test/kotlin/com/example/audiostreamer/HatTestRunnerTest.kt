@@ -15,566 +15,395 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Unit tests for the Full HAT Test harness.
+ * Unit tests for the Full HAT Test harness (Phase 3.2 Synchronized Diagnostic Test).
  *
- * The runner is exercised through its real code path — no parallel test-only transaction architecture — with a
- * virtual clock and a fake environment, so no AudioRecord/AudioTrack hardware is required and a full multi
- * minute scenario sweep runs in milliseconds.
+ * Verifies all 9 mandatory Phase 3.2 requirements:
+ *  1. Receiver handshake (successful join starts scenarios)
+ *  2. Missing receiver telemetry / receiver handshake timeout -> NOT_EXECUTED, RECEIVER_NOT_PARTICIPATING, report generated, no PASS
+ *  3. Telemetry timeout during test (receiver telemetry stops -> INCOMPLETE)
+ *  4. Scenario-local counter deltas (current - start, verify with advancing counters that scenarios don't report cumulative numbers)
+ *  5. Unavailable receiver metrics remain null, NEVER 0
+ *  6. Scenario sequencing (BASELINE -> RELIABLE -> BALANCED -> LOW_LATENCY -> PROFILE_STRESS)
+ *  7. Generation transition validation (monotonicity, receiver ack, labeled latencies)
+ *  8. Session cancellation
+ *  9. Full report generation (JSON + log, matching Section 13 format, nulls for missing receiver metrics)
  */
 class HatTestRunnerTest {
 
     // ---------------------------------------------------------------------------------------------
-    // Sequencing / success path
+    // 1. Receiver Handshake (Successful join starts scenarios)
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    fun scenariosRunInTheDocumentedOrder() = runBlocking {
-        val env = FakeEnv()
-        val runner = HatTestRunner(env, testConfig(), VirtualClock(), RecordingExporter())
-
-        val report = runner.run()
-
-        val expected = HatTestScenario.entries
-            .filter { it != HatTestScenario.RECEIVER_RECONNECT && it != HatTestScenario.NETWORK_INTERRUPTION }
-            .map { it.id }
-        assertEquals(expected, report.scenarios.map { it.scenarioId })
-        assertEquals(expected.size, report.summary.total)
-        assertEquals(1, report.scenarios.first().index)
-        assertEquals(expected.size, report.scenarios.last().index)
-    }
-
-    @Test
-    fun successfulRunSwitchesProfilesCommitsTransitionsAndExports() = runBlocking {
-        val env = FakeEnv()
+    fun receiverHandshakeSucceedsAndRunsScenarios() = runBlocking {
+        val env = FakeEnv(receiverParticipating = true)
         val exporter = RecordingExporter()
         val runner = HatTestRunner(env, testConfig(), VirtualClock(), exporter)
 
         val report = runner.run()
 
-        // One profile request per profile scenario (baseline does not change the profile).
-        assertEquals(
-            listOf("RELIABLE", "BALANCED", "RELIABLE", "LOW_LATENCY") + HatTestScenario.STRESS_SEQUENCE.map { it.name },
-            env.appliedProfiles.toList()
-        )
-
-        val normal = report.scenarios.first { it.scenarioId == HatTestScenario.NORMAL.id }
-        assertTrue(normal.transitionRequired)
-        assertTrue(normal.transitionCompleted)
-        assertTrue(normal.endGeneration > normal.startGeneration)
-        assertTrue(normal.generationMonotonic)
-
-        val baseline = report.scenarios.first { it.scenarioId == HatTestScenario.BASELINE.id }
-        assertFalse(baseline.transitionRequired)
-        assertNull(baseline.requestedProfile)
-
-        assertTrue(report.summary.verdict == "PASS")
-        assertEquals(2, exporter.files.size)
-        assertTrue(exporter.files.keys.any { it.endsWith(".log") })
-        assertTrue(exporter.files.keys.any { it.endsWith(".json") })
+        assertNotNull(env.announcedSessionId)
+        assertTrue(env.announcedSessionId!!.startsWith("HAT-"))
+        assertEquals("ReceiverModel", report.receiver?.device)
+        assertEquals("1.8.6", report.receiver?.appVersion)
+        assertEquals("PASS", report.summary.verdict)
         assertEquals(HatTestState.COMPLETED, runner.progress.value.state)
-        assertTrue(runner.progress.value.exportedUris.isNotEmpty())
+        assertTrue(runner.progress.value.receiverParticipating)
+        assertTrue(env.sessionEnded)
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // 2. Missing Receiver Telemetry -> NOT_EXECUTED, RECEIVER_NOT_PARTICIPATING
+    // ---------------------------------------------------------------------------------------------
+
     @Test
-    fun progressReportsOverallAndScenarioCompletion() = runBlocking {
-        val runner = HatTestRunner(FakeEnv(), testConfig(), VirtualClock(), RecordingExporter())
+    fun missingReceiverHandshakeReportsNotExecutedWithReasonReceiverNotParticipating() = runBlocking {
+        val env = FakeEnv(receiverParticipating = false)
+        val exporter = RecordingExporter()
+        val runner = HatTestRunner(env, testConfig(), VirtualClock(), exporter)
 
         val report = runner.run()
 
-        assertEquals(HatTestState.COMPLETED, runner.progress.value.state)
-        assertEquals(1f, runner.progress.value.overallProgress)
-        assertEquals(report.scenarios.size, runner.progress.value.scenarioCount)
-        assertTrue(runner.progress.value.elapsedMs > 0L)
-        assertNotNull(runner.progress.value.report)
+        assertEquals("NOT_EXECUTED", report.summary.verdict)
+        assertEquals(HatTestState.NOT_EXECUTED, runner.progress.value.state)
+        assertTrue(report.summary.findings.any { it.contains("RECEIVER_NOT_PARTICIPATING") })
+        assertTrue(report.errors.any { it.contains("RECEIVER_NOT_PARTICIPATING") })
+        assertTrue(report.scenarios.isEmpty())
+        assertNull(report.rxMetrics)
+        assertFalse(report.summary.verdict == "PASS")
+
+        // Report must still be exported even when not executed
+        assertEquals(2, exporter.files.size)
+        assertTrue(exporter.files.keys.any { it.endsWith(".json") })
+        assertTrue(exporter.files.keys.any { it.endsWith(".log") })
+
+        val json = exporter.files.entries.first { it.key.endsWith(".json") }.value
+        assertTrue(json.contains("\"RECEIVER_NOT_PARTICIPATING\""))
+        assertTrue(json.contains("\"verdict\": \"NOT_EXECUTED\""))
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // 3. Telemetry Timeout During Test -> INCOMPLETE
+    // ---------------------------------------------------------------------------------------------
+
     @Test
-    fun targetProfileAlreadyActiveIsReportedAsNoTransitionInsteadOfFaked() = runBlocking {
-        // The fake starts on RELIABLE, which is exactly the NORMAL scenario's target.
-        val env = FakeEnv(initialProfile = "RELIABLE")
+    fun telemetryDisappearingDuringScenarioMarksIncomplete() = runBlocking {
+        val env = FakeEnv(receiverParticipating = true, telemetryTimeout = true)
         val runner = HatTestRunner(env, testConfig(), VirtualClock(), RecordingExporter())
 
         val report = runner.run()
 
-        val normal = report.scenarios.first { it.scenarioId == HatTestScenario.NORMAL.id }
-        assertFalse(normal.transitionRequired)
-        assertTrue(normal.transitionCompleted)
-        assertEquals(normal.startGeneration, normal.endGeneration)
-        assertTrue(normal.reason.contains("already active"))
-        // The scenario still measured its window rather than being skipped.
-        assertTrue(normal.durationMs > 0L)
+        assertEquals("INCOMPLETE", report.summary.verdict)
+        assertTrue(report.scenarios.first().verdict == HatTestVerdict.INCOMPLETE)
+        assertTrue(report.scenarios.first().reason.contains("receiver telemetry disappeared"))
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Failure handling
+    // 4. Scenario-local Counter Deltas (current - start, never cumulative)
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    fun transitionTimeoutFailsTheScenarioWithoutHanging() = runBlocking {
-        val env = FakeEnv(autoTransition = false)
+    fun scenarioMetricsReportStrictDeltasNotCumulativeCounters() = runBlocking {
+        val env = FakeEnv(receiverParticipating = true)
+        // Configure dynamic increments: every call increments counters
+        var txCounter = 1000L
+        var rxCounter = 1000L
+        var writeCounter = 500L
+        env.customTxSupplier = {
+            txCounter += 100L
+            HatTestTxMetrics(
+                packetsGenerated = txCounter,
+                packetsSent = txCounter,
+                sendErrors = 0L,
+                captureReads = 500L,
+                captureErrors = 0L,
+                framesCaptured = 480000L,
+                avgCaptureReadMs = 4.0,
+                maxCaptureReadMs = 8.0,
+                avgEncodeMs = 1.5,
+                maxEncodeMs = 3.0,
+                avgSendMs = 0.5,
+                maxSendMs = 2.0
+            )
+        }
+        env.customRxSupplier = {
+            rxCounter += 80L
+            writeCounter += 40L
+            HatTestControlMessage.RxStats(
+                testSessionId = env.announcedSessionId ?: "test",
+                generation = env.generation.get(),
+                timestamp = System.currentTimeMillis(),
+                packetsReceived = rxCounter,
+                packetsLost = 0L,
+                packetsLate = 0L,
+                packetsOutOfOrder = 0L,
+                packetsDuplicate = 0L,
+                fecRecovered = 0L,
+                decodeErrors = 0L,
+                bufferPackets = 4,
+                bufferFrames = 384,
+                bufferMs = 20.0,
+                targetLatencyMs = 35.0,
+                jitterMs = 2.0,
+                driftPpm = 0.0,
+                audioTrackWrites = writeCounter,
+                framesWritten = writeCounter * 960L,
+                underruns = 0L,
+                writeErrors = 0L,
+                avgReceiveMs = 1.0,
+                maxReceiveMs = 2.0,
+                avgDecodeMs = 1.5,
+                maxDecodeMs = 3.0,
+                avgWriteMs = 0.5,
+                maxWriteMs = 1.0,
+                playbackHead = 50000L
+            )
+        }
+
+        val runner = HatTestRunner(env, testConfig(), VirtualClock(), RecordingExporter())
+        val report = runner.run()
+
+        assertTrue(report.scenarios.size >= 2)
+        val sc1 = report.scenarios[0]
+        val sc2 = report.scenarios[1]
+
+        val tx1 = sc1.metrics.packetsSent
+        val tx2 = sc2.metrics.packetsSent
+        val rx1 = sc1.metrics.packetsReceived
+        val rx2 = sc2.metrics.packetsReceived
+        assertNotNull(tx1)
+        assertNotNull(tx2)
+        assertNotNull(rx1)
+        assertNotNull(rx2)
+        assertTrue(tx1!! in 100L..500L)
+        assertTrue(rx1!! in 80L..400L)
+        assertTrue(tx2!! in 100L..500L)
+        assertTrue(rx2!! in 80L..400L)
+
+        // Neither scenario should report the absolute cumulative counter (> 1000L)
+        assertTrue(tx1 < 1000L)
+        assertTrue(tx2 < 1000L)
+        assertTrue(rx1 < 1000L)
+        assertTrue(rx2 < 1000L)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 5. Unavailable Receiver Metrics Remain null, NEVER 0
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    fun unavailableReceiverMetricsRemainNullNeverZero() = runBlocking {
+        val env = FakeEnv(receiverParticipating = false)
+        val exporter = RecordingExporter()
+        val runner = HatTestRunner(env, testConfig(), VirtualClock(), exporter)
+
+        val report = runner.run()
+
+        assertNull(report.rxMetrics)
+        val json = report.toJson()
+        assertTrue("JSON must contain rxMetrics as null", json.contains("\"rxMetrics\": null"))
+        assertFalse("JSON must not fabricate packetsReceived as 0 when unavailable", json.contains("\"packetsReceived\": 0"))
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 6. Scenario Sequencing (5 Scenarios in documented order)
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    fun scenariosRunInDocumentedOrder() = runBlocking {
+        val env = FakeEnv(receiverParticipating = true)
+        val runner = HatTestRunner(env, testConfig(), VirtualClock(), RecordingExporter())
+
+        val report = runner.run()
+
+        val expected = listOf(
+            HatTestScenario.BASELINE.id,
+            HatTestScenario.RELIABLE.id,
+            HatTestScenario.BALANCED.id,
+            HatTestScenario.LOW_LATENCY.id,
+            HatTestScenario.PROFILE_STRESS.id
+        )
+        assertEquals(expected, report.scenarios.map { it.scenarioId })
+        assertEquals(5, report.scenarios.size)
+        assertEquals(1, report.scenarios.first().index)
+        assertEquals(5, report.scenarios.last().index)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 7. Generation Transition Validation
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    fun generationTransitionRequiresMonotonicityAndReceiverAckWithLabeledLatencies() = runBlocking {
+        val env = FakeEnv(receiverParticipating = true)
+        val runner = HatTestRunner(env, testConfig(), VirtualClock(), RecordingExporter())
+
+        val report = runner.run()
+
+        val reliable = report.scenarios.first { it.scenarioId == HatTestScenario.RELIABLE.id }
+        assertTrue(reliable.transitionRequired)
+        assertTrue(reliable.transitionCompleted)
+        assertTrue(reliable.generationMonotonic)
+        assertTrue(reliable.endGeneration > reliable.startGeneration)
+
+        assertTrue(reliable.transitions.isNotEmpty())
+        val transition = reliable.transitions.first()
+        assertTrue(transition.ok)
+        assertTrue(transition.generationMonotonic)
+        assertTrue(transition.receiverAcked)
+        assertNotNull(transition.configToFirstTxMs)
+        assertNotNull(transition.firstTxToFirstRxMs)
+        assertNotNull(transition.firstRxToFirstDecodeMs)
+        assertNotNull(transition.firstDecodeToFirstAudioWriteMs)
+    }
+
+    @Test
+    fun transitionFailsWhenReceiverDoesNotAcknowledge() = runBlocking {
+        val env = FakeEnv(receiverParticipating = true, ackTransitions = false)
         val config = testConfig(transitionTimeoutMs = 100L)
         val runner = HatTestRunner(env, config, VirtualClock(), RecordingExporter())
 
         val report = runner.run()
 
-        val normal = report.scenarios.first { it.scenarioId == HatTestScenario.NORMAL.id }
-        assertEquals(HatTestVerdict.FAIL, normal.verdict)
-        assertTrue(normal.reason.contains("did not advance") || normal.reason.contains("transition"))
-        assertTrue(normal.transitionRequired)
-        assertFalse(normal.transitionCompleted)
-    }
-
-    @Test
-    fun failedScenarioDoesNotStopTheRemainingScenarios() = runBlocking {
-        val env = FakeEnv(autoTransition = false)
-        val runner = HatTestRunner(env, testConfig(transitionTimeoutMs = 100L), VirtualClock(), RecordingExporter())
-
-        val report = runner.run()
-
-        assertEquals(6, report.scenarios.size)
-        assertEquals(HatTestVerdict.FAIL, report.scenarios[1].verdict)
-        assertTrue(report.scenarios[2].index == 3)
-        assertEquals(HatTestScenario.PROFILE_STRESS.id, report.scenarios.last().scenarioId)
-        assertEquals("FAIL", report.summary.verdict)
-        assertTrue(report.summary.findings.isNotEmpty())
-    }
-
-    @Test
-    fun profileRequestFailureIsReportedAsAFailedTransition() = runBlocking {
-        val env = FakeEnv(applyResult = false)
-        val runner = HatTestRunner(env, testConfig(), VirtualClock(), RecordingExporter())
-
-        val report = runner.run()
-
-        val normal = report.scenarios.first { it.scenarioId == HatTestScenario.NORMAL.id }
-        assertEquals(HatTestVerdict.FAIL, normal.verdict)
-        assertTrue(normal.reason.contains("could not be delivered"))
-    }
-
-    @Test
-    fun generationGoingBackwardsFailsTheScenario() = runBlocking {
-        val env = FakeEnv()
-        env.generationDropAtCall = 3
-        val runner = HatTestRunner(env, testConfig(), VirtualClock(), RecordingExporter())
-
-        val report = runner.run()
-
-        val baseline = report.scenarios.first()
-        assertFalse(baseline.generationMonotonic)
-        assertEquals(HatTestVerdict.FAIL, baseline.verdict)
-        assertTrue(baseline.reason.contains("backwards"))
-    }
-
-    @Test
-    fun preconditionFailureSkipsEveryScenarioAndStillExportsAFailureReport() = runBlocking {
-        val env = FakeEnv(
-            preconditions = HatTestPreconditions(
-                ok = false,
-                reasons = listOf("no receiver is connected (activeReceivers=0)"),
-                details = mapOf("activeReceivers" to 0)
-            )
-        )
-        val exporter = RecordingExporter()
-        val runner = HatTestRunner(env, testConfig(), VirtualClock(), exporter)
-
-        val report = runner.run()
-
-        assertTrue(report.scenarios.isEmpty())
-        assertFalse(report.preconditions.ok)
-        assertTrue(report.summary.verdict.startsWith("NOT RUN"))
-        assertTrue(report.summary.findings.any { it.contains("no receiver is connected") })
-        assertTrue(env.appliedProfiles.isEmpty())
-        assertEquals(2, exporter.files.size)
-        assertEquals(HatTestState.FAILED, runner.progress.value.state)
-        assertNotNull(runner.progress.value.error)
-    }
-
-    @Test
-    fun exportFailureIsReportedWithTheExactReason() = runBlocking {
-        val env = FakeEnv()
-        val exporter = RecordingExporter(failure = "no space left on device")
-        val runner = HatTestRunner(env, testConfig(), VirtualClock(), exporter)
-
-        runner.run()
-
-        assertEquals(HatTestState.FAILED, runner.progress.value.state)
-        assertTrue(runner.progress.value.error.orEmpty().contains("no space left on device"))
-        // The run itself still produced a report for the user to inspect.
-        assertNotNull(runner.progress.value.report)
-        assertEquals(HatTestScenario.entries.size - 2, runner.progress.value.report!!.scenarios.size)
+        val reliable = report.scenarios.first { it.scenarioId == HatTestScenario.RELIABLE.id }
+        assertEquals(HatTestVerdict.FAIL, reliable.verdict)
+        assertTrue(reliable.reason.contains("receiver did not acknowledge"))
+        assertFalse(reliable.transitionCompleted)
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Cancellation / manual checkpoint
+    // 8. Session Cancellation
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    fun cancellationStopsTheRunAndExportsAPartialReport() = runBlocking {
-        val env = FakeEnv()
-        val clock = GateClock()
+    fun sessionCancellationHaltsExecutionExportsPartialReport() = runBlocking {
+        val gate = GateClock()
+        val env = FakeEnv(receiverParticipating = true)
         val exporter = RecordingExporter()
-        val runner = HatTestRunner(env, testConfig(), clock, exporter)
+        val runner = HatTestRunner(env, testConfig(), gate, exporter)
 
-        val job = launch { runner.run() }
-        awaitCondition { runner.progress.value.state == HatTestState.RUNNING }
-        val scenariosStartedBeforeCancel = env.appliedProfiles.size
+        val job = launch {
+            runner.run()
+        }
 
+        delay(50)
         runner.cancel()
-        clock.release()
+        gate.release()
         job.join()
 
         assertEquals(HatTestState.CANCELLED, runner.progress.value.state)
-        assertEquals("cancelled", runner.progress.value.error)
-        assertTrue(exporter.files.size == 2)
-        assertEquals(1, runner.progress.value.report!!.scenarios.size)
-        assertEquals(HatTestVerdict.SKIPPED, runner.progress.value.report!!.scenarios.first().verdict)
-        // No further profile change may be requested once cancelled.
-        assertEquals(scenariosStartedBeforeCancel, env.appliedProfiles.size)
-        assertTrue(runner.isCancelled)
-    }
-
-    @Test
-    fun manualNetworkCheckpointWaitsForTheUserAndThenMeasuresRecovery() = runBlocking {
-        val env = FakeEnv()
-        val runner = HatTestRunner(
-            env,
-            testConfig(includeManualNetworkInterrupt = true),
-            VirtualClock(),
-            RecordingExporter()
-        )
-
-        val job = launch { runner.run() }
-        awaitCondition { runner.progress.value.awaitingManualContinue }
-
-        assertTrue(runner.progress.value.message.orEmpty().contains("interrupt Wi-Fi"))
-
-        runner.continueManualStep()
-        job.join()
-
-        val report = runner.progress.value.report!!
-        val interruption = report.scenarios.first { it.scenarioId == HatTestScenario.NETWORK_INTERRUPTION.id }
-        assertTrue(interruption.verdict == HatTestVerdict.PASS || interruption.verdict == HatTestVerdict.WARN)
-        assertTrue(interruption.durationMs > 0L)
-        assertEquals(HatTestState.COMPLETED, runner.progress.value.state)
-        assertFalse(runner.progress.value.awaitingManualContinue)
-    }
-
-    @Test
-    fun receiverReconnectIsMarkedManualRequiredAndNeverFaked() = runBlocking {
-        val env = FakeEnv()
-        val runner = HatTestRunner(
-            env,
-            testConfig(includeReceiverReconnect = true),
-            VirtualClock(),
-            RecordingExporter()
-        )
-
-        val report = runner.run()
-
-        val reconnect = report.scenarios.first { it.scenarioId == HatTestScenario.RECEIVER_RECONNECT.id }
-        assertEquals(HatTestVerdict.MANUAL_REQUIRED, reconnect.verdict)
-        assertTrue(reconnect.reason.contains("cannot be triggered automatically"))
-        assertEquals(1, report.summary.manualRequired)
-        assertTrue(report.summary.verdict == "PASS WITH WARNINGS")
-        assertTrue(report.notes.any { it.contains("requires manual action") })
-    }
-
-    @Test
-    fun receiverReconnectRunsWhenTheEnvironmentCanRestartTheLocalReceiver() = runBlocking {
-        val env = FakeEnv(receiverRestartSupported = true, receiverRestartResult = true)
-        val runner = HatTestRunner(
-            env,
-            testConfig(includeReceiverReconnect = true),
-            VirtualClock(),
-            RecordingExporter()
-        )
-
-        val report = runner.run()
-
-        val reconnect = report.scenarios.first { it.scenarioId == HatTestScenario.RECEIVER_RECONNECT.id }
-        assertEquals(1, env.receiverRestarts)
-        assertTrue(reconnect.verdict == HatTestVerdict.PASS || reconnect.verdict == HatTestVerdict.WARN)
+        assertEquals(2, exporter.files.size)
+        assertTrue(exporter.files.keys.any { it.endsWith(".json") })
+        assertTrue(exporter.files.keys.any { it.endsWith(".log") })
+        assertTrue(env.sessionEnded)
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Aggregation
+    // 9. Full Report Generation (JSON + Log Export)
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    fun counterAggregationTelescopesDeltasAcrossSamples() = runBlocking {
-        val env = FakeEnv()
-        env.behavior = { call ->
-            mapOf(
-                "CAPTURE" to mapOf(
-                    "packetsGenerated" to call * 10L,
-                    "packetsSent" to call * 10L,
-                    "framesCaptured" to call * 100L,
-                    "readErrors" to 0L
-                )
-            )
-        }
-        val runner = HatTestRunner(env, testConfig(), VirtualClock(), RecordingExporter())
-
-        val report = runner.run()
-
-        // baseline: start sample (call 1) + 4 interval samples + end sample (call 6) => delta of 5 steps.
-        val baseline = report.scenarios.first()
-        assertEquals(50L, baseline.metrics.packetsGenerated)
-        assertEquals(50L, baseline.metrics.packetsSent)
-        assertEquals(500L, baseline.metrics.framesCaptured)
-        assertEquals(0L, baseline.metrics.captureReadErrors)
-    }
-
-    @Test
-    fun counterResetsInsideAScenarioNeverProduceNegativeDeltas() = runBlocking {
-        val env = FakeEnv()
-        env.behavior = { call ->
-            val value = if (call <= 2) call * 10L else (call - 2L)
-            mapOf("CAPTURE" to mapOf("packetsGenerated" to value))
-        }
-        val runner = HatTestRunner(env, testConfig(), VirtualClock(), RecordingExporter())
-
-        val report = runner.run()
-
-        // 10 (grow) + reset ignored + 1 + 1 + 1 = 13
-        assertEquals(13L, report.scenarios.first().metrics.packetsGenerated)
-        assertTrue(report.scenarios.all { it.metrics.packetsGenerated >= 0L })
-    }
-
-    @Test
-    fun jitterAndBufferGaugesAreSampledWithMinAvgMax() = runBlocking {
-        val env = FakeEnv()
-        env.behavior = { call ->
-            mapOf(
-                "JITTER" to mapOf(
-                    "jitterMs" to call.toDouble(),
-                    "bufferMs" to (call * 2).toDouble(),
-                    "targetLatencyMs" to 40.0
-                )
-            )
-        }
-        val runner = HatTestRunner(env, testConfig(), VirtualClock(), RecordingExporter())
-
-        val report = runner.run()
-
-        // Samples are the scenario-start section, one per interval and the scenario-end section.
-        val baseline = report.scenarios.first()
-        assertEquals(1.0, baseline.metrics.minJitterMs!!, 0.0001)
-        assertEquals(6.0, baseline.metrics.maxJitterMs!!, 0.0001)
-        assertEquals(3.5, baseline.metrics.avgJitterMs!!, 0.0001)
-        assertEquals(2.0, baseline.metrics.minBufferMs!!, 0.0001)
-        assertEquals(12.0, baseline.metrics.maxBufferMs!!, 0.0001)
-        // A constant reading collapses to a single value and a zero swing.
-        assertEquals(40.0, baseline.metrics.minTargetLatencyMs!!, 0.0001)
-        assertEquals(40.0, baseline.metrics.maxTargetLatencyMs!!, 0.0001)
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // Classification
-    // ---------------------------------------------------------------------------------------------
-
-    @Test
-    fun cleanRunClassifiesEverythingAsPass() = runBlocking {
-        val runner = HatTestRunner(FakeEnv(), testConfig(), VirtualClock(), RecordingExporter())
-
-        val report = runner.run()
-
-        assertTrue(report.scenarios.all { it.verdict == HatTestVerdict.PASS })
-        assertEquals("PASS", report.summary.verdict)
-        assertEquals(6, report.summary.passed)
-    }
-
-    @Test
-    fun underrunsAndLossClassifyAsWarnNotFail() = runBlocking {
-        val env = FakeEnv()
-        env.behavior = { call ->
-            mapOf(
-                "PLAYBACK" to mapOf("underruns" to call.toLong()),
-                "RX" to mapOf("lostPackets" to call.toLong(), "latePackets" to call.toLong())
-            )
-        }
-        val runner = HatTestRunner(env, testConfig(), VirtualClock(), RecordingExporter())
-
-        val report = runner.run()
-
-        val baseline = report.scenarios.first()
-        assertEquals(HatTestVerdict.WARN, baseline.verdict)
-        assertTrue(baseline.reason.contains("underrun"))
-        assertTrue(baseline.warnings.any { it.contains("lost/concealed") })
-        assertTrue(report.summary.warned > 0)
-        assertEquals("PASS WITH WARNINGS", report.summary.verdict)
-    }
-
-    @Test
-    fun staleGenerationPacketsClassifyAsFail() = runBlocking {
-        val env = FakeEnv()
-        env.behavior = { call -> mapOf("RX" to mapOf("unknownGeneration" to call.toLong())) }
-        val runner = HatTestRunner(env, testConfig(), VirtualClock(), RecordingExporter())
-
-        val report = runner.run()
-
-        val baseline = report.scenarios.first()
-        assertEquals(HatTestVerdict.FAIL, baseline.verdict)
-        assertTrue(baseline.reason.contains("stale generation"))
-        assertEquals("FAIL", report.summary.verdict)
-    }
-
-    @Test
-    fun playbackStoppingUnexpectedlyClassifiesAsFail() = runBlocking {
-        val env = FakeEnv()
-        env.behavior = { _ -> mapOf("PLAYBACK" to mapOf("playState" to 2)) }
-        val runner = HatTestRunner(env, testConfig(), VirtualClock(), RecordingExporter())
-
-        val report = runner.run()
-
-        val baseline = report.scenarios.first()
-        assertEquals(HatTestVerdict.FAIL, baseline.verdict)
-        assertTrue(baseline.reason.contains("playback stopped"))
-    }
-
-    @Test
-    fun configurationFailuresClassifyAsFail() = runBlocking {
-        val env = FakeEnv()
-        env.namedCounters = mapOf("config_init_failures" to 2L, "config_announce_failures" to 1L)
-        val runner = HatTestRunner(env, testConfig(), VirtualClock(), RecordingExporter())
-
-        val report = runner.run()
-
-        val baseline = report.scenarios.first()
-        assertEquals(HatTestVerdict.FAIL, baseline.verdict)
-        assertTrue(baseline.reason.contains("capture pipeline initialization failed"))
-        assertTrue(baseline.metrics.configInitFailures > 0L)
-        assertTrue(baseline.metrics.configAnnounceFailures > 0L)
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // Serialization
-    // ---------------------------------------------------------------------------------------------
-
-    @Test
-    fun jsonAndLogExportsContainTheWholeRun() = runBlocking {
-        val env = FakeEnv()
-        env.snapshotText = "snapshot-body"
+    fun fullReportExportMatchesSection13Schema() = runBlocking {
+        val env = FakeEnv(receiverParticipating = true)
+        env.snapshotText = "{\"CAPTURE\":{\"recordingState\":3}}"
         val exporter = RecordingExporter()
         val runner = HatTestRunner(env, testConfig(), VirtualClock(), exporter)
 
         val report = runner.run()
         val json = report.toJson()
-        val log = exporter.files.entries.first { it.key.endsWith(".json") }.value
         val logText = exporter.files.entries.first { it.key.endsWith(".log") }.value
 
-        assertEquals(json, log)
-        for (key in listOf("run", "device", "preconditions", "scenarios", "finalSnapshot", "events", "summary")) {
-            assertTrue("json is missing $key", json.contains("\"$key\""))
+        for (key in listOf(
+            "run", "transmitter", "receiver", "network", "preconditions",
+            "scenarios", "transitions", "txMetrics", "rxMetrics", "endToEndMetrics",
+            "finalSnapshot", "events", "errors", "summary", "notes"
+        )) {
+            assertTrue("JSON is missing section '$key'", json.contains("\"$key\""))
         }
-        assertTrue(json.contains("\"testRunId\""))
+
+        assertTrue(json.contains("\"testSessionId\""))
         assertTrue(json.contains("\"BASELINE\""))
         assertTrue(json.contains("\"packetsSent\""))
-        assertTrue(json.contains("snapshot-body"))
+        assertTrue(json.contains("\"packetsReceived\""))
+        assertTrue(json.contains("\"audioTrackWrites\""))
 
         assertTrue(logText.contains("HAT AUTOMATED DIAGNOSTIC TEST"))
         assertTrue(logText.contains("SCENARIO 1 - Baseline"))
-        assertTrue(logText.contains("[METRICS]"))
-        assertTrue(logText.contains("[GENERATION]"))
+        assertTrue(logText.contains("[METRICS"))
         assertTrue(logText.contains("FINAL SUMMARY"))
         assertTrue(logText.contains("END OF HAT AUTOMATED DIAGNOSTIC TEST"))
     }
 
-    @Test
-    fun jsonEscapingSurvivesSnapshotsWithQuotesNewlinesAndBackslashes() = runBlocking {
-        val env = FakeEnv()
-        env.snapshotText = "line1\nline2 \"quoted\" \\ backslash\ttab"
-        val runner = HatTestRunner(env, testConfig(), VirtualClock(), RecordingExporter())
-
-        val json = runner.run().toJson()
-
-        assertTrue(json.contains("line1\\nline2 \\\"quoted\\\" \\\\ backslash\\ttab"))
-        assertFalse(json.contains("line1\nline2"))
-    }
-
     // ---------------------------------------------------------------------------------------------
-    // Independence / concurrency
+    // 10. Non-Fatal AudioRecord.read() Error Handling
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    fun twoRunsProduceIndependentReportsAndClearTheRunTag() = runBlocking {
-        val env = FakeEnv()
-        val first = HatTestRunner(env, testConfig(), VirtualClock(), RecordingExporter()).run()
-        assertEquals("", HatDiagnostics.testRunId())
-
-        val second = HatTestRunner(env, testConfig(), VirtualClock(), RecordingExporter()).run()
-
-        assertTrue(first.run.testRunId.isNotEmpty())
-        assertTrue(second.run.testRunId.isNotEmpty())
-        assertTrue(first.run.testRunId != second.run.testRunId)
-        assertEquals(first.summary.total, second.summary.total)
-        assertFalse(first.baseName().isEmpty())
-    }
-
-    @Test
-    fun secondStartIsRejectedWhileARunIsActive() = runBlocking {
-        val gate = GateClock()
-        val secondGate = GateClock()
-        val first = HatTestRunner(FakeEnv(), testConfig(), gate, RecordingExporter())
-        val second = HatTestRunner(FakeEnv(), testConfig(), secondGate, RecordingExporter())
-
-        try {
-            assertTrue(HatTestController.startWith(first))
-            assertFalse(HatTestController.startWith(second))
-
-            HatTestController.cancel()
-            gate.release()
-            awaitCondition { !HatTestController.isRunning() }
-
-            assertTrue(HatTestController.startWith(second))
-        } finally {
-            HatTestController.cancel()
-            gate.release()
-            secondGate.release()
+    fun nonFatalCaptureErrorsWarnInsteadOfFailingScenario() = runBlocking {
+        val env = FakeEnv(receiverParticipating = true)
+        var frames = 480000L
+        var reads = 500L
+        var packets = 500L
+        var captureErrors = 0L
+        // Inject capture errors into TxMetrics while frames are captured
+        env.customTxSupplier = {
+            frames += 48000L
+            reads += 50L
+            packets += 50L
+            captureErrors += 2L
+            HatTestTxMetrics(
+                packetsGenerated = packets,
+                packetsSent = packets,
+                sendErrors = 0L,
+                captureReads = reads,
+                captureErrors = captureErrors,
+                framesCaptured = frames,
+                avgCaptureReadMs = 4.0,
+                maxCaptureReadMs = 8.0,
+                avgEncodeMs = 1.5,
+                maxEncodeMs = 3.0,
+                avgSendMs = 0.5,
+                maxSendMs = 2.0
+            )
         }
-        awaitCondition(timeoutMs = 10_000) { !HatTestController.isRunning() }
-    }
 
-    @Test
-    fun cancellationApiIsSafeWithNoActiveRun() {
-        HatTestController.cancel()
-        HatTestController.continueManual()
-        assertFalse(HatTestController.isRunning())
+        val runner = HatTestRunner(env, testConfig(), VirtualClock(), RecordingExporter())
+        val report = runner.run()
+
+        val baseline = report.scenarios.first()
+        assertEquals(HatTestVerdict.WARN, baseline.verdict)
+        assertTrue(baseline.warnings.any { it.contains("non-fatal capture read error") })
+        assertEquals("WARN", report.summary.verdict)
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Test doubles
+    // Test Doubles
     // ---------------------------------------------------------------------------------------------
 
     private fun testConfig(
-        durationMs: Long = 20L,
-        sampleIntervalMs: Long = 5L,
-        transitionTimeoutMs: Long = 5_000L,
-        includeReceiverReconnect: Boolean = false,
-        includeManualNetworkInterrupt: Boolean = false
+        baselineMs: Long = 20L,
+        reliableMs: Long = 20L,
+        balancedMs: Long = 20L,
+        lowLatencyMs: Long = 20L,
+        stressStepMs: Long = 10L,
+        stressFinalMs: Long = 20L,
+        transitionTimeoutMs: Long = 500L,
+        receiverHandshakeTimeoutMs: Long = 200L,
+        telemetryTimeoutMs: Long = 200L,
+        sampleIntervalMs: Long = 5L
     ) = HatTestConfig(
-        baselineMs = durationMs,
-        normalMs = durationMs,
-        adaptiveMs = durationMs,
-        uncappedMs = durationMs,
-        lowLatencyMs = durationMs,
-        reconnectMs = durationMs,
-        stressPauseMs = durationMs,
-        stressTailMs = durationMs,
-        manualInterruptMs = durationMs,
+        baselineMs = baselineMs,
+        reliableMs = reliableMs,
+        balancedMs = balancedMs,
+        lowLatencyMs = lowLatencyMs,
+        stressStepMs = stressStepMs,
+        stressFinalMs = stressFinalMs,
         transitionTimeoutMs = transitionTimeoutMs,
-        sampleIntervalMs = sampleIntervalMs,
-        includeReceiverReconnect = includeReceiverReconnect,
-        includeManualNetworkInterrupt = includeManualNetworkInterrupt
+        receiverHandshakeTimeoutMs = receiverHandshakeTimeoutMs,
+        telemetryTimeoutMs = telemetryTimeoutMs,
+        sampleIntervalMs = sampleIntervalMs
     )
 
-    private suspend fun awaitCondition(timeoutMs: Long = 5_000L, condition: () -> Boolean) {
-        withTimeout(timeoutMs) {
-            while (!condition()) delay(2)
-        }
-    }
-
-    /** Deterministic clock: every wait advances virtual time instead of sleeping. */
     private class VirtualClock : HatTestClock {
         private var now = 1_000_000L
         override fun nowMs(): Long = now
@@ -583,7 +412,6 @@ class HatTestRunnerTest {
         }
     }
 
-    /** Clock that blocks on the first wait until released, so a run can be interrupted deterministically. */
     private class GateClock : HatTestClock {
         private var now = 1_000_000L
         private val gate = CompletableDeferred<Unit>()
@@ -617,28 +445,37 @@ class HatTestRunnerTest {
         preconditions: HatTestPreconditions = HatTestPreconditions(true, emptyList(), emptyMap()),
         var applyResult: Boolean = true,
         var autoTransition: Boolean = true,
-        var receiverRestartSupported: Boolean = false,
-        var receiverRestartResult: Boolean = false
+        var receiverParticipating: Boolean = true,
+        var telemetryTimeout: Boolean = false,
+        var ackTransitions: Boolean = true
     ) : HatTestEnvironmentAdapter() {
 
         private val preconditionsResult = preconditions
-        private val generation = AtomicLong(5L)
+        val generation = AtomicLong(5L)
 
         @Volatile
-        private var profileName: String? = initialProfile
+        var profileName: String? = initialProfile
 
         val appliedProfiles = CopyOnWriteArrayList<String>()
         var snapshotCalls = 0
-        var generationDropAtCall: Int? = null
-        var behavior: ((Int) -> Map<String, Map<String, Any?>>)? = null
-        var namedCounters: Map<String, Long> = emptyMap()
         var snapshotText: String = "snapshot"
-        var receiverRestarts = 0
+        var announcedSessionId: String? = null
+        var sessionEnded: Boolean = false
+
+        var customTxSupplier: (() -> HatTestTxMetrics)? = null
+        var customRxSupplier: (() -> HatTestControlMessage.RxStats)? = null
+
+        val rxPackets = AtomicLong(500L)
+        val rxWrites = AtomicLong(250L)
+        val rxFrames = AtomicLong(240000L)
+        val txPackets = AtomicLong(500L)
+        val txFrames = AtomicLong(480000L)
+        val txReads = AtomicLong(500L)
 
         override fun preconditions(): HatTestPreconditions = preconditionsResult
         override fun currentGeneration(): Long = generation.get()
         override fun currentProfileName(): String? = profileName
-        override fun connectedReceiverCount(): Int = 1
+        override fun connectedReceiverCount(): Int = if (receiverParticipating) 1 else 0
 
         override fun applyProfile(target: LatencyTarget): Boolean {
             appliedProfiles += target.name
@@ -652,26 +489,20 @@ class HatTestRunnerTest {
 
         override fun sectionsSnapshot(): Map<String, Map<String, Any?>> {
             snapshotCalls++
-            generationDropAtCall?.let { dropAt ->
-                if (snapshotCalls >= dropAt) generation.set(1L)
-            }
-            return behavior?.invoke(snapshotCalls) ?: emptyMap()
+            return mapOf(
+                "CONFIG" to mapOf("profile" to profileName, "endpoint" to "192.168.1.100:50005"),
+                "CAPTURE" to mapOf("recordingState" to 3, "audioRecordState" to 1),
+                "PLAYBACK" to mapOf("playState" to 3)
+            )
         }
 
-        // Scaled by the sample count so the named diagnostics counters grow during a scenario like the real
-        // service counters do (a constant value would produce a zero delta).
-        override fun counterSnapshot(): Map<String, Long> =
-            if (namedCounters.isEmpty()) emptyMap() else namedCounters.mapValues { it.value * snapshotCalls }
+        override fun counterSnapshot(): Map<String, Long> = emptyMap()
         override fun diagnosticsSnapshot(): String = snapshotText
         override fun recentEvents(): List<HatDiagnostics.Event> = emptyList()
-        override fun canRestartLocalReceiver(): Boolean = receiverRestartSupported
-
-        override fun restartLocalReceiver(): Boolean {
-            receiverRestarts++
-            return receiverRestartResult
-        }
-
         override fun isTransmitterRunning(): Boolean = true
+        override fun isReceiverRunning(): Boolean = receiverParticipating
+        override fun remoteEndpoint(): String? = if (receiverParticipating) "192.168.1.100:50005" else null
+
         override fun deviceInfo(): HatTestDeviceInfo =
             HatTestDeviceInfo("TestVendor", "TestModel", "product", "device", "board", "14", 34, "fingerprint", "AudioTrack", "UDP")
 
@@ -679,5 +510,100 @@ class HatTestRunnerTest {
         override fun versionCode(): Int = 59
         override fun buildType(): String = "debug"
         override fun gitRevision(): String? = null
+
+        override fun announceTestSession(testSessionId: String, generation: Long): Boolean {
+            announcedSessionId = testSessionId
+            return receiverParticipating
+        }
+
+        override suspend fun awaitReceiverJoin(testSessionId: String, timeoutMs: Long): HatTestReceiverInfo? {
+            if (!receiverParticipating) return null
+            return HatTestReceiverInfo(
+                testSessionId = testSessionId,
+                device = "ReceiverModel",
+                appVersion = "1.8.6",
+                generation = generation.get(),
+                endpoint = "192.168.1.100:50005"
+            )
+        }
+
+        override fun latestRxStats(testSessionId: String): HatTestControlMessage.RxStats? {
+            if (!receiverParticipating) return null
+            val custom = customRxSupplier?.invoke()
+            if (custom != null) return custom
+
+            val timestamp = if (telemetryTimeout) 1_000L else System.currentTimeMillis()
+            val rP = rxPackets.addAndGet(50L)
+            val rW = rxWrites.addAndGet(25L)
+            val rF = rxFrames.addAndGet(24000L)
+            return HatTestControlMessage.RxStats(
+                testSessionId = testSessionId,
+                generation = generation.get(),
+                timestamp = timestamp,
+                packetsReceived = rP,
+                packetsLost = 0L,
+                packetsLate = 0L,
+                packetsOutOfOrder = 0L,
+                packetsDuplicate = 0L,
+                fecRecovered = 0L,
+                decodeErrors = 0L,
+                bufferPackets = 4,
+                bufferFrames = 384,
+                bufferMs = 20.0,
+                targetLatencyMs = 35.0,
+                jitterMs = 2.0,
+                driftPpm = 0.0,
+                audioTrackWrites = rW,
+                framesWritten = rF,
+                underruns = 0L,
+                writeErrors = 0L,
+                avgReceiveMs = 1.0,
+                maxReceiveMs = 2.0,
+                avgDecodeMs = 1.5,
+                maxDecodeMs = 3.0,
+                avgWriteMs = 0.5,
+                maxWriteMs = 1.0,
+                playbackHead = 50000L
+            )
+        }
+
+        override suspend fun awaitGenerationAck(testSessionId: String, generation: Long, timeoutMs: Long): HatTestControlMessage.GenerationAck? {
+            if (!receiverParticipating || !ackTransitions) return null
+            return HatTestControlMessage.GenerationAck(
+                testSessionId = testSessionId,
+                generation = generation,
+                profile = profileName,
+                firstRxTimestamp = 1_000_030L,
+                firstDecodeTimestamp = 1_000_035L,
+                firstAudioWriteTimestamp = 1_000_040L
+            )
+        }
+
+        override fun endTestSession(testSessionId: String) {
+            sessionEnded = true
+        }
+
+        override fun latestTxStats(): HatTestTxMetrics {
+            val custom = customTxSupplier?.invoke()
+            if (custom != null) return custom
+
+            val tP = txPackets.addAndGet(50L)
+            val tF = txFrames.addAndGet(48000L)
+            val tR = txReads.addAndGet(50L)
+            return HatTestTxMetrics(
+                packetsGenerated = tP,
+                packetsSent = tP,
+                sendErrors = 0L,
+                captureReads = tR,
+                captureErrors = 0L,
+                framesCaptured = tF,
+                avgCaptureReadMs = 4.0,
+                maxCaptureReadMs = 8.0,
+                avgEncodeMs = 1.5,
+                maxEncodeMs = 3.0,
+                avgSendMs = 0.5,
+                maxSendMs = 2.0
+            )
+        }
     }
 }

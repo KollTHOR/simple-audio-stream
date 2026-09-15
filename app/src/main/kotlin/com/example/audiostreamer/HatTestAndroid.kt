@@ -176,6 +176,27 @@ class AndroidHatTestEnvironment(context: Context) : HatTestEnvironment {
 
     override fun isReceiverRunning(): Boolean = AudioSinkService.isRunning.get()
 
+    override fun announceTestSession(testSessionId: String, generation: Long): Boolean =
+        HatTestSessionCoordinator.startSession(testSessionId, generation)
+
+    override suspend fun awaitReceiverJoin(testSessionId: String, timeoutMs: Long): HatTestReceiverInfo? =
+        HatTestSessionCoordinator.awaitReceiverJoin(testSessionId, timeoutMs)
+
+    override fun latestRxStats(testSessionId: String): HatTestControlMessage.RxStats? =
+        HatTestSessionCoordinator.latestRxStats(testSessionId)
+
+    override suspend fun awaitGenerationAck(testSessionId: String, generation: Long, timeoutMs: Long): HatTestControlMessage.GenerationAck? =
+        HatTestSessionCoordinator.awaitGenerationAck(testSessionId, generation, timeoutMs)
+
+    override fun endTestSession(testSessionId: String) =
+        HatTestSessionCoordinator.endSession(testSessionId)
+
+    override fun latestTxStats(): HatTestTxMetrics =
+        AudioCaptureService.getTxMetrics()
+
+    override fun remoteEndpoint(): String? =
+        HatTestSessionCoordinator.receiverEndpoint ?: StreamState.telemetry.value.remoteEndpoint
+
     private fun sectionsOf(): Map<String, Map<String, Any?>> = try {
         HatDiagnostics.sectionsSnapshot()
     } catch (t: Throwable) {

@@ -5,38 +5,45 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Data model + serializers for the HAT automated diagnostic test harness (Phase 3.1).
+ * Data model + serializers for the HAT automated diagnostic test harness (Phase 3.2).
  *
  * Everything in this file is pure Kotlin (no Android types reachable on the hot path of serialization) so the
- * report can be unit tested on the JVM without AudioRecord/AudioTrack hardware. JSON is written by a tiny
- * local writer instead of org.json because org.json is only available through the (mocked) Android runtime in
- * local unit tests.
+ * report can be unit tested on the JVM without AudioRecord/AudioTrack hardware.
  */
 
 /** Lifecycle of an automated test run, as displayed in Settings → Diagnostics → Full HAT Test. */
 enum class HatTestState {
-    IDLE, PREPARING, RUNNING, COMPLETING, EXPORTING, COMPLETED, FAILED, CANCELLED
+    IDLE, PREPARING, RUNNING, COMPLETING, EXPORTING, COMPLETED, FAILED, CANCELLED, NOT_EXECUTED
 }
 
-/** Per-scenario outcome. `MANUAL_REQUIRED` is an honest "this device/build cannot do it automatically". */
+/**
+ * Per-scenario outcome.
+ *
+ * Requirements:
+ *  - PASS: complete TX + RX telemetry and no fatal failures.
+ *  - WARN: complete TX + RX telemetry with recoverable errors/underruns/loss.
+ *  - FAIL: complete telemetry but actual fatal runtime failure.
+ *  - INCOMPLETE: test could not obtain required telemetry (e.g. receiver telemetry disappeared).
+ *  - NOT_EXECUTED: preconditions failed or receiver not participating.
+ *  - SKIPPED: cancelled before execution.
+ */
 enum class HatTestVerdict(val label: String) {
     PASS("PASS"),
     WARN("WARN"),
     FAIL("FAIL"),
-    MANUAL_REQUIRED("MANUAL_REQUIRED"),
-    SKIPPED("SKIPPED")
+    INCOMPLETE("INCOMPLETE"),
+    NOT_EXECUTED("NOT_EXECUTED"),
+    SKIPPED("SKIPPED"),
+    MANUAL_REQUIRED("MANUAL_REQUIRED")
 }
 
 /**
- * The scenarios executed, in order.
- *
- * NOTE on profile naming: this build exposes three streaming modes — Auto Adaptive, Low Latency (Opus) and
- * Music (uncompressed/uncapped lossless). The phase spec names four profile scenarios, so:
- *  - "Normal"   and "Uncapped" both resolve to the app's Music / uncompressed lossless mode ([LatencyTarget.RELIABLE]),
- *    which the app itself labels "Uncapped Music Mode". They are still recorded as distinct scenarios, and the
- *    report always states the requested *and* the applied profile so no transition is ever fabricated.
- *  - "Adaptive"  resolves to Auto Adaptive ([LatencyTarget.BALANCED]).
- *  - "Low Latency" resolves to the Opus low-latency profile ([LatencyTarget.LOW_LATENCY]).
+ * The scenarios executed, in order:
+ *  1. BASELINE: 30s current profile
+ *  2. RELIABLE: 30s
+ *  3. BALANCED: 30s
+ *  4. LOW_LATENCY: 30s
+ *  5. PROFILE_STRESS: 10s each BALANCED, RELIABLE, BALANCED, LOW_LATENCY, BALANCED; then 30s final BALANCED.
  */
 enum class HatTestScenario(
     val id: String,
@@ -45,23 +52,18 @@ enum class HatTestScenario(
     val targetProfile: LatencyTarget?
 ) {
     BASELINE("BASELINE", "Baseline", null),
-    NORMAL("NORMAL", "Normal", LatencyTarget.RELIABLE),
-    ADAPTIVE("ADAPTIVE", "Adaptive", LatencyTarget.BALANCED),
-    UNCAPPED("UNCAPPED", "Uncapped", LatencyTarget.RELIABLE),
+    RELIABLE("RELIABLE", "Reliable", LatencyTarget.RELIABLE),
+    BALANCED("BALANCED", "Balanced", LatencyTarget.BALANCED),
     LOW_LATENCY("LOW_LATENCY", "Low Latency", LatencyTarget.LOW_LATENCY),
-    PROFILE_STRESS("PROFILE_STRESS", "Profile Switch Stress", null),
-    RECEIVER_RECONNECT("RECEIVER_RECONNECT", "Receiver Reconnect", null),
-    NETWORK_INTERRUPTION("NETWORK_INTERRUPTION", "Network Interruption (Manual)", null);
+    PROFILE_STRESS("PROFILE_STRESS", "Profile Switch Stress", null);
 
     companion object {
-        /** Normal → Adaptive → Low Latency → Uncapped → Adaptive → Normal, expressed as wire profiles. */
         val STRESS_SEQUENCE: List<LatencyTarget> = listOf(
+            LatencyTarget.BALANCED,
             LatencyTarget.RELIABLE,
             LatencyTarget.BALANCED,
             LatencyTarget.LOW_LATENCY,
-            LatencyTarget.RELIABLE,
-            LatencyTarget.BALANCED,
-            LatencyTarget.RELIABLE
+            LatencyTarget.BALANCED
         )
     }
 }
@@ -75,32 +77,39 @@ val LatencyTarget.profilePreference: String
     }
 
 /**
- * Per-scenario aggregate metrics. Counters are deltas across the scenario window; the jitter/buffer/latency
- * values are sampled once per statistics interval during the scenario (they are instantaneous readings, not
- * counters). Null means "not observable on this device" (e.g. receiver-side metrics on a transmitter).
+ * Per-scenario aggregate metrics.
+ *
+ * Rules (Phase 3.2):
+ *  - Scenario metrics MUST be deltas across the scenario window, never cumulative global counters.
+ *  - Receiver metrics are null when receiver telemetry is unavailable. NEVER use zero for unavailable receiver data.
  */
 data class HatTestMetrics(
-    val packetsGenerated: Long = 0L,
-    val packetsSent: Long = 0L,
-    val bytesSent: Long = 0L,
-    val sendErrors: Long = 0L,
-    val packetsReceived: Long = 0L,
-    val bytesReceived: Long = 0L,
-    val packetsLost: Long = 0L,
-    val packetsLate: Long = 0L,
-    val packetsOutOfOrder: Long = 0L,
-    val packetsDuplicate: Long = 0L,
-    val fecRecovered: Long = 0L,
-    val decodeErrors: Long = 0L,
-    val writeErrors: Long = 0L,
-    val underruns: Long = 0L,
-    val captureReadErrors: Long = 0L,
-    val framesCaptured: Long = 0L,
-    val generationMismatches: Long = 0L,
-    val codecMismatches: Long = 0L,
-    val configInitFailures: Long = 0L,
-    val configAnnounceFailures: Long = 0L,
-    val configProducerStartFailures: Long = 0L,
+    val receiverParticipating: Boolean = false,
+    val packetsGenerated: Long? = null,
+    val packetsSent: Long? = null,
+    val bytesSent: Long? = null,
+    val sendErrors: Long? = null,
+    val captureReads: Long? = null,
+    val captureErrors: Long? = null,
+    val consecutiveCaptureErrors: Long? = null,
+    val framesCaptured: Long? = null,
+    val packetsReceived: Long? = null,
+    val bytesReceived: Long? = null,
+    val packetsLost: Long? = null,
+    val packetsLate: Long? = null,
+    val packetsOutOfOrder: Long? = null,
+    val packetsDuplicate: Long? = null,
+    val fecRecovered: Long? = null,
+    val decodeErrors: Long? = null,
+    val audioTrackWrites: Long? = null,
+    val framesWritten: Long? = null,
+    val underruns: Long? = null,
+    val writeErrors: Long? = null,
+    val generationMismatches: Long? = null,
+    val codecMismatches: Long? = null,
+    val configInitFailures: Long? = null,
+    val configAnnounceFailures: Long? = null,
+    val configProducerStartFailures: Long? = null,
     val minJitterMs: Double? = null,
     val avgJitterMs: Double? = null,
     val maxJitterMs: Double? = null,
@@ -110,20 +119,23 @@ data class HatTestMetrics(
     val minTargetLatencyMs: Double? = null,
     val avgTargetLatencyMs: Double? = null,
     val maxTargetLatencyMs: Double? = null,
+    val avgDriftPpm: Double? = null,
+    val playbackHead: Long? = null,
     val avgCaptureReadMs: Double? = null,
     val maxCaptureReadMs: Double? = null,
+    val avgEncodeMs: Double? = null,
+    val maxEncodeMs: Double? = null,
+    val avgSendMs: Double? = null,
+    val maxSendMs: Double? = null,
+    val avgReceiveMs: Double? = null,
+    val maxReceiveMs: Double? = null,
     val avgDecodeMs: Double? = null,
     val maxDecodeMs: Double? = null,
     val avgWriteMs: Double? = null,
-    val maxWriteMs: Double? = null,
-    val avgSendMs: Double? = null,
-    val maxSendMs: Double? = null,
-    val avgEncodeMs: Double? = null,
-    val maxEncodeMs: Double? = null,
-    val avgReceiveMs: Double? = null,
-    val maxReceiveMs: Double? = null
+    val maxWriteMs: Double? = null
 ) {
-    val hasReceiverTelemetry: Boolean get() = packetsReceived > 0L || decodeErrors > 0L || packetsLost > 0L
+    val hasReceiverTelemetry: Boolean
+        get() = receiverParticipating && packetsReceived != null && audioTrackWrites != null
 }
 
 /** Stream configuration observed for a scenario (from the live CONFIG / PLAYBACK snapshot sections). */
@@ -145,17 +157,38 @@ data class HatTestConfigSnapshot(
     val actualPerformanceMode: Int? = null
 )
 
-/** One generation/profile transition, used by the profile-switch stress scenario. */
+/**
+ * One generation/profile transition validation and end-to-end timing record (Phase 3.2).
+ *
+ * Labeled measurements:
+ *  - same-device (TX): config → first TX
+ *  - cross-device: first TX → first RX (note: clock skew between unsynchronized devices is uncalibrated)
+ *  - same-device (RX): first RX → first decode, first decode → first AudioTrack write
+ */
 data class HatTestTransition(
     val index: Int,
-    val fromProfile: String?,
-    val toProfile: String,
-    val fromGeneration: Long,
-    val toGeneration: Long,
+    val oldProfile: String?,
+    val newProfile: String,
+    val oldGeneration: Long,
+    val newGeneration: Long,
+    val transitionStart: Long,
+    val configCommitted: Long?,
+    val configAnnounced: Long?,
+    val firstTx: Long?,
+    val firstRx: Long?,
+    val firstDecode: Long?,
+    val firstAudioWrite: Long?,
+    val transitionComplete: Long?,
     val durationMs: Long,
     val transitionRequired: Boolean,
     val ok: Boolean,
-    val reason: String? = null
+    val reason: String? = null,
+    val generationMonotonic: Boolean = newGeneration > oldGeneration,
+    val receiverAcked: Boolean = firstRx != null,
+    val configToFirstTxMs: Long? = null,
+    val firstTxToFirstRxMs: Long? = null,
+    val firstRxToFirstDecodeMs: Long? = null,
+    val firstDecodeToFirstAudioWriteMs: Long? = null
 )
 
 data class HatTestScenarioResult(
@@ -187,6 +220,7 @@ data class HatTestScenarioResult(
 
 data class HatTestRunInfo(
     val testRunId: String,
+    val testSessionId: String = "",
     val streamRunId: String,
     val streamId: String,
     val startTimestampMs: Long,
@@ -211,16 +245,74 @@ data class HatTestDeviceInfo(
     val networkTransport: String?
 )
 
+data class HatTestReceiverInfo(
+    val testSessionId: String,
+    val device: String,
+    val appVersion: String,
+    val generation: Long,
+    val endpoint: String? = null
+)
+
+data class HatTestNetworkInfo(
+    val transport: String?,
+    val endpoint: String?,
+    val activeReceivers: Int
+)
+
+data class HatTestTxMetrics(
+    val packetsGenerated: Long,
+    val packetsSent: Long,
+    val sendErrors: Long,
+    val captureReads: Long,
+    val captureErrors: Long,
+    val framesCaptured: Long,
+    val avgCaptureReadMs: Double?,
+    val maxCaptureReadMs: Double?,
+    val avgEncodeMs: Double?,
+    val maxEncodeMs: Double?,
+    val avgSendMs: Double?,
+    val maxSendMs: Double?
+)
+
+data class HatTestRxMetrics(
+    val packetsReceived: Long,
+    val packetsLost: Long,
+    val packetsLate: Long,
+    val packetsOutOfOrder: Long,
+    val packetsDuplicate: Long,
+    val fecRecovered: Long,
+    val decodeErrors: Long,
+    val audioTrackWrites: Long,
+    val framesWritten: Long,
+    val underruns: Long,
+    val writeErrors: Long,
+    val avgJitterMs: Double?,
+    val avgBufferMs: Double?,
+    val avgDriftPpm: Double?
+)
+
+data class HatTestEndToEndMetrics(
+    val transitionsCount: Int,
+    val allGenerationsMonotonic: Boolean,
+    val allGenerationsAcked: Boolean,
+    val avgConfigToFirstTxMs: Double?,
+    val avgFirstRxToFirstDecodeMs: Double?,
+    val avgFirstDecodeToFirstAudioWriteMs: Double?
+)
+
 data class HatTestSummary(
     val total: Int,
     val passed: Int,
     val warned: Int,
     val failed: Int,
+    val incomplete: Int,
+    val notExecuted: Int,
     val skipped: Int,
-    val manualRequired: Int,
     val verdict: String,
     val findings: List<String>
-)
+) {
+    val manualRequired: Int get() = 0
+}
 
 /** A diagnostics event retained for the report (WARN/ERROR + scenario boundaries only, bounded in number). */
 data class HatTestEventRecord(
@@ -239,16 +331,29 @@ data class HatTestPreconditions(
     val details: Map<String, Any?> = emptyMap()
 )
 
+/**
+ * Top-level report container matching Section 13 JSON structure:
+ * run, transmitter, receiver, network, scenarios, transitions, txMetrics, rxMetrics, endToEndMetrics, events, errors, summary.
+ */
 data class HatTestReport(
     val run: HatTestRunInfo,
-    val device: HatTestDeviceInfo,
+    val transmitter: HatTestDeviceInfo,
+    val receiver: HatTestReceiverInfo?,
+    val network: HatTestNetworkInfo,
     val preconditions: HatTestPreconditions,
     val scenarios: List<HatTestScenarioResult>,
+    val transitions: List<HatTestTransition>,
+    val txMetrics: HatTestTxMetrics?,
+    val rxMetrics: HatTestRxMetrics?,
+    val endToEndMetrics: HatTestEndToEndMetrics?,
     val finalSnapshot: String,
     val events: List<HatTestEventRecord>,
+    val errors: List<String>,
     val summary: HatTestSummary,
     val notes: List<String> = emptyList()
 ) {
+    /** Alias for backwards compatibility. */
+    val device: HatTestDeviceInfo get() = transmitter
 
     /** `HAT_Test_<timestamp>` — the shared base name for both exported files. */
     fun baseName(): String = "HAT_Test_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(run.startTimestampMs))
@@ -261,11 +366,12 @@ data class HatTestReport(
         val sb = StringBuilder(16 * 1024)
         val bar = "================================================"
         sb.appendLine(bar)
-        sb.appendLine("HAT AUTOMATED DIAGNOSTIC TEST")
+        sb.appendLine("HAT AUTOMATED DIAGNOSTIC TEST (SYNCHRONIZED E2E)")
         sb.appendLine(bar)
         sb.appendLine()
 
         sb.appendLine("[RUN]")
+        sb.appendLine("testSessionId=${run.testSessionId.ifEmpty { "unavailable" }}")
         sb.appendLine("testRunId=${run.testRunId}")
         sb.appendLine("streamRunId=${run.streamRunId}")
         sb.appendLine("streamId=${run.streamId}")
@@ -274,29 +380,31 @@ data class HatTestReport(
         sb.appendLine("durationMs=${run.durationMs}")
         sb.appendLine()
 
-        sb.appendLine("[DEVICE]")
-        sb.appendLine("manufacturer=${device.manufacturer}")
-        sb.appendLine("model=${device.model}")
-        sb.appendLine("product=${device.product}")
-        sb.appendLine("device=${device.device}")
-        sb.appendLine("board=${device.board}")
+        sb.appendLine("[TRANSMITTER DEVICE]")
+        sb.appendLine("manufacturer=${transmitter.manufacturer}")
+        sb.appendLine("model=${transmitter.model}")
+        sb.appendLine("device=${transmitter.device}")
+        sb.appendLine("androidVersion=${transmitter.androidVersion} (API ${transmitter.apiLevel})")
+        sb.appendLine("appVersion=${run.appVersion} (${run.versionCode}, ${run.buildType})")
         sb.appendLine()
 
-        sb.appendLine("[ANDROID]")
-        sb.appendLine("version=${device.androidVersion}")
-        sb.appendLine("apiLevel=${device.apiLevel}")
-        sb.appendLine("fingerprint=${device.fingerprint}")
-        sb.appendLine("audioOutputDevice=${device.audioOutputDevice}")
-        sb.appendLine("networkTransport=${device.networkTransport}")
+        sb.appendLine("[RECEIVER DEVICE]")
+        if (receiver != null) {
+            sb.appendLine("status=PARTICIPATING")
+            sb.appendLine("device=${receiver.device}")
+            sb.appendLine("appVersion=${receiver.appVersion}")
+            sb.appendLine("generation=${receiver.generation}")
+            sb.appendLine("endpoint=${receiver.endpoint ?: "unknown"}")
+        } else {
+            sb.appendLine("status=NOT_PARTICIPATING")
+            sb.appendLine("reason=receiver telemetry unavailable or handshake timed out")
+        }
         sb.appendLine()
 
-        sb.appendLine("[APP VERSION]")
-        sb.appendLine("versionName=${run.appVersion} (code ${run.versionCode})")
-        sb.appendLine("buildType=${run.buildType}")
-        sb.appendLine()
-
-        sb.appendLine("[GIT REVISION]")
-        sb.appendLine(run.gitRevision ?: "unavailable")
+        sb.appendLine("[NETWORK]")
+        sb.appendLine("transport=${network.transport ?: "UDP"}")
+        sb.appendLine("endpoint=${network.endpoint ?: "unknown"}")
+        sb.appendLine("activeReceivers=${network.activeReceivers}")
         sb.appendLine()
 
         sb.appendLine("[PRECONDITIONS]")
@@ -322,6 +430,7 @@ data class HatTestReport(
             sb.appendLine("STATUS=${scenario.verdict.label}")
             sb.appendLine("REASON=${scenario.reason}")
             sb.appendLine("DURATION=${scenario.durationMs}ms (${formatTimestamp(scenario.startTimestampMs)} → ${formatTimestamp(scenario.endTimestampMs)})")
+            sb.appendLine("RECEIVER_PARTICIPATING=${scenario.metrics.receiverParticipating}")
             sb.appendLine()
             sb.appendLine("[PROFILE]")
             sb.appendLine("requested=${scenario.requestedProfile ?: "unchanged"}")
@@ -334,30 +443,8 @@ data class HatTestReport(
             sb.appendLine("transitionRequired=${scenario.transitionRequired}")
             sb.appendLine("transitionCompleted=${scenario.transitionCompleted}")
             sb.appendLine("transitionMs=${scenario.transitionMs ?: "-"}")
-            for (t in scenario.transitions) {
-                sb.appendLine(
-                    "  #${t.index} ${t.fromProfile} → ${t.toProfile} gen ${t.fromGeneration}→${t.toGeneration} " +
-                        "durationMs=${t.durationMs} required=${t.transitionRequired} ok=${t.ok}" +
-                        (t.reason?.let { " reason=$it" } ?: "")
-                )
-            }
             sb.appendLine()
-            sb.appendLine("[CONFIG]")
-            sb.appendLine("profile=${scenario.config.profile}")
-            sb.appendLine("logicalCodec=${scenario.config.logicalCodec}")
-            sb.appendLine("wireCodec=${scenario.config.wireCodec}")
-            sb.appendLine("sampleRate=${scenario.config.sampleRate}")
-            sb.appendLine("channels=${scenario.config.channels}")
-            sb.appendLine("bitDepth=${scenario.config.bitDepth}")
-            sb.appendLine("frameSize=${scenario.config.frameSize}")
-            sb.appendLine("packetSize=${scenario.config.packetSize}")
-            sb.appendLine("fecEnabled=${scenario.config.fecEnabled}")
-            sb.appendLine("fecBlockSize=${scenario.config.fecBlockSize}")
-            sb.appendLine("targetLatencyMs=${formatDouble(scenario.config.targetLatencyMs)}")
-            sb.appendLine("requestedPerformanceMode=${scenario.config.requestedPerformanceMode}")
-            sb.appendLine("actualPerformanceMode=${scenario.config.actualPerformanceMode}")
-            sb.appendLine()
-            sb.appendLine("[METRICS]")
+            sb.appendLine("[METRICS (SCENARIO DELTAS)]")
             appendMetrics(sb, scenario.metrics)
             sb.appendLine()
             sb.appendLine("[WARNINGS]")
@@ -366,22 +453,67 @@ data class HatTestReport(
             sb.appendLine("[ERRORS]")
             if (scenario.errors.isEmpty()) sb.appendLine("(none)") else scenario.errors.forEach { sb.appendLine("- $it") }
             sb.appendLine()
-            if (scenario.latencyTargetChanges.isNotEmpty()) {
-                sb.appendLine("[LATENCY TARGET CHANGES] (${scenario.latencyTargetChanges.size})")
-                scenario.latencyTargetChanges.forEach { sb.appendLine("- $it") }
-                sb.appendLine()
+        }
+
+        if (transitions.isNotEmpty()) {
+            sb.appendLine(bar)
+            sb.appendLine("PROFILE TRANSITIONS VALIDATION & END-TO-END LATENCY")
+            sb.appendLine(bar)
+            for (t in transitions) {
+                sb.appendLine("#${t.index} ${t.oldProfile} → ${t.newProfile} gen ${t.oldGeneration} → ${t.newGeneration}")
+                sb.appendLine("  durationMs=${t.durationMs} required=${t.transitionRequired} ok=${t.ok} monotonic=${t.generationMonotonic} acked=${t.receiverAcked}")
+                t.configToFirstTxMs?.let { sb.appendLine("  config → first TX: ${it}ms (same-device TX)") }
+                t.firstTxToFirstRxMs?.let { sb.appendLine("  first TX → first RX: ${it}ms (cross-device, uncalibrated clock skew)") }
+                t.firstRxToFirstDecodeMs?.let { sb.appendLine("  first RX → first decode: ${it}ms (same-device RX)") }
+                t.firstDecodeToFirstAudioWriteMs?.let { sb.appendLine("  first decode → first AudioTrack write: ${it}ms (same-device RX)") }
+                t.reason?.let { sb.appendLine("  reason=$it") }
             }
-            sb.appendLine("[SNAPSHOT AT SCENARIO START]")
-            sb.appendLine(scenario.snapshotStart.ifBlank { "(none)" })
             sb.appendLine()
-            sb.appendLine("[SNAPSHOT AT SCENARIO END]")
-            sb.appendLine(scenario.snapshotEnd.ifBlank { "(none)" })
+        }
+
+        if (txMetrics != null) {
+            sb.appendLine(bar)
+            sb.appendLine("TX AGGREGATE METRICS")
+            sb.appendLine(bar)
+            sb.appendLine("packetsGenerated=${txMetrics.packetsGenerated}")
+            sb.appendLine("packetsSent=${txMetrics.packetsSent}")
+            sb.appendLine("sendErrors=${txMetrics.sendErrors}")
+            sb.appendLine("captureReads=${txMetrics.captureReads}")
+            sb.appendLine("captureErrors=${txMetrics.captureErrors}")
+            sb.appendLine("framesCaptured=${txMetrics.framesCaptured}")
+            sb.appendLine("avgCaptureReadMs=${formatDouble(txMetrics.avgCaptureReadMs)}")
+            sb.appendLine("maxCaptureReadMs=${formatDouble(txMetrics.maxCaptureReadMs)}")
+            sb.appendLine("avgEncodeMs=${formatDouble(txMetrics.avgEncodeMs)}")
+            sb.appendLine("maxEncodeMs=${formatDouble(txMetrics.maxEncodeMs)}")
+            sb.appendLine("avgSendMs=${formatDouble(txMetrics.avgSendMs)}")
+            sb.appendLine("maxSendMs=${formatDouble(txMetrics.maxSendMs)}")
+            sb.appendLine()
+        }
+
+        if (rxMetrics != null) {
+            sb.appendLine(bar)
+            sb.appendLine("RX AGGREGATE METRICS")
+            sb.appendLine(bar)
+            sb.appendLine("packetsReceived=${rxMetrics.packetsReceived}")
+            sb.appendLine("packetsLost=${rxMetrics.packetsLost}")
+            sb.appendLine("packetsLate=${rxMetrics.packetsLate}")
+            sb.appendLine("packetsOutOfOrder=${rxMetrics.packetsOutOfOrder}")
+            sb.appendLine("packetsDuplicate=${rxMetrics.packetsDuplicate}")
+            sb.appendLine("fecRecovered=${rxMetrics.fecRecovered}")
+            sb.appendLine("decodeErrors=${rxMetrics.decodeErrors}")
+            sb.appendLine("audioTrackWrites=${rxMetrics.audioTrackWrites}")
+            sb.appendLine("framesWritten=${rxMetrics.framesWritten}")
+            sb.appendLine("underruns=${rxMetrics.underruns}")
+            sb.appendLine("writeErrors=${rxMetrics.writeErrors}")
+            sb.appendLine("avgJitterMs=${formatDouble(rxMetrics.avgJitterMs)}")
+            sb.appendLine("avgBufferMs=${formatDouble(rxMetrics.avgBufferMs)}")
+            sb.appendLine("avgDriftPpm=${formatDouble(rxMetrics.avgDriftPpm)}")
             sb.appendLine()
         }
 
         if (events.isNotEmpty()) {
             sb.appendLine(bar)
-            sb.appendLine("DIAGNOSTIC EVENTS (WARN/ERROR during the run, ${events.size})")
+            sb.appendLine("DIAGNOSTIC EVENTS (WARN/ERROR during run, ${events.size})")
             sb.appendLine(bar)
             for (event in events) {
                 sb.appendLine(
@@ -392,11 +524,19 @@ data class HatTestReport(
             sb.appendLine()
         }
 
+        if (errors.isNotEmpty()) {
+            sb.appendLine(bar)
+            sb.appendLine("RUN ERRORS (${errors.size})")
+            sb.appendLine(bar)
+            for (err in errors) sb.appendLine("- $err")
+            sb.appendLine()
+        }
+
         sb.appendLine(bar)
         sb.appendLine("FINAL SUMMARY")
         sb.appendLine(bar)
         sb.appendLine("total=${summary.total} passed=${summary.passed} warned=${summary.warned} failed=${summary.failed} " +
-            "skipped=${summary.skipped} manualRequired=${summary.manualRequired}")
+            "incomplete=${summary.incomplete} notExecuted=${summary.notExecuted} skipped=${summary.skipped}")
         sb.appendLine("verdict=${summary.verdict}")
         if (summary.findings.isEmpty()) {
             sb.appendLine("(no findings)")
@@ -413,27 +553,26 @@ data class HatTestReport(
     }
 
     private fun appendMetrics(sb: StringBuilder, m: HatTestMetrics) {
-        sb.appendLine("packetsGenerated=${m.packetsGenerated}")
-        sb.appendLine("packetsSent=${m.packetsSent}")
-        sb.appendLine("bytesSent=${m.bytesSent}")
-        sb.appendLine("sendErrors=${m.sendErrors}")
-        sb.appendLine("packetsReceived=${m.packetsReceived}")
-        sb.appendLine("bytesReceived=${m.bytesReceived}")
-        sb.appendLine("packetsLost=${m.packetsLost}")
-        sb.appendLine("packetsLate=${m.packetsLate}")
-        sb.appendLine("packetsOutOfOrder=${m.packetsOutOfOrder}")
-        sb.appendLine("packetsDuplicate=${m.packetsDuplicate}")
-        sb.appendLine("fecRecovered=${m.fecRecovered}")
-        sb.appendLine("decodeErrors=${m.decodeErrors}")
-        sb.appendLine("writeErrors=${m.writeErrors}")
-        sb.appendLine("underruns=${m.underruns}")
-        sb.appendLine("captureReadErrors=${m.captureReadErrors}")
-        sb.appendLine("framesCaptured=${m.framesCaptured}")
-        sb.appendLine("generationMismatches=${m.generationMismatches}")
-        sb.appendLine("codecMismatches=${m.codecMismatches}")
-        sb.appendLine("configInitFailures=${m.configInitFailures}")
-        sb.appendLine("configAnnounceFailures=${m.configAnnounceFailures}")
-        sb.appendLine("configProducerStartFailures=${m.configProducerStartFailures}")
+        sb.appendLine("receiverParticipating=${m.receiverParticipating}")
+        sb.appendLine("packetsGenerated=${m.packetsGenerated ?: "-"}")
+        sb.appendLine("packetsSent=${m.packetsSent ?: "-"}")
+        sb.appendLine("bytesSent=${m.bytesSent ?: "-"}")
+        sb.appendLine("sendErrors=${m.sendErrors ?: "-"}")
+        sb.appendLine("captureReads=${m.captureReads ?: "-"}")
+        sb.appendLine("captureErrors=${m.captureErrors ?: "-"}")
+        sb.appendLine("framesCaptured=${m.framesCaptured ?: "-"}")
+        sb.appendLine("packetsReceived=${m.packetsReceived ?: "(unavailable - receiver not participating)"}")
+        sb.appendLine("bytesReceived=${m.bytesReceived ?: "-"}")
+        sb.appendLine("packetsLost=${m.packetsLost ?: "-"}")
+        sb.appendLine("packetsLate=${m.packetsLate ?: "-"}")
+        sb.appendLine("packetsOutOfOrder=${m.packetsOutOfOrder ?: "-"}")
+        sb.appendLine("packetsDuplicate=${m.packetsDuplicate ?: "-"}")
+        sb.appendLine("fecRecovered=${m.fecRecovered ?: "-"}")
+        sb.appendLine("decodeErrors=${m.decodeErrors ?: "-"}")
+        sb.appendLine("audioTrackWrites=${m.audioTrackWrites ?: "(unavailable - receiver not participating)"}")
+        sb.appendLine("framesWritten=${m.framesWritten ?: "-"}")
+        sb.appendLine("underruns=${m.underruns ?: "-"}")
+        sb.appendLine("writeErrors=${m.writeErrors ?: "-"}")
         sb.appendLine("minJitterMs=${formatDouble(m.minJitterMs)}")
         sb.appendLine("avgJitterMs=${formatDouble(m.avgJitterMs)}")
         sb.appendLine("maxJitterMs=${formatDouble(m.maxJitterMs)}")
@@ -443,26 +582,29 @@ data class HatTestReport(
         sb.appendLine("minTargetLatencyMs=${formatDouble(m.minTargetLatencyMs)}")
         sb.appendLine("avgTargetLatencyMs=${formatDouble(m.avgTargetLatencyMs)}")
         sb.appendLine("maxTargetLatencyMs=${formatDouble(m.maxTargetLatencyMs)}")
+        sb.appendLine("avgDriftPpm=${formatDouble(m.avgDriftPpm)}")
+        sb.appendLine("playbackHead=${m.playbackHead ?: "-"}")
         sb.appendLine("avgCaptureReadMs=${formatDouble(m.avgCaptureReadMs)}")
         sb.appendLine("maxCaptureReadMs=${formatDouble(m.maxCaptureReadMs)}")
+        sb.appendLine("avgEncodeMs=${formatDouble(m.avgEncodeMs)}")
+        sb.appendLine("maxEncodeMs=${formatDouble(m.maxEncodeMs)}")
+        sb.appendLine("avgSendMs=${formatDouble(m.avgSendMs)}")
+        sb.appendLine("maxSendMs=${formatDouble(m.maxSendMs)}")
+        sb.appendLine("avgReceiveMs=${formatDouble(m.avgReceiveMs)}")
+        sb.appendLine("maxReceiveMs=${formatDouble(m.maxReceiveMs)}")
         sb.appendLine("avgDecodeMs=${formatDouble(m.avgDecodeMs)}")
         sb.appendLine("maxDecodeMs=${formatDouble(m.maxDecodeMs)}")
         sb.appendLine("avgWriteMs=${formatDouble(m.avgWriteMs)}")
         sb.appendLine("maxWriteMs=${formatDouble(m.maxWriteMs)}")
-        sb.appendLine("avgSendMs=${formatDouble(m.avgSendMs)}")
-        sb.appendLine("maxSendMs=${formatDouble(m.maxSendMs)}")
-        sb.appendLine("avgEncodeMs=${formatDouble(m.avgEncodeMs)}")
-        sb.appendLine("maxEncodeMs=${formatDouble(m.maxEncodeMs)}")
-        sb.appendLine("avgReceiveMs=${formatDouble(m.avgReceiveMs)}")
-        sb.appendLine("maxReceiveMs=${formatDouble(m.maxReceiveMs)}")
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Machine readable export
+    // Machine readable export (Section 13 JSON structure)
     // ---------------------------------------------------------------------------------------------
 
     fun toJson(): String = HatTestJson.compose(
         "run" to HatTestJson.rawObj(
+            "testSessionId" to run.testSessionId,
             "testRunId" to run.testRunId,
             "streamRunId" to run.streamRunId,
             "streamId" to run.streamId,
@@ -474,17 +616,32 @@ data class HatTestReport(
             "buildType" to run.buildType,
             "gitRevision" to run.gitRevision
         ),
-        "device" to HatTestJson.rawObj(
-            "manufacturer" to device.manufacturer,
-            "model" to device.model,
-            "product" to device.product,
-            "device" to device.device,
-            "board" to device.board,
-            "androidVersion" to device.androidVersion,
-            "apiLevel" to device.apiLevel,
-            "fingerprint" to device.fingerprint,
-            "audioOutputDevice" to device.audioOutputDevice,
-            "networkTransport" to device.networkTransport
+        "transmitter" to HatTestJson.rawObj(
+            "manufacturer" to transmitter.manufacturer,
+            "model" to transmitter.model,
+            "product" to transmitter.product,
+            "device" to transmitter.device,
+            "board" to transmitter.board,
+            "androidVersion" to transmitter.androidVersion,
+            "apiLevel" to transmitter.apiLevel,
+            "fingerprint" to transmitter.fingerprint,
+            "audioOutputDevice" to transmitter.audioOutputDevice,
+            "networkTransport" to transmitter.networkTransport
+        ),
+        "receiver" to receiver?.let { rx ->
+            HatTestJson.rawObj(
+                "participating" to true,
+                "testSessionId" to rx.testSessionId,
+                "device" to rx.device,
+                "appVersion" to rx.appVersion,
+                "generation" to rx.generation,
+                "endpoint" to rx.endpoint
+            )
+        },
+        "network" to HatTestJson.rawObj(
+            "transport" to network.transport,
+            "endpoint" to network.endpoint,
+            "activeReceivers" to network.activeReceivers
         ),
         "preconditions" to HatTestJson.rawObj(
             "ok" to preconditions.ok,
@@ -492,6 +649,77 @@ data class HatTestReport(
             "details" to preconditions.details
         ),
         "scenarios" to scenarios.map { it.toJsonMap() },
+        "transitions" to transitions.map { t ->
+            HatTestJson.rawObj(
+                "index" to t.index,
+                "oldProfile" to t.oldProfile,
+                "newProfile" to t.newProfile,
+                "oldGeneration" to t.oldGeneration,
+                "newGeneration" to t.newGeneration,
+                "transitionStart" to t.transitionStart,
+                "configCommitted" to t.configCommitted,
+                "configAnnounced" to t.configAnnounced,
+                "firstTx" to t.firstTx,
+                "firstRx" to t.firstRx,
+                "firstDecode" to t.firstDecode,
+                "firstAudioWrite" to t.firstAudioWrite,
+                "transitionComplete" to t.transitionComplete,
+                "durationMs" to t.durationMs,
+                "transitionRequired" to t.transitionRequired,
+                "ok" to t.ok,
+                "generationMonotonic" to t.generationMonotonic,
+                "receiverAcked" to t.receiverAcked,
+                "configToFirstTxMs" to t.configToFirstTxMs,
+                "firstTxToFirstRxMs" to t.firstTxToFirstRxMs,
+                "firstRxToFirstDecodeMs" to t.firstRxToFirstDecodeMs,
+                "firstDecodeToFirstAudioWriteMs" to t.firstDecodeToFirstAudioWriteMs,
+                "reason" to t.reason
+            )
+        },
+        "txMetrics" to txMetrics?.let { tx ->
+            HatTestJson.rawObj(
+                "packetsGenerated" to tx.packetsGenerated,
+                "packetsSent" to tx.packetsSent,
+                "sendErrors" to tx.sendErrors,
+                "captureReads" to tx.captureReads,
+                "captureErrors" to tx.captureErrors,
+                "framesCaptured" to tx.framesCaptured,
+                "avgCaptureReadMs" to tx.avgCaptureReadMs,
+                "maxCaptureReadMs" to tx.maxCaptureReadMs,
+                "avgEncodeMs" to tx.avgEncodeMs,
+                "maxEncodeMs" to tx.maxEncodeMs,
+                "avgSendMs" to tx.avgSendMs,
+                "maxSendMs" to tx.maxSendMs
+            )
+        },
+        "rxMetrics" to rxMetrics?.let { rx ->
+            HatTestJson.rawObj(
+                "packetsReceived" to rx.packetsReceived,
+                "packetsLost" to rx.packetsLost,
+                "packetsLate" to rx.packetsLate,
+                "packetsOutOfOrder" to rx.packetsOutOfOrder,
+                "packetsDuplicate" to rx.packetsDuplicate,
+                "fecRecovered" to rx.fecRecovered,
+                "decodeErrors" to rx.decodeErrors,
+                "audioTrackWrites" to rx.audioTrackWrites,
+                "framesWritten" to rx.framesWritten,
+                "underruns" to rx.underruns,
+                "writeErrors" to rx.writeErrors,
+                "avgJitterMs" to rx.avgJitterMs,
+                "avgBufferMs" to rx.avgBufferMs,
+                "avgDriftPpm" to rx.avgDriftPpm
+            )
+        },
+        "endToEndMetrics" to endToEndMetrics?.let { e2e ->
+            HatTestJson.rawObj(
+                "transitionsCount" to e2e.transitionsCount,
+                "allGenerationsMonotonic" to e2e.allGenerationsMonotonic,
+                "allGenerationsAcked" to e2e.allGenerationsAcked,
+                "avgConfigToFirstTxMs" to e2e.avgConfigToFirstTxMs,
+                "avgFirstRxToFirstDecodeMs" to e2e.avgFirstRxToFirstDecodeMs,
+                "avgFirstDecodeToFirstAudioWriteMs" to e2e.avgFirstDecodeToFirstAudioWriteMs
+            )
+        },
         "finalSnapshot" to finalSnapshot,
         "events" to events.map { event ->
             HatTestJson.rawObj(
@@ -503,13 +731,15 @@ data class HatTestReport(
                 "detail" to event.detail
             )
         },
+        "errors" to errors,
         "summary" to HatTestJson.rawObj(
             "total" to summary.total,
             "passed" to summary.passed,
             "warned" to summary.warned,
             "failed" to summary.failed,
+            "incomplete" to summary.incomplete,
+            "notExecuted" to summary.notExecuted,
             "skipped" to summary.skipped,
-            "manualRequired" to summary.manualRequired,
             "verdict" to summary.verdict,
             "findings" to summary.findings
         ),
@@ -533,6 +763,35 @@ data class HatTestReport(
         "transitionMs" to transitionMs,
         "status" to verdict.label,
         "reason" to reason,
+        "receiverParticipating" to metrics.receiverParticipating,
+        "packetsGenerated" to metrics.packetsGenerated,
+        "packetsSent" to metrics.packetsSent,
+        "packetsReceived" to metrics.packetsReceived,
+        "packetLoss" to metrics.packetsLost,
+        "fecRecovered" to metrics.fecRecovered,
+        "decodeErrors" to metrics.decodeErrors,
+        "audioTrackWrites" to metrics.audioTrackWrites,
+        "framesWritten" to metrics.framesWritten,
+        "underruns" to metrics.underruns,
+        "captureErrors" to metrics.captureErrors,
+        "sendErrors" to metrics.sendErrors,
+        "jitter" to metrics.avgJitterMs?.let {
+            HatTestJson.rawObj("min" to metrics.minJitterMs, "avg" to metrics.avgJitterMs, "max" to metrics.maxJitterMs)
+        },
+        "buffer" to metrics.avgBufferMs?.let {
+            HatTestJson.rawObj("min" to metrics.minBufferMs, "avg" to metrics.avgBufferMs, "max" to metrics.maxBufferMs)
+        },
+        "latency" to metrics.avgTargetLatencyMs?.let {
+            HatTestJson.rawObj("min" to metrics.minTargetLatencyMs, "avg" to metrics.avgTargetLatencyMs, "max" to metrics.maxTargetLatencyMs)
+        },
+        "timing" to HatTestJson.rawObj(
+            "captureRead" to metrics.avgCaptureReadMs?.let { HatTestJson.rawObj("avgMs" to it, "maxMs" to metrics.maxCaptureReadMs) },
+            "encode" to metrics.avgEncodeMs?.let { HatTestJson.rawObj("avgMs" to it, "maxMs" to metrics.maxEncodeMs) },
+            "send" to metrics.avgSendMs?.let { HatTestJson.rawObj("avgMs" to it, "maxMs" to metrics.maxSendMs) },
+            "receive" to metrics.avgReceiveMs?.let { HatTestJson.rawObj("avgMs" to it, "maxMs" to metrics.maxReceiveMs) },
+            "decode" to metrics.avgDecodeMs?.let { HatTestJson.rawObj("avgMs" to it, "maxMs" to metrics.maxDecodeMs) },
+            "audioTrackWrite" to metrics.avgWriteMs?.let { HatTestJson.rawObj("avgMs" to it, "maxMs" to metrics.maxWriteMs) }
+        ),
         "config" to HatTestJson.rawObj(
             "profile" to config.profile,
             "logicalCodec" to config.logicalCodec,
@@ -550,60 +809,16 @@ data class HatTestReport(
             "requestedPerformanceMode" to config.requestedPerformanceMode,
             "actualPerformanceMode" to config.actualPerformanceMode
         ),
-        "metrics" to HatTestJson.rawObj(
-            "packetsGenerated" to metrics.packetsGenerated,
-            "packetsSent" to metrics.packetsSent,
-            "bytesSent" to metrics.bytesSent,
-            "sendErrors" to metrics.sendErrors,
-            "packetsReceived" to metrics.packetsReceived,
-            "bytesReceived" to metrics.bytesReceived,
-            "packetsLost" to metrics.packetsLost,
-            "packetsLate" to metrics.packetsLate,
-            "packetsOutOfOrder" to metrics.packetsOutOfOrder,
-            "packetsDuplicate" to metrics.packetsDuplicate,
-            "fecRecovered" to metrics.fecRecovered,
-            "decodeErrors" to metrics.decodeErrors,
-            "writeErrors" to metrics.writeErrors,
-            "underruns" to metrics.underruns,
-            "captureReadErrors" to metrics.captureReadErrors,
-            "framesCaptured" to metrics.framesCaptured,
-            "generationMismatches" to metrics.generationMismatches,
-            "codecMismatches" to metrics.codecMismatches,
-            "configInitFailures" to metrics.configInitFailures,
-            "configAnnounceFailures" to metrics.configAnnounceFailures,
-            "configProducerStartFailures" to metrics.configProducerStartFailures,
-            "minJitterMs" to metrics.minJitterMs,
-            "avgJitterMs" to metrics.avgJitterMs,
-            "maxJitterMs" to metrics.maxJitterMs,
-            "minBufferMs" to metrics.minBufferMs,
-            "avgBufferMs" to metrics.avgBufferMs,
-            "maxBufferMs" to metrics.maxBufferMs,
-            "minTargetLatencyMs" to metrics.minTargetLatencyMs,
-            "avgTargetLatencyMs" to metrics.avgTargetLatencyMs,
-            "maxTargetLatencyMs" to metrics.maxTargetLatencyMs,
-            "avgCaptureReadMs" to metrics.avgCaptureReadMs,
-            "maxCaptureReadMs" to metrics.maxCaptureReadMs,
-            "avgDecodeMs" to metrics.avgDecodeMs,
-            "maxDecodeMs" to metrics.maxDecodeMs,
-            "avgWriteMs" to metrics.avgWriteMs,
-            "maxWriteMs" to metrics.maxWriteMs,
-            "avgSendMs" to metrics.avgSendMs,
-            "maxSendMs" to metrics.maxSendMs,
-            "avgEncodeMs" to metrics.avgEncodeMs,
-            "maxEncodeMs" to metrics.maxEncodeMs,
-            "avgReceiveMs" to metrics.avgReceiveMs,
-            "maxReceiveMs" to metrics.maxReceiveMs
-        ),
         "warnings" to warnings,
         "errors" to errors,
         "latencyTargetChanges" to latencyTargetChanges,
         "transitions" to transitions.map { t ->
             HatTestJson.rawObj(
                 "index" to t.index,
-                "fromProfile" to t.fromProfile,
-                "toProfile" to t.toProfile,
-                "fromGeneration" to t.fromGeneration,
-                "toGeneration" to t.toGeneration,
+                "oldProfile" to t.oldProfile,
+                "newProfile" to t.newProfile,
+                "oldGeneration" to t.oldGeneration,
+                "newGeneration" to t.newGeneration,
                 "durationMs" to t.durationMs,
                 "transitionRequired" to t.transitionRequired,
                 "ok" to t.ok,
@@ -629,7 +844,7 @@ internal fun formatDouble(value: Double?): String =
  * Minimal, allocation-conscious JSON writer. Only needs to serialize the bounded structures above, and it
  * keeps the report testable on a plain JVM where org.json is not usable.
  */
-internal object HatTestJson {
+object HatTestJson {
 
     /**
      * Marker for an already-serialized JSON fragment. Without it a nested object would be serialized as an
@@ -648,9 +863,9 @@ internal object HatTestJson {
         sb.append('{')
         var first = true
         for ((key, value) in pairs) {
-            if (!first) sb.append(',')
+            if (!first) sb.append(", ")
             first = false
-            sb.append('"').append(escape(key)).append("\":").append(value(value))
+            sb.append('"').append(escape(key)).append("\": ").append(value(value))
         }
         sb.append('}')
         return sb.toString()
@@ -661,9 +876,9 @@ internal object HatTestJson {
         sb.append('{')
         var first = true
         for ((key, value) in map) {
-            if (!first) sb.append(',')
+            if (!first) sb.append(", ")
             first = false
-            sb.append('"').append(escape(key)).append("\":").append(value(value))
+            sb.append('"').append(escape(key)).append("\": ").append(value(value))
         }
         sb.append('}')
         return sb.toString()
@@ -674,7 +889,7 @@ internal object HatTestJson {
         sb.append('[')
         var first = true
         for (v in values) {
-            if (!first) sb.append(',')
+            if (!first) sb.append(", ")
             first = false
             sb.append(value(v))
         }

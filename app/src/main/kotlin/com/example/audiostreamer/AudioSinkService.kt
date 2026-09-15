@@ -35,6 +35,7 @@ import java.net.SocketException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.roundToInt
 
@@ -110,6 +111,14 @@ class AudioSinkService : Service() {
     private var diagLastLatencyTargetMs = -1f
     @Volatile private var firstDecodeGeneration: Long = -1L
     @Volatile private var firstWriteGeneration: Long = -1L
+    internal val diagAudioTrackWrites = java.util.concurrent.atomic.AtomicLong(0L)
+    internal val diagFramesWritten = java.util.concurrent.atomic.AtomicLong(0L)
+    @Volatile private var activeTestSessionId: String? = null
+    @Volatile private var testSenderAddress: InetAddress? = null
+    @Volatile private var testSenderPort: Int = 0
+    private var testStatsThread: Thread? = null
+    private val genFirstRxMs = ConcurrentHashMap<Long, Long>()
+    private val genFirstDecodeMs = ConcurrentHashMap<Long, Long>()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -458,9 +467,17 @@ class AudioSinkService : Service() {
                         HatDiagnostics.recordTime("receive", SystemClock.elapsedRealtimeNanos() - recvStartNs)
 
                         val length = packet.length
+                        val data = packet.data
+                        val offset = packet.offset
+                        if (length >= 2 && data[offset] == '{'.code.toByte()) {
+                            val testMsg = HatTestControlMessage.parse(data, offset, length)
+                            if (testMsg != null) {
+                                handleTestControlMessage(testMsg, packet.address, packet.port, socket)
+                                continue
+                            }
+                        }
+
                         if (length >= HatPacket.HEADER_SIZE) {
-                            val data = packet.data
-                            val offset = packet.offset
                             diagRxPackets.incrementAndGet()
                             diagRxBytes.addAndGet(length.toLong())
 
@@ -470,6 +487,7 @@ class AudioSinkService : Service() {
                             // and formats nothing per packet.
                             if (header.generation > 0L && header.generation != firstRxGeneration) {
                                 firstRxGeneration = header.generation
+                                genFirstRxMs[header.generation] = System.currentTimeMillis()
                                 HatDiagnostics.lifecycle("GENERATION_FIRST_RX", header.generation)
                             }
 
@@ -891,6 +909,7 @@ class AudioSinkService : Service() {
                                          val decodeGeneration = configAuthority.currentGeneration
                                          if (decodeGeneration > 0L && decodeGeneration != firstDecodeGeneration) {
                                              firstDecodeGeneration = decodeGeneration
+                                             genFirstDecodeMs[decodeGeneration] = System.currentTimeMillis()
                                              HatDiagnostics.lifecycle("GENERATION_FIRST_DECODE", decodeGeneration)
                                          }
                                          for (i in pcmList.indices) {
@@ -955,6 +974,7 @@ class AudioSinkService : Service() {
                                          val decodeGeneration = configAuthority.currentGeneration
                                          if (decodeGeneration > 0L && decodeGeneration != firstDecodeGeneration) {
                                              firstDecodeGeneration = decodeGeneration
+                                             genFirstDecodeMs[decodeGeneration] = System.currentTimeMillis()
                                              HatDiagnostics.lifecycle("GENERATION_FIRST_DECODE", decodeGeneration)
                                          }
                                          for (i in pcmList.indices) {
@@ -1199,6 +1219,8 @@ class AudioSinkService : Service() {
             "performanceMode" to currentPerformanceMode,
             "requestedPerformanceMode" to requestedPerformanceMode,
             "playState" to (try { track?.playState ?: 0 } catch (e: Exception) { 0 }),
+            "audioTrackWrites" to diagAudioTrackWrites.get(),
+            "framesWritten" to diagFramesWritten.get(),
             "writeErrors" to HatDiagnostics.counter("playback_write_errors")
         )
     }
@@ -1340,18 +1362,22 @@ class AudioSinkService : Service() {
         }
     }
 
-    /** Blocking AudioTrack write with aggregate timing and lifecycle reporting. Never throws from diagnostics. */
     private fun writeToPlaybackTrack(track: AudioTrack, buffer: ByteArray, length: Int) {
         if (length <= 0) return
         val startNs = SystemClock.elapsedRealtimeNanos()
         try {
-            track.write(buffer, 0, length, AudioTrack.WRITE_BLOCKING)
+            val written = track.write(buffer, 0, length, AudioTrack.WRITE_BLOCKING)
+            if (written > 0) {
+                diagAudioTrackWrites.incrementAndGet()
+                diagFramesWritten.addAndGet((written / 4).toLong())
+            }
         } finally {
             HatDiagnostics.recordTime("audioTrackWrite", SystemClock.elapsedRealtimeNanos() - startNs)
             val generation = configAuthority.currentGeneration
             if (generation > 0L && generation != firstWriteGeneration) {
                 firstWriteGeneration = generation
                 HatDiagnostics.lifecycle("GENERATION_FIRST_AUDIO_WRITE", generation, mapOf("frames" to (length / 4)))
+                onGenerationFirstAudioWrite(generation)
             }
         }
     }
@@ -1583,6 +1609,12 @@ class AudioSinkService : Service() {
             )
         }
 
+        stopPeriodicTestStats()
+        activeTestSessionId = null
+        testSenderAddress = null
+        genFirstRxMs.clear()
+        genFirstDecodeMs.clear()
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
@@ -1595,6 +1627,141 @@ class AudioSinkService : Service() {
         stopSink()
         super.onDestroy()
         Log.d(TAG, "AudioSinkService destroyed")
+    }
+
+    private fun handleTestControlMessage(
+        msg: HatTestControlMessage,
+        senderAddress: InetAddress,
+        senderPort: Int,
+        socket: DatagramSocket
+    ) {
+        when (msg) {
+            is HatTestControlMessage.AnnounceSession -> {
+                activeTestSessionId = msg.testSessionId
+                testSenderAddress = senderAddress
+                testSenderPort = senderPort
+                Log.i(TAG, "Joined HAT test session: ${msg.testSessionId} from $senderAddress:$senderPort")
+                val joined = HatTestControlMessage.SessionJoined(
+                    testSessionId = msg.testSessionId,
+                    device = Build.MODEL,
+                    appVersion = BuildConfig.VERSION_NAME,
+                    generation = configAuthority.currentGeneration
+                )
+                sendTestControlPacket(joined, senderAddress, senderPort, socket)
+                startPeriodicTestStats(msg.testSessionId, senderAddress, senderPort, socket)
+            }
+            is HatTestControlMessage.EndSession -> {
+                if (activeTestSessionId == msg.testSessionId) {
+                    Log.i(TAG, "Ended HAT test session: ${msg.testSessionId}")
+                    stopPeriodicTestStats()
+                    activeTestSessionId = null
+                    testSenderAddress = null
+                }
+            }
+            else -> { /* Ignore RxStats, SessionJoined, GenerationAck on receiver */ }
+        }
+    }
+
+    private fun startPeriodicTestStats(
+        sessionId: String,
+        address: InetAddress,
+        port: Int,
+        socket: DatagramSocket
+    ) {
+        stopPeriodicTestStats()
+        testStatsThread = Thread({
+            Log.i(TAG, "Starting periodic RX_TEST_STATS thread for session $sessionId to $address:$port")
+            try {
+                while (isRunning.get() && activeTestSessionId == sessionId && !Thread.currentThread().isInterrupted) {
+                    Thread.sleep(1000L)
+                    if (!isRunning.get() || activeTestSessionId != sessionId) break
+
+                    val available = jitterBuffer.getAvailableCount()
+                    val packetMs = jitterBuffer.getPacketDurationMs()
+                    val track = audioTrack
+                    val timings = try { HatDiagnostics.timingSnapshot() } catch (e: Exception) { emptyList() }
+                    val rxTiming = timings.find { it.name == "receive" }
+                    val decTiming = timings.find { it.name == "decode" }
+                    val writeTiming = timings.find { it.name == "audioTrackWrite" }
+
+                    val stats = HatTestControlMessage.RxStats(
+                        testSessionId = sessionId,
+                        generation = configAuthority.currentGeneration,
+                        timestamp = System.currentTimeMillis(),
+                        packetsReceived = diagRxPackets.get(),
+                        packetsLost = jitterBuffer.getConcealedPackets(),
+                        packetsLate = jitterBuffer.getLatePackets(),
+                        packetsOutOfOrder = jitterBuffer.getOutOfOrderPackets(),
+                        packetsDuplicate = jitterBuffer.getDuplicatePackets(),
+                        fecRecovered = diagFecRecovered.get(),
+                        decodeErrors = HatDiagnostics.counter("rx_decode_errors"),
+                        bufferPackets = available,
+                        bufferFrames = available * AudioConfig.getFramesPerPacket(currentSampleRate),
+                        bufferMs = (available * packetMs).toDouble(),
+                        targetLatencyMs = jitterBuffer.getTargetWatermarkMs().toDouble(),
+                        jitterMs = jitterBuffer.getEstimatedJitterMs().toDouble(),
+                        driftPpm = (jitterBuffer.getCorrectionRatio() - 1.0) * 1_000_000.0,
+                        audioTrackWrites = diagAudioTrackWrites.get(),
+                        framesWritten = diagFramesWritten.get(),
+                        underruns = (try { track?.underrunCount?.toLong() ?: 0L } catch (e: Exception) { 0L }),
+                        writeErrors = HatDiagnostics.counter("playback_write_errors"),
+                        avgReceiveMs = rxTiming?.let { it.avgNs / 1_000_000.0 },
+                        maxReceiveMs = rxTiming?.let { it.maxNs / 1_000_000.0 },
+                        avgDecodeMs = decTiming?.let { it.avgNs / 1_000_000.0 },
+                        maxDecodeMs = decTiming?.let { it.maxNs / 1_000_000.0 },
+                        avgWriteMs = writeTiming?.let { it.avgNs / 1_000_000.0 },
+                        maxWriteMs = writeTiming?.let { it.maxNs / 1_000_000.0 },
+                        playbackHead = (try { track?.playbackHeadPosition?.toLong() ?: 0L } catch (e: Exception) { 0L })
+                    )
+                    sendTestControlPacket(stats, address, port, socket)
+                }
+            } catch (e: InterruptedException) {
+                // Thread interrupted on shutdown
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in periodic test stats thread", e)
+            }
+        }, "AudioSinkTestStatsSender").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun stopPeriodicTestStats() {
+        testStatsThread?.interrupt()
+        testStatsThread = null
+    }
+
+    private fun onGenerationFirstAudioWrite(generation: Long) {
+        val sessionId = activeTestSessionId ?: return
+        val addr = testSenderAddress ?: return
+        val port = testSenderPort
+        val sock = datagramSocket ?: return
+        if (sock.isClosed) return
+
+        val ack = HatTestControlMessage.GenerationAck(
+            testSessionId = sessionId,
+            generation = generation,
+            profile = configAuthority.currentConfig?.transportProfile?.latencyTarget?.name ?: currentProfile,
+            firstRxTimestamp = genFirstRxMs[generation] ?: System.currentTimeMillis(),
+            firstDecodeTimestamp = genFirstDecodeMs[generation] ?: System.currentTimeMillis(),
+            firstAudioWriteTimestamp = System.currentTimeMillis()
+        )
+        sendTestControlPacket(ack, addr, port, sock)
+    }
+
+    private fun sendTestControlPacket(
+        msg: HatTestControlMessage,
+        address: InetAddress,
+        port: Int,
+        socket: DatagramSocket
+    ) {
+        try {
+            val bytes = msg.toByteArray()
+            val packet = DatagramPacket(bytes, bytes.size, address, port)
+            socket.send(packet)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed sending test control packet ${msg.type}: ${e.message}")
+        }
     }
 
     private fun registerLocalVolumeObserver() {
