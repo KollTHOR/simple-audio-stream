@@ -1,13 +1,38 @@
-# Low-Latency UDP Audio Streamer (Unified Android App)
+# Low-Latency UDP Audio Streamer (Simple Audio Stream)
 
-A minimal, high-performance, single-module Android application written in Kotlin to stream raw system audio over local Wi-Fi UDP between devices (e.g. sender phone to receiver DAP). Supports both **Transmitter** (audio source capture via `MediaProjection`) and **Receiver** (audio sink playback via `AudioTrack`) modes in a single unified APK.
+A high-performance, low-latency, single-module Android application written in Kotlin to stream raw system audio over local Wi-Fi or Wi-Fi Direct between devices (e.g. phone/tablet to dedicated audio player, DAP, or secondary phone). Supports both **Transmitter** (audio capture via `MediaProjection` or microphone) and **Receiver** (low-latency playback via `AudioTrack`) modes in a single unified APK.
+
+---
+
+## Core Features
+
+- **High-Resolution & Lossless Audio**:
+  - **Sample Rates**: 44.1 kHz, 48 kHz, 88.2 kHz, 96 kHz, 176.4 kHz, and 192 kHz (Auto / Manual selectable in Settings).
+  - **Bit Depths**: 16-bit integer PCM and 24-bit packed PCM (144 dB dynamic range).
+- **Latency & Streaming Profiles**:
+  - **Auto (Balanced / Adaptive)**: Dynamic floating-watermark jitter buffer (35ms - 400ms) adapting to Wi-Fi jitter in real time.
+  - **Music (Reliable / Lossless)**: Uncapped studio-master PCM playback with extended buffering cushion (~2.5s headroom) to absorb burst interference.
+  - **Video (Low Latency)**: Compressed Opus audio (~40ms cushion, 80-85% bandwidth reduction) optimized for gaming and video lipsync.
+- **Robust Transport & Reliability**:
+  - **HAT Protocol (`HatPacket`)**: Custom high-efficiency binary datagram format with 32-bit generation tracking, sequence numbers, presentation timestamps, and codec signaling.
+  - **Forward Error Correction (FEC)**: 1 XOR parity packet per 4 audio packets (25% overhead) recovering lost packets without retransmission delays.
+  - **Silence Suppression**: Battery and airtime saver automatically entering a 2 packet/sec heartbeat mode during sustained silence.
+  - **Transactional Generation Synchronization**: Zero-drop profile transitions synchronized with receiver acknowledgement.
+- **Connectivity Options**:
+  - **Local Subnet (Wi-Fi / LAN)**: Unicast IP or subnet broadcast (`x.x.x.255`).
+  - **Autonomous Wi-Fi Direct (P2P)**: Direct device-to-device streaming without an external router or access point.
+  - **Automatic Discovery**: UDP broadcast discovery on port `50006`.
+- **Integrated Diagnostics & Testing**:
+  - **In-App Updater**: Directly checks GitHub releases and updates the APK from Settings.
+  - **Runtime Diagnostics (`HatDiagnostics`)**: Central event ring buffer, periodic telemetry snapshots, and jitter metrics.
+  - **Full HAT Test Harness (Phase 3.2)**: Automated end-to-end synchronized diagnostic test validating receiver participation, packet flow, AudioTrack writes, and profile transition latencies.
 
 ---
 
 ## Project Structure
 
 ```
-/home/kollthor/Code/
+.
 ├── build.gradle.kts                            # Root Gradle build script
 ├── settings.gradle.kts                         # Single module configuration (:app)
 ├── gradle.properties                           # JVM & AndroidX settings
@@ -17,132 +42,181 @@ A minimal, high-performance, single-module Android application written in Kotlin
 └── app/                                        # Unified Application Module
     ├── build.gradle.kts                        # compileSdk 35, minSdk 29, targetSdk 35
     └── src/main/
-        ├── AndroidManifest.xml                 # Unified permissions & services
+        ├── AndroidManifest.xml                 # Permissions, foreground services, package queries
         ├── kotlin/com/example/audiostreamer/
-        │   ├── AudioConfig.kt                  # Shared singleton audio configuration
-        │   ├── AudioCaptureService.kt          # System audio capture & UDP streaming service
-        │   ├── AudioSinkService.kt             # UDP reception & low-latency AudioTrack service
-        │   └── MainActivity.kt                 # Mode toggle (Transmitter vs Receiver) & UI
+        │   ├── MainActivity.kt                 # Mode toggle (Transmitter vs Receiver), P2P UI
+        │   ├── SettingsActivity.kt             # Audio preferences, Full HAT Test UI, in-app updater
+        │   ├── AudioConfig.kt                  # Audio pipeline constants & profile definitions
+        │   ├── AudioCaptureService.kt          # MediaProjection capture, encoding & UDP streaming
+        │   ├── AudioSinkService.kt             # UDP reception, JitterBuffer & AudioTrack playback
+        │   ├── HatPacket.kt                    # HAT packet wire protocol format & builder
+        │   ├── HatPacketParser.kt              # Zero-allocation packet parser
+        │   ├── JitterBuffer.kt                 # Adaptive jitter buffer, RFC 3550 drift estimation
+        │   ├── FecCodec.kt                     # XOR Forward Error Correction encoder & decoder
+        │   ├── AudioResampler.kt               # Linear interpolation audio resampler
+        │   ├── WifiDirectManager.kt            # Autonomous P2P Wi-Fi Direct group manager
+        │   ├── HatDiagnostics.kt               # Diagnostic snapshots, event ring buffer & timings
+        │   ├── HatTestControlProtocol.kt       # Out-of-band JSON test session protocol (Phase 3.2)
+        │   ├── HatTestSessionCoordinator.kt    # Test session coordinator & telemetry dispatcher
+        │   ├── HatTestRunner.kt                # E2E synchronized diagnostic test runner
+        │   ├── HatTestReport.kt                # Diagnostic test data models, JSON & log serializers
+        │   └── HatTestAndroid.kt               # Android environment adapter for test harness
         └── res/
-            ├── layout/activity_main.xml        # Single XML layout with Mode Selector & inputs
-            └── values/
+            ├── layout/                         # UI layouts (activity_main, activity_settings)
+            └── values/                         # Colors, strings, themes
 ```
 
 ---
 
-## Audio Pipeline & Packet Format
+## Audio Pipeline & Wire Protocol
 
-Shared via singleton [`AudioConfig`](app/src/main/kotlin/com/example/audiostreamer/AudioConfig.kt):
-- **Sample Rate**: 48,000 Hz
-- **Channels**: 2 (Stereo)
-- **Encoding**: 16-bit PCM (`AudioFormat.ENCODING_PCM_16BIT`)
-- **Frame Duration**: 10 ms
-- **Packet Sizing**: $48{,}000 \times 4\text{ bytes/s} \times 0.010\text{ s} = \mathbf{1{,}920}\text{ bytes}$ per packet (480 frames)
-- **Default UDP Port**: `50005`
-- **Zero-Allocation Tight Loop**: Pre-allocated byte buffers and `DatagramPacket` objects avoid garbage collector pauses.
-- **Broadcast Support**: UDP sockets enable `broadcast = true` so transmission can target individual IPs (e.g. `192.168.43.100`) or subnet broadcasts (e.g. `192.168.43.255`).
+### HAT Packet Format
+Audio datagrams follow the custom binary HAT (`HT`) format:
+- **Magic Bytes**: `0x48 0x54` (`"HT"`). Non-HAT packets (such as JSON control messages starting with `{`) are rejected instantly with zero allocations.
+- **Flags**: Profile signaling (`AUTO`, `MUSIC`, `LOW_LATENCY`), bit depth (`16` vs `24`), silence indicator, and FEC parity flag.
+- **Header Fields**:
+  - `Stream ID` (16-bit): Identifies active stream instance.
+  - `Generation` (32-bit): Monotonically increments on every profile or pipeline reconfiguration.
+  - `Sequence Number` (32-bit): Detects lost, duplicate, or out-of-order packets.
+  - `Timestamp` (32-bit): Presentation timestamp for jitter calculation.
+  - `Payload Length` (16-bit): Payload size in bytes.
+- **Default UDP Ports**:
+  - Streaming audio: `50005`
+  - Peer discovery: `50006`
 
 ---
 
-## Architecture & Features
+## Streaming Modes
 
-### 1. Mode Selector
-- **Transmitter (Send)**:
-  - Displays Target IP (pre-filled with `192.168.43.255`) and Port (`50005`).
-  - Requests `RECORD_AUDIO` and `POST_NOTIFICATIONS` permissions.
-  - Launches `MediaProjectionManager.createScreenCaptureIntent()`.
-  - Starts [`AudioCaptureService`](app/src/main/kotlin/com/example/audiostreamer/AudioCaptureService.kt) with foreground service type `mediaProjection`.
-  - Automatically stops `AudioSinkService` if it was active.
-- **Receiver (Listen)**:
-  - Hides IP input, exposes Port field (`50005`).
-  - Starts [`AudioSinkService`](app/src/main/kotlin/com/example/audiostreamer/AudioSinkService.kt) with foreground service type `mediaPlayback`.
-  - Acquires `PowerManager.PARTIAL_WAKE_LOCK` and `WifiManager.WIFI_MODE_FULL_HIGH_PERF` to maintain low-latency playback with the screen off.
-  - Automatically stops `AudioCaptureService` if it was active.
+### 1. Transmitter (Audio Source)
+- Captures internal device audio via Android 10+ `MediaProjection` (`AudioPlaybackCaptureConfiguration`).
+- Target address can be an individual device IP (`192.168.1.100`) or subnet broadcast (`192.168.1.255`).
+- Runs as a foreground service (`mediaProjection`) with a persistent status notification.
+- Supports live runtime profile and format changes without restarting the application.
+
+### 2. Receiver (Audio Sink)
+- Listens on UDP port `50005` for incoming audio packets.
+- Automatically handles sample rate switching, 16/24-bit decoding, and Opus decompression.
+- Reconstructs audio using a jitter buffer and outputs to `AudioTrack` with `PERFORMANCE_MODE_LOW_LATENCY`.
+- Acquires `WIFI_MODE_FULL_HIGH_PERF` and partial wake lock for glitch-free playback with the screen off.
+
+### 3. Autonomous Wi-Fi Direct (P2P)
+- Creates an autonomous Wi-Fi Direct group on the Receiver.
+- Transmitter connects directly to the Receiver's hotspot using auto-generated credentials.
+- Bypasses home Wi-Fi routers entirely for minimal latency and zero network congestion.
+
+---
+
+## Automated End-to-End Diagnostic Testing (HAT Phase 3.2)
+
+The application includes an automated diagnostic test harness (**Full HAT Test**) designed to evaluate real end-to-end streaming health between transmitter and receiver devices.
+
+> [!IMPORTANT]
+> The Phase 3.2 test harness requires **verified two-way participation** between transmitter and receiver. A test run will **never** report `PASS` unless receiver telemetry is active. If the receiver is offline or disconnected, the test immediately aborts with `NOT_EXECUTED` (`RECEIVER_NOT_PARTICIPATING`).
+
+### How to Run a Proper Diagnostic Test
+
+#### Step 1: Install the Same Version on Both Devices
+Install the latest build on both the **Transmitter** and **Receiver** devices. Both ends must support the Phase 3.2 control protocol to exchange telemetry.
+
+#### Step 2: Establish the Normal Audio Stream
+1. Connect both devices to the same local network or establish a Wi-Fi Direct connection.
+2. On **Device B (Receiver)**: Switch to **Receiver** mode.
+3. On **Device A (Transmitter)**: Switch to **Transmitter** mode, enter the receiver's IP, grant audio capture permission, and start streaming.
+4. Verify that audio is playing out of Device B's speaker.
+
+#### Step 3: Start the Test from the Transmitter
+1. On **Device A (Transmitter)**, open **Settings** (gear icon).
+2. Scroll down to the **Full HAT Test (Automated Diagnostic)** card.
+3. Tap **Run Full HAT Test**, then confirm by tapping **Run**.
+
+#### Step 4: What Happens During the Test (~3.5 Minutes Total)
+1. **Handshake Phase (~1-2s)**:
+   - Transmitter broadcasts `TEST_SESSION_ANNOUNCE` with a unique session ID (`HAT-<timestamp>-<random>`).
+   - Receiver responds with `TEST_SESSION_JOINED` containing device metadata.
+   - UI updates to show connected devices: `TX: <Model> • RX: <Model>`.
+2. **Telemetry Streaming**:
+   - The receiver streams ~1s periodic diagnostic telemetry (`RX_TEST_STATS`) containing 25 diagnostic metrics over the control channel.
+3. **Sequential Scenarios**:
+   - **Scenario 1 — Baseline (30s)**: Measures stability with current profile unchanged.
+   - **Scenario 2 — Reliable (30s)**: Switches to `RELIABLE` (Music), verifies monotonic generation increment and receiver acknowledgement.
+   - **Scenario 3 — Balanced (30s)**: Switches to `BALANCED` (Auto), verifies generation increment and receiver acknowledgement.
+   - **Scenario 4 — Low Latency (30s)**: Switches to `LOW_LATENCY` (Video), verifies generation increment and receiver acknowledgement.
+   - **Scenario 5 — Profile Switch Stress (~80s)**: Rapidly cycles through `BALANCED` → `RELIABLE` → `BALANCED` → `LOW_LATENCY` → `BALANCED` (10s each), followed by a 30s final stability tail.
+4. **Strict Delta Metrics**:
+   - All scenario metrics are computed as strict deltas (`end - start`), preventing false measurements from cumulative counters.
+
+#### Step 5: Test Outcomes & Reports
+- **Verdicts**:
+  - `PASS`: Complete TX + RX telemetry received, all profile transitions acknowledged, packets and AudioTrack writes verified with zero fatal errors.
+  - `WARN`: Recoverable network packet loss, jitter spikes, or non-fatal single capture read errors (with capture continuing).
+  - `FAIL`: Fatal stream error, backwards generation, or unacknowledged profile transition.
+  - `INCOMPLETE`: Receiver telemetry disconnected during a scenario.
+  - `NOT_EXECUTED`: Receiver did not respond to session handshake or preconditions failed.
+- **Exported Reports**:
+  - Automatically exported to `Downloads/HAT/`:
+    - `HAT_test_<timestamp>.json`: Complete machine-readable telemetry (deltas, labeled transition latencies, snapshots).
+    - `HAT_test_<timestamp>.log`: Formatted human-readable report with scenario summary tables.
+  - Tap **Share Report** in Settings to export both files via Android's share sheet.
 
 ---
 
 ## Building the Project
 
+### Prerequisites
+- JDK 17 (`JAVA_HOME` pointing to OpenJDK 17)
+- Android SDK with Platform 35 and Build-Tools 35.0.0
+
 ### Debug Build
-
-Compile the debug APK using Gradle:
-
 ```bash
 ./gradlew assembleDebug
 ```
-
 Output APK:
-- `app/build/outputs/apk/debug/app-debug.apk`
+```
+app/build/outputs/apk/debug/app-debug.apk
+```
 
-### Release Build & Signing Configuration
+### Release Build
+```bash
+./gradlew assembleRelease
+```
+Output APK:
+```
+app/build/outputs/apk/release/app-release.apk
+```
 
-By default, running `./gradlew assembleRelease` without signing credentials produces an unsigned release APK (`app/build/outputs/apk/release/app-release-unsigned.apk`).
+> [!NOTE]
+> When private release keystore properties (`keystore.properties`) are not present in the workspace, Gradle automatically signs the release build with the standard debug key. This produces a valid, installable signed APK (`app-release.apk`) that updates seamlessly over existing debug installations without signature conflict.
 
-To sign release builds, configure signing credentials through one of two methods (never committed to Git):
-
-#### Option A: `keystore.properties` (Recommended for local development)
-
-1. Copy `keystore.properties.example` to `keystore.properties` in the project root:
-   ```bash
-   cp keystore.properties.example keystore.properties
-   ```
-2. Fill in your release keystore details:
-   ```properties
-   releaseKeystorePath=/path/to/your/release.keystore
-   releaseKeystorePassword=your_keystore_password
-   releaseKeyAlias=your_key_alias
-   releaseKeyPassword=your_key_password
-   ```
-
-Note: `keystore.properties` and all `*.keystore` / `*.jks` files are ignored in `.gitignore`.
-
-#### Option B: Environment Variables (Recommended for CI/CD)
-
-Export the following environment variables prior to running the build:
-
+#### Optional: Custom Release Signing Key
+To sign with a custom private release key, copy `keystore.properties.example` to `keystore.properties` (gitignored) or set environment variables:
 ```bash
 export RELEASE_KEYSTORE_PATH="/path/to/your/release.keystore"
 export RELEASE_KEYSTORE_PASSWORD="your_keystore_password"
 export RELEASE_KEY_ALIAS="your_key_alias"
 export RELEASE_KEY_PASSWORD="your_key_password"
-
 ./gradlew assembleRelease
 ```
 
-Output APK:
-- `app/build/outputs/apk/release/app-release.apk`
-
----
-
-## Security Notice
-
-### Compromised Historical Signing Key Notice (v1.6.3 - v1.8.5)
-
-In releases from v1.6.3 through v1.8.5, an Android debug keystore was committed to the repository at `keystore/release.keystore` with publicly visible credentials (`android` / `androiddebugkey`).
-
-Because this signing key was committed to a public repository:
-- The signing key used for APK releases v1.6.3 through v1.8.5 is considered compromised.
-- Any APK signed with that historical key should not be trusted if obtained from untrusted or third-party sources.
-- The committed keystore and hardcoded credentials have been purged from repository tracking.
-- Moving forward, all official releases must be signed with an independent private release key maintained outside source control.
-- If upgrading from versions v1.6.3 - v1.8.5 to a future release signed with a new private key, Android will require uninstalling the old version first due to the signature mismatch.
-
-For detailed vulnerability disclosure information, see [`SECURITY.md`](SECURITY.md).
+### Running Unit Tests
+```bash
+./gradlew testDebugUnitTest
+```
 
 ---
 
 ## Permissions Audit
 
-The application declares the following permissions in `AndroidManifest.xml`, all of which are strictly required for its streaming operations:
+The application declares the following permissions in `AndroidManifest.xml`, strictly required for streaming and diagnostic operations:
 
-- `RECORD_AUDIO`: Required by Android system to capture audio playback via `AudioPlaybackCaptureConfiguration` in `AudioCaptureService`.
-- `INTERNET`: Required for local UDP audio packet transmission and reception across devices.
-- `ACCESS_NETWORK_STATE` & `ACCESS_WIFI_STATE`: Required to inspect local network interfaces and determine local IP addresses.
-- `WAKE_LOCK`: Required to acquire a partial CPU wake lock, ensuring audio streaming continues uninterrupted when the device screen turns off.
-- `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PROJECTION`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK`: Required on Android 10+ (and enforced on Android 14+) to run persistent background capture and playback services.
-- `POST_NOTIFICATIONS`: Required on Android 13+ (API 33+) to display ongoing service status notifications for foreground services.
-- `CHANGE_WIFI_MULTICAST_STATE`: Required on the receiver to acquire a multicast lock for local device discovery packets.
-- `CHANGE_WIFI_STATE`: Required for Wi-Fi Direct (P2P) group creation and peer negotiation.
-- `ACCESS_FINE_LOCATION` & `ACCESS_COARSE_LOCATION`: Required by the Android OS framework on Android 10-12 (API 29-32) and vendor OS skins (e.g. Xiaomi MIUI/HyperOS) for Wi-Fi Direct peer discovery.
-- `NEARBY_WIFI_DEVICES`: Required on Android 13+ (API 33+) for Wi-Fi Direct peer discovery.
-- `REQUEST_INSTALL_PACKAGES`: Required for the in-app updater feature in Settings to launch the system package installer when an update is downloaded from GitHub Releases.
+- `RECORD_AUDIO`: Required to capture internal audio playback via `AudioPlaybackCaptureConfiguration` in `AudioCaptureService`.
+- `INTERNET`: Required for UDP packet streaming and control telemetry.
+- `ACCESS_NETWORK_STATE` & `ACCESS_WIFI_STATE`: Required to inspect network interfaces and retrieve local IP addresses.
+- `WAKE_LOCK`: Required for CPU wake locks to keep audio streaming with the screen off.
+- `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PROJECTION`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK`: Required for persistent background capture and playback.
+- `POST_NOTIFICATIONS`: Required on Android 13+ (API 33+) to show foreground service status notifications.
+- `CHANGE_WIFI_MULTICAST_STATE`: Required on the receiver for UDP device discovery packets.
+- `CHANGE_WIFI_STATE`: Required for Wi-Fi Direct (P2P) autonomous group creation.
+- `ACCESS_FINE_LOCATION` & `ACCESS_COARSE_LOCATION`: Required by the Android framework on API 29-32 for Wi-Fi Direct peer discovery.
+- `NEARBY_WIFI_DEVICES`: Required on Android 13+ (API 33+) for Wi-Fi Direct peer discovery without location permissions.
+- `REQUEST_INSTALL_PACKAGES`: Required for the in-app updater in Settings to launch the system package installer when an update is downloaded.
