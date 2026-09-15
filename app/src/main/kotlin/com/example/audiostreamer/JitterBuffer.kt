@@ -360,6 +360,9 @@ class JitterBuffer(
         packetBuffer.insert(sequence, timestamp, data, offset, length)
         fecHistory.record(sequence, timestamp, data, offset, length)
 
+        driftController.updateFill(packetBuffer.availableCount, jitterEstimator.targetWatermarkSlots)
+        playbackScheduler.onPacketArrived(packetBuffer.availableCount, preRollThreshold)
+
         notEmptyCondition.signal()
         return true
     }

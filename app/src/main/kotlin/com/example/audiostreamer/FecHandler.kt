@@ -250,7 +250,6 @@ class FecDecoder(private val jitterBuffer: JitterBuffer) {
         var missingSeq = -1
         var missingIndex = -1
         var missingCount = 0
-        var hasCorruptedSlot = false
 
         for (i in 0 until blockSize) {
             val seq = (baseSeq + i) and 0xFFFF
@@ -270,8 +269,10 @@ class FecDecoder(private val jitterBuffer: JitterBuffer) {
                         }
                     }
                 }
-                // Packet in slot has length mismatch or CRC failure (stale or corrupted)
-                hasCorruptedSlot = true
+                // An existing packet in the slot fails validation (corrupted, stale, or format mismatch).
+                // It cannot be safely used for XOR reconstruction of another packet,
+                // and must not be overwritten by parity recovery.
+                return false
             }
 
             missingSeq = seq
@@ -337,6 +338,6 @@ class FecDecoder(private val jitterBuffer: JitterBuffer) {
         }
 
         // Write recovered packet into missing slot in JitterBuffer with exact target length
-        return jitterBuffer.putRecoveredPacket(missingSeq, recoveredTimestamp, recoveredPayload, 0, targetLen, overwrite = hasCorruptedSlot)
+        return jitterBuffer.putRecoveredPacket(missingSeq, recoveredTimestamp, recoveredPayload, 0, targetLen, overwrite = false)
     }
 }

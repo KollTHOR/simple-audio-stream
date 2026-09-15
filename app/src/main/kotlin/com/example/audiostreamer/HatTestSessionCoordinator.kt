@@ -34,16 +34,17 @@ object HatTestSessionCoordinator {
     private val latestRxStatsRef = AtomicReference<HatTestControlMessage.RxStats?>()
     private val genAckMap = ConcurrentHashMap<Long, CompletableDeferred<HatTestControlMessage.GenerationAck>>()
 
-    /**
-     * Announces a new test session to connected receiver(s).
-     */
-    fun startSession(testSessionId: String, generation: Long): Boolean {
+    fun initSessionForTest(testSessionId: String) {
         activeSessionId = testSessionId
         receiverEndpoint = null
         val deferred = CompletableDeferred<HatTestReceiverInfo>()
         joinDeferredRef.set(deferred)
         latestRxStatsRef.set(null)
         genAckMap.clear()
+    }
+
+    fun startSession(testSessionId: String, generation: Long): Boolean {
+        initSessionForTest(testSessionId)
 
         val msg = HatTestControlMessage.AnnounceSession(
             testSessionId = testSessionId,
@@ -132,6 +133,20 @@ object HatTestSessionCoordinator {
             }
             is HatTestControlMessage.RxStats -> {
                 latestRxStatsRef.set(msg)
+                if (msg.generation > 0L) {
+                    val deferred = genAckMap.computeIfAbsent(msg.generation) { CompletableDeferred() }
+                    if (!deferred.isCompleted) {
+                        val syntheticAck = HatTestControlMessage.GenerationAck(
+                            testSessionId = msg.testSessionId,
+                            generation = msg.generation,
+                            profile = "SYNTHETIC_RX_STATS",
+                            firstRxTimestamp = msg.timestamp,
+                            firstDecodeTimestamp = msg.timestamp,
+                            firstAudioWriteTimestamp = msg.timestamp
+                        )
+                        deferred.complete(syntheticAck)
+                    }
+                }
             }
             is HatTestControlMessage.GenerationAck -> {
                 Log.i(TAG, "Received generation ACK for gen=${msg.generation}, profile=${msg.profile}")

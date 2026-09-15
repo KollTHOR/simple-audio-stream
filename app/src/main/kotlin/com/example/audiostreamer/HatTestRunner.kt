@@ -339,6 +339,12 @@ class HatTestRunner(
             } else {
                 receiverInfo = rxJoined
                 sessionParticipated = true
+                // Wait briefly for first RxStats so initial baseline is non-null
+                var waitStatsMs = 0L
+                while (env.latestRxStats(activeTestSessionId) == null && waitStatsMs < 2000L && !cancelled) {
+                    clock.wait(50L)
+                    waitStatsMs += 50L
+                }
                 publish(
                     state = HatTestState.RUNNING,
                     message = "Receiver connected",
@@ -1012,17 +1018,17 @@ class HatTestRunner(
         val consecutiveErrors = (captureSection["consecutiveReadErrors"] as? Number)?.toLong() ?: 0L
 
         // Receiver delta metrics (null if receiver is not participating)
-        val rxDeltaPacketsReceived = if (endRx != null && startRx != null) (endRx.packetsReceived - startRx.packetsReceived).coerceAtLeast(0L) else null
-        val rxDeltaPacketsLost = if (endRx != null && startRx != null) (endRx.packetsLost - startRx.packetsLost).coerceAtLeast(0L) else null
-        val rxDeltaPacketsLate = if (endRx != null && startRx != null) (endRx.packetsLate - startRx.packetsLate).coerceAtLeast(0L) else null
-        val rxDeltaPacketsOutOfOrder = if (endRx != null && startRx != null) (endRx.packetsOutOfOrder - startRx.packetsOutOfOrder).coerceAtLeast(0L) else null
-        val rxDeltaPacketsDuplicate = if (endRx != null && startRx != null) (endRx.packetsDuplicate - startRx.packetsDuplicate).coerceAtLeast(0L) else null
-        val rxDeltaFecRecovered = if (endRx != null && startRx != null) (endRx.fecRecovered - startRx.fecRecovered).coerceAtLeast(0L) else null
-        val rxDeltaDecodeErrors = if (endRx != null && startRx != null) (endRx.decodeErrors - startRx.decodeErrors).coerceAtLeast(0L) else null
-        val rxDeltaAudioTrackWrites = if (endRx != null && startRx != null) (endRx.audioTrackWrites - startRx.audioTrackWrites).coerceAtLeast(0L) else null
-        val rxDeltaFramesWritten = if (endRx != null && startRx != null) (endRx.framesWritten - startRx.framesWritten).coerceAtLeast(0L) else null
-        val rxDeltaUnderruns = if (endRx != null && startRx != null) (endRx.underruns - startRx.underruns).coerceAtLeast(0L) else null
-        val rxDeltaWriteErrors = if (endRx != null && startRx != null) (endRx.writeErrors - startRx.writeErrors).coerceAtLeast(0L) else null
+        val rxDeltaPacketsReceived = if (endRx != null) (endRx.packetsReceived - (startRx?.packetsReceived ?: 0L)).coerceAtLeast(0L) else null
+        val rxDeltaPacketsLost = if (endRx != null) (endRx.packetsLost - (startRx?.packetsLost ?: 0L)).coerceAtLeast(0L) else null
+        val rxDeltaPacketsLate = if (endRx != null) (endRx.packetsLate - (startRx?.packetsLate ?: 0L)).coerceAtLeast(0L) else null
+        val rxDeltaPacketsOutOfOrder = if (endRx != null) (endRx.packetsOutOfOrder - (startRx?.packetsOutOfOrder ?: 0L)).coerceAtLeast(0L) else null
+        val rxDeltaPacketsDuplicate = if (endRx != null) (endRx.packetsDuplicate - (startRx?.packetsDuplicate ?: 0L)).coerceAtLeast(0L) else null
+        val rxDeltaFecRecovered = if (endRx != null) (endRx.fecRecovered - (startRx?.fecRecovered ?: 0L)).coerceAtLeast(0L) else null
+        val rxDeltaDecodeErrors = if (endRx != null) (endRx.decodeErrors - (startRx?.decodeErrors ?: 0L)).coerceAtLeast(0L) else null
+        val rxDeltaAudioTrackWrites = if (endRx != null) (endRx.audioTrackWrites - (startRx?.audioTrackWrites ?: 0L)).coerceAtLeast(0L) else null
+        val rxDeltaFramesWritten = if (endRx != null) (endRx.framesWritten - (startRx?.framesWritten ?: 0L)).coerceAtLeast(0L) else null
+        val rxDeltaUnderruns = if (endRx != null) (endRx.underruns - (startRx?.underruns ?: 0L)).coerceAtLeast(0L) else null
+        val rxDeltaWriteErrors = if (endRx != null) (endRx.writeErrors - (startRx?.writeErrors ?: 0L)).coerceAtLeast(0L) else null
 
         return HatTestMetrics(
             receiverParticipating = receiverParticipating,
