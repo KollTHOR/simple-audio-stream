@@ -254,18 +254,26 @@ class AudioSinkService : Service() {
         applyBufferSizeForProfile(track, profile, sampleRate)
         currentTrackProfile = profile
 
-        // Prime AudioTrack with pre-roll silence so DAC ring buffer is never at 0 frames on startup
+        val floatVol = (currentVolume / 100.0f).coerceIn(0.0f, 1.0f)
+        track.setVolume(floatVol)
+        try {
+            track.play()
+        } catch (e: Exception) {
+            Log.w(TAG, "AudioTrack play failed: ${e.message}")
+        }
+
+        // Prime AudioTrack with pre-roll silence using WRITE_NON_BLOCKING so UdpReceiverThread is never blocked
         val primeBytes = when (profile) {
             AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> packetSize
             AudioConfig.PROFILE_AUTO -> packetSize * 2
             else -> packetSize * 4
         }
         val primeBuf = ByteArray(primeBytes)
-        track.write(primeBuf, 0, primeBytes, AudioTrack.WRITE_BLOCKING)
-
-        val floatVol = (currentVolume / 100.0f).coerceIn(0.0f, 1.0f)
-        track.setVolume(floatVol)
-        track.play()
+        try {
+            track.write(primeBuf, 0, primeBytes, AudioTrack.WRITE_NON_BLOCKING)
+        } catch (e: Exception) {
+            Log.w(TAG, "AudioTrack non-blocking prime failed: ${e.message}")
+        }
 
         val oldTrack = existing
         synchronized(trackLock) {
@@ -277,15 +285,21 @@ class AudioSinkService : Service() {
             currentBufferSizeInBytes = bufferSize
         }
 
-        try {
-            oldTrack?.let {
-                if (it.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                    it.stop()
+        if (oldTrack != null) {
+            Thread({
+                try {
+                    Thread.sleep(60L) // Wait for any in-flight write in AudioPlaybackThread to cleanly exit
+                    if (oldTrack.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                        oldTrack.stop()
+                    }
+                    oldTrack.release()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error releasing previous AudioTrack: ${e.message}")
                 }
-                it.release()
+            }, "OldTrackReleaser").apply {
+                isDaemon = true
+                start()
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Error releasing previous AudioTrack: ${e.message}")
         }
 
         val activeFrames = try { track.bufferSizeInFrames } catch (e: Exception) { 0 }
@@ -483,6 +497,9 @@ class AudioSinkService : Service() {
 
                             val header = HatPacket.parseHeader(data, offset, length) ?: continue
 
+                            lastSenderAddress = packet.address
+                            lastSenderPort = packet.port
+
                             // GENERATION_FIRST_RX: tracked with a local Long so the hot receive path allocates
                             // and formats nothing per packet.
                             if (header.generation > 0L && header.generation != firstRxGeneration) {
@@ -493,7 +510,18 @@ class AudioSinkService : Service() {
 
                             // Check for XOR FEC Parity packet
                             if (header.packetType == HatPacket.TYPE_FEC_PARITY) {
-                                val activeConfig = configAuthority.currentConfig
+                                var activeConfig = configAuthority.currentConfig
+                                if (activeConfig != null && header.generation > activeConfig.generation) {
+                                    val newConfig = NegotiatedStreamConfig.fromHeader(header, fecEnabled = true, generation = header.generation)
+                                    if (newConfig != null) {
+                                        val result = configAuthority.applyUpdate(newConfig)
+                                        if (result is ConfigTransitionResult.Applied) {
+                                            Log.i(TAG, "CONFIG_APPLIED (in-band fec): ${newConfig.toSummaryString()}")
+                                            applyStreamConfiguration(newConfig)
+                                        }
+                                        activeConfig = configAuthority.currentConfig
+                                    }
+                                }
                                 if (activeConfig != null && !HatPacket.isGenerationValid(header.generation, activeConfig.generation)) {
                                     Log.w(TAG, "Dropping stale-generation FEC parity packet: packet gen=${header.generation}, active gen=${activeConfig.generation}")
                                     noteGenerationMismatch(header.generation, activeConfig.generation, "fec_parity")
@@ -522,9 +550,6 @@ class AudioSinkService : Service() {
                                 intervalBytes += length
                                 continue
                             }
-
-                            lastSenderAddress = packet.address
-                            lastSenderPort = packet.port
 
                             // Check for Disconnect signal from transmitter
                             if (header.packetType == HatPacket.TYPE_DISCONNECT) {
@@ -588,7 +613,19 @@ class AudioSinkService : Service() {
 
                             val isSilence = header.packetType == HatPacket.TYPE_SILENCE_HEARTBEAT
                             if (isSilence) {
-                                val activeConfig = configAuthority.currentConfig
+                                var activeConfig = configAuthority.currentConfig
+                                if (activeConfig != null && header.generation > activeConfig.generation) {
+                                    Log.i(TAG, "In-band generation advance detected: silence gen=${header.generation} > active gen=${activeConfig.generation}")
+                                    val newConfig = NegotiatedStreamConfig.fromHeader(header, fecEnabled = true, generation = header.generation)
+                                    if (newConfig != null) {
+                                        val result = configAuthority.applyUpdate(newConfig)
+                                        if (result is ConfigTransitionResult.Applied) {
+                                            Log.i(TAG, "CONFIG_APPLIED (in-band silence): ${newConfig.toSummaryString()}")
+                                            applyStreamConfiguration(newConfig)
+                                        }
+                                        activeConfig = configAuthority.currentConfig
+                                    }
+                                }
                                 if (activeConfig != null && !HatPacket.isGenerationValid(header.generation, activeConfig.generation)) {
                                     Log.w(TAG, "Dropping stale-generation silence heartbeat: packet gen=${header.generation}, active gen=${activeConfig.generation}")
                                     noteGenerationMismatch(header.generation, activeConfig.generation, "silence_heartbeat")
@@ -606,42 +643,56 @@ class AudioSinkService : Service() {
                             var isLossless = false
 
                             if (isAudio) {
-                                val activeConfig = configAuthority.currentConfig ?: run {
+                                var activeConfig = configAuthority.currentConfig
+                                if (activeConfig == null) {
                                     // Initial audio packet before any announcement: establish initial generation
                                     val initialGen = if (header.generation > 0L) header.generation else 1L
                                     val initialConfig = NegotiatedStreamConfig.fromHeader(header, fecEnabled = true, generation = initialGen)
                                     if (initialConfig != null) {
                                         val result = configAuthority.applyUpdate(initialConfig)
                                         if (result is ConfigTransitionResult.Applied) {
-                                            Log.i(TAG, "CONFIG_APPLIED: ${initialConfig.toSummaryString()}")
+                                            Log.i(TAG, "CONFIG_APPLIED (initial audio): ${initialConfig.toSummaryString()}")
                                             applyStreamConfiguration(initialConfig)
                                         }
-                                        configAuthority.currentConfig
+                                        activeConfig = configAuthority.currentConfig
                                     } else {
                                         Log.w(TAG, "Rejected audio packet with invalid configuration: codec=${header.codec}, rate=${header.sampleRateHz}, bitDepth=${header.bitDepth}")
                                         HatDiagnostics.increment("rx_invalid_config")
-                                        null
+                                        continue
                                     }
-                                } ?: continue
+                                } else if (header.generation > activeConfig.generation) {
+                                    // In-band stream configuration update: transmitter changed generation but announcement was delayed/dropped
+                                    Log.i(TAG, "In-band generation advance detected: packet gen=${header.generation} > active gen=${activeConfig.generation}")
+                                    val newConfig = NegotiatedStreamConfig.fromHeader(header, fecEnabled = true, generation = header.generation)
+                                    if (newConfig != null) {
+                                        val result = configAuthority.applyUpdate(newConfig)
+                                        if (result is ConfigTransitionResult.Applied) {
+                                            Log.i(TAG, "CONFIG_APPLIED (in-band audio): ${newConfig.toSummaryString()}")
+                                            applyStreamConfiguration(newConfig)
+                                        }
+                                        activeConfig = configAuthority.currentConfig
+                                    }
+                                }
+
+                                val currentActiveConfig = activeConfig ?: continue
 
                                 // Generation enforcement: drop audio packets from obsolete stream generations!
-                                if (!HatPacket.isGenerationValid(header.generation, activeConfig.generation)) {
-                                    Log.w(TAG, "Dropping stale-generation audio packet: packet gen=${header.generation}, active gen=${activeConfig.generation}")
-                                    noteGenerationMismatch(header.generation, activeConfig.generation, "audio")
+                                if (!HatPacket.isGenerationValid(header.generation, currentActiveConfig.generation)) {
+                                    Log.w(TAG, "Dropping stale-generation audio packet: packet gen=${header.generation}, active gen=${currentActiveConfig.generation}")
+                                    noteGenerationMismatch(header.generation, currentActiveConfig.generation, "audio")
                                     continue
                                 }
 
                                 // Once generation N starts, receivers MUST keep using that configuration.
-                                // A receiver must NOT switch PCM <-> another codec because of individual packets.
-                                val agreement = activeConfig.validatePacketAgreement(header)
+                                val agreement = currentActiveConfig.validatePacketAgreement(header)
                                 if (agreement !is AgreementResult.Agreed) {
                                     Log.w(TAG, "Dropping packet incompatible with active configuration: ${(agreement as AgreementResult.Disagreement).reason}")
                                     HatDiagnostics.increment("rx_codec_mismatch")
                                     continue
                                 }
 
-                                isIncomingOpus = activeConfig.codec == AudioCodec.OPUS
-                                isIncomingAac = activeConfig.codec == AudioCodec.AAC
+                                isIncomingOpus = currentActiveConfig.codec == AudioCodec.OPUS
+                                isIncomingAac = currentActiveConfig.codec == AudioCodec.AAC
                                 isLossless = (header.codec == HatPacket.CODEC_LOSSLESS_PCM)
                             }
 
@@ -1026,7 +1077,13 @@ class AudioSinkService : Service() {
                                          writeToPlaybackTrack(track, silence, silence.size)
                                      }
                                  } else {
-                                     audioLevelMeter.analyze(chunk, 0, bytesToPlay, is24Bit = currentIsServer24Bit)
+                                    val decodeGeneration = configAuthority.currentGeneration
+                                    if (decodeGeneration > 0L && decodeGeneration != firstDecodeGeneration) {
+                                        firstDecodeGeneration = decodeGeneration
+                                        genFirstDecodeMs[decodeGeneration] = System.currentTimeMillis()
+                                        HatDiagnostics.lifecycle("GENERATION_FIRST_DECODE", decodeGeneration)
+                                    }
+                                    audioLevelMeter.analyze(chunk, 0, bytesToPlay, is24Bit = currentIsServer24Bit)
                                      if (currentEncoding == AudioFormat.ENCODING_PCM_16BIT && currentIsServer24Bit && bytesToPlay >= 6) {
                                          val frames = bytesToPlay / 6
                                          val outLen = frames * 4
@@ -1075,7 +1132,6 @@ class AudioSinkService : Service() {
                 val packet = DatagramPacket(heartbeatBuf, heartbeatBuf.size)
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                     try {
-                        Thread.sleep(2500L)
                         val addr = lastSenderAddress
                         val port = lastSenderPort ?: AudioConfig.DEFAULT_PORT
                         val sock = datagramSocket
@@ -1084,6 +1140,7 @@ class AudioSinkService : Service() {
                             packet.port = port
                             sock.send(packet)
                         }
+                        Thread.sleep(2500L)
                     } catch (e: InterruptedException) {
                         break
                     } catch (e: Exception) {
@@ -1369,7 +1426,8 @@ class AudioSinkService : Service() {
             val written = track.write(buffer, 0, length, AudioTrack.WRITE_BLOCKING)
             if (written > 0) {
                 diagAudioTrackWrites.incrementAndGet()
-                diagFramesWritten.addAndGet((written / 4).toLong())
+                val bytesPerFrame = if (currentEncoding == AudioFormat.ENCODING_PCM_24BIT_PACKED) 6 else 4
+                diagFramesWritten.addAndGet((written / bytesPerFrame).toLong())
             }
         } finally {
             HatDiagnostics.recordTime("audioTrackWrite", SystemClock.elapsedRealtimeNanos() - startNs)
@@ -1662,6 +1720,46 @@ class AudioSinkService : Service() {
         }
     }
 
+    private fun buildCurrentRxStats(sessionId: String): HatTestControlMessage.RxStats {
+        val available = jitterBuffer.getAvailableCount()
+        val packetMs = jitterBuffer.getPacketDurationMs()
+        val track = audioTrack
+        val timings = try { HatDiagnostics.timingSnapshot() } catch (e: Exception) { emptyList() }
+        val rxTiming = timings.find { it.name == "receive" }
+        val decTiming = timings.find { it.name == "decode" }
+        val writeTiming = timings.find { it.name == "audioTrackWrite" }
+
+        return HatTestControlMessage.RxStats(
+            testSessionId = sessionId,
+            generation = configAuthority.currentGeneration,
+            timestamp = System.currentTimeMillis(),
+            packetsReceived = diagRxPackets.get(),
+            packetsLost = jitterBuffer.getConcealedPackets(),
+            packetsLate = jitterBuffer.getLatePackets(),
+            packetsOutOfOrder = jitterBuffer.getOutOfOrderPackets(),
+            packetsDuplicate = jitterBuffer.getDuplicatePackets(),
+            fecRecovered = diagFecRecovered.get(),
+            decodeErrors = HatDiagnostics.counter("rx_decode_errors"),
+            bufferPackets = available,
+            bufferFrames = available * AudioConfig.getFramesPerPacket(currentSampleRate),
+            bufferMs = (available * packetMs).toDouble(),
+            targetLatencyMs = jitterBuffer.getTargetWatermarkMs().toDouble(),
+            jitterMs = jitterBuffer.getEstimatedJitterMs().toDouble(),
+            driftPpm = (jitterBuffer.getCorrectionRatio() - 1.0) * 1_000_000.0,
+            audioTrackWrites = diagAudioTrackWrites.get(),
+            framesWritten = diagFramesWritten.get(),
+            underruns = (try { track?.underrunCount?.toLong() ?: 0L } catch (e: Exception) { 0L }),
+            writeErrors = HatDiagnostics.counter("playback_write_errors"),
+            avgReceiveMs = rxTiming?.let { it.avgNs / 1_000_000.0 },
+            maxReceiveMs = rxTiming?.let { it.maxNs / 1_000_000.0 },
+            avgDecodeMs = decTiming?.let { it.avgNs / 1_000_000.0 },
+            maxDecodeMs = decTiming?.let { it.maxNs / 1_000_000.0 },
+            avgWriteMs = writeTiming?.let { it.avgNs / 1_000_000.0 },
+            maxWriteMs = writeTiming?.let { it.maxNs / 1_000_000.0 },
+            playbackHead = (try { track?.playbackHeadPosition?.toLong() ?: 0L } catch (e: Exception) { 0L })
+        )
+    }
+
     private fun startPeriodicTestStats(
         sessionId: String,
         address: InetAddress,
@@ -1672,47 +1770,15 @@ class AudioSinkService : Service() {
         testStatsThread = Thread({
             Log.i(TAG, "Starting periodic RX_TEST_STATS thread for session $sessionId to $address:$port")
             try {
+                // Send initial snapshot immediately so the test runner has baseline telemetry right at session start
+                val initialStats = buildCurrentRxStats(sessionId)
+                sendTestControlPacket(initialStats, address, port, socket)
+
                 while (isRunning.get() && activeTestSessionId == sessionId && !Thread.currentThread().isInterrupted) {
                     Thread.sleep(1000L)
                     if (!isRunning.get() || activeTestSessionId != sessionId) break
 
-                    val available = jitterBuffer.getAvailableCount()
-                    val packetMs = jitterBuffer.getPacketDurationMs()
-                    val track = audioTrack
-                    val timings = try { HatDiagnostics.timingSnapshot() } catch (e: Exception) { emptyList() }
-                    val rxTiming = timings.find { it.name == "receive" }
-                    val decTiming = timings.find { it.name == "decode" }
-                    val writeTiming = timings.find { it.name == "audioTrackWrite" }
-
-                    val stats = HatTestControlMessage.RxStats(
-                        testSessionId = sessionId,
-                        generation = configAuthority.currentGeneration,
-                        timestamp = System.currentTimeMillis(),
-                        packetsReceived = diagRxPackets.get(),
-                        packetsLost = jitterBuffer.getConcealedPackets(),
-                        packetsLate = jitterBuffer.getLatePackets(),
-                        packetsOutOfOrder = jitterBuffer.getOutOfOrderPackets(),
-                        packetsDuplicate = jitterBuffer.getDuplicatePackets(),
-                        fecRecovered = diagFecRecovered.get(),
-                        decodeErrors = HatDiagnostics.counter("rx_decode_errors"),
-                        bufferPackets = available,
-                        bufferFrames = available * AudioConfig.getFramesPerPacket(currentSampleRate),
-                        bufferMs = (available * packetMs).toDouble(),
-                        targetLatencyMs = jitterBuffer.getTargetWatermarkMs().toDouble(),
-                        jitterMs = jitterBuffer.getEstimatedJitterMs().toDouble(),
-                        driftPpm = (jitterBuffer.getCorrectionRatio() - 1.0) * 1_000_000.0,
-                        audioTrackWrites = diagAudioTrackWrites.get(),
-                        framesWritten = diagFramesWritten.get(),
-                        underruns = (try { track?.underrunCount?.toLong() ?: 0L } catch (e: Exception) { 0L }),
-                        writeErrors = HatDiagnostics.counter("playback_write_errors"),
-                        avgReceiveMs = rxTiming?.let { it.avgNs / 1_000_000.0 },
-                        maxReceiveMs = rxTiming?.let { it.maxNs / 1_000_000.0 },
-                        avgDecodeMs = decTiming?.let { it.avgNs / 1_000_000.0 },
-                        maxDecodeMs = decTiming?.let { it.maxNs / 1_000_000.0 },
-                        avgWriteMs = writeTiming?.let { it.avgNs / 1_000_000.0 },
-                        maxWriteMs = writeTiming?.let { it.maxNs / 1_000_000.0 },
-                        playbackHead = (try { track?.playbackHeadPosition?.toLong() ?: 0L } catch (e: Exception) { 0L })
-                    )
+                    val stats = buildCurrentRxStats(sessionId)
                     sendTestControlPacket(stats, address, port, socket)
                 }
             } catch (e: InterruptedException) {
@@ -1746,7 +1812,16 @@ class AudioSinkService : Service() {
             firstDecodeTimestamp = genFirstDecodeMs[generation] ?: System.currentTimeMillis(),
             firstAudioWriteTimestamp = System.currentTimeMillis()
         )
-        sendTestControlPacket(ack, addr, port, sock)
+        // Send a burst of 3 packets with 10ms interval to protect against UDP loss
+        Thread({
+            repeat(3) {
+                sendTestControlPacket(ack, addr, port, sock)
+                try { Thread.sleep(10L) } catch (ignored: Exception) {}
+            }
+        }, "GenAckSender").apply {
+            isDaemon = true
+            start()
+        }
     }
 
     private fun sendTestControlPacket(

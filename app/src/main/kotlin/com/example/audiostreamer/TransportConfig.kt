@@ -383,7 +383,7 @@ data class NegotiatedStreamConfig(
             bitDepth = if (codec.isCompressed) HatPacket.BIT_DEPTH_NONE else audioFormat.bitDepth.wireCode,
             channels = audioFormat.channelLayout.wireCode,
             volumeOrCaps = volumeOrCaps,
-            fecBlockSize = if (packetType == HatPacket.TYPE_FEC_PARITY) transportProfile.fec.wireBlockSize else 0,
+            fecBlockSize = if (transportProfile.fec.enabled) transportProfile.fec.wireBlockSize else 0,
             flags = flags,
             generation = generation
         )
@@ -442,9 +442,10 @@ data class NegotiatedStreamConfig(
                 AudioBitDepth.fromWireCode(header.bitDepth) ?: return null
             }
             val target = LatencyTarget.fromWireCode(header.profile)
+            val fecActive = if (header.fecBlockSize > 0) true else fecEnabled
             val profile = TransportProfile.create(
                 target = target,
-                fecEnabled = fecEnabled && (header.fecBlockSize > 0),
+                fecEnabled = fecActive,
                 isCompressedCodec = codec.isCompressed,
                 sampleRateHz = rate.sampleRateHz
             )

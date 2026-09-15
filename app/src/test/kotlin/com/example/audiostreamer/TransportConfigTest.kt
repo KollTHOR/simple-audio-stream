@@ -1232,4 +1232,48 @@ class TransportConfigTest {
         // Receiver applied exactly ONE new configuration for generation 2!
         assertEquals("Receiver must apply exactly one configuration for generation 2", 2, configAppliedCount)
     }
+
+    @Test
+    fun testInBandPacketConfigReconstructionAndFecPropagation() {
+        val configGen1 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_24),
+            codec = AudioCodec.PCM,
+            transportProfile = TransportProfile.create(LatencyTarget.BALANCED, fecEnabled = true),
+            generation = 3L
+        )
+
+        val configGen2 = NegotiatedStreamConfig(
+            audioFormat = AudioFormatConfig(AudioSampleRate.RATE_48000, AudioBitDepth.BIT_16),
+            codec = AudioCodec.OPUS,
+            transportProfile = TransportProfile.create(LatencyTarget.LOW_LATENCY, fecEnabled = true, isCompressedCodec = true),
+            generation = 4L
+        )
+
+        val headerAudio = configGen2.createHeader(
+            packetType = HatPacket.TYPE_AUDIO,
+            sequenceNumber = 10,
+            payloadLength = 160,
+            timestamp = 1000L
+        )
+
+        // Verify fecBlockSize is propagated in header
+        assertEquals(AudioConfig.FEC_BLOCK_SIZE.toByte(), headerAudio.fecBlockSize)
+        assertEquals(4L, headerAudio.generation)
+
+        // Verify fromHeader reconstructs generation 4 config
+        val reconstructed = NegotiatedStreamConfig.fromHeader(headerAudio)
+        assertNotNull(reconstructed)
+        assertEquals(4L, reconstructed?.generation)
+        assertEquals(AudioCodec.OPUS, reconstructed?.codec)
+        assertEquals(LatencyTarget.LOW_LATENCY, reconstructed?.transportProfile?.latencyTarget)
+        assertTrue(reconstructed?.transportProfile?.fec?.enabled == true)
+
+        // Verify StreamConfigurationAuthority seamlessly adopts in-band generation advance
+        val authority = StreamConfigurationAuthority(configGen1)
+        assertEquals(3L, authority.currentGeneration)
+
+        val updateResult = authority.applyUpdate(reconstructed!!)
+        assertTrue(updateResult is ConfigTransitionResult.Applied)
+        assertEquals(4L, authority.currentGeneration)
+    }
 }

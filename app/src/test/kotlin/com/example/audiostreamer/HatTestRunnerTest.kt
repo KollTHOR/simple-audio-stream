@@ -376,6 +376,49 @@ class HatTestRunnerTest {
         assertEquals("WARN", report.summary.verdict)
     }
 
+    @Test
+    fun initialNullRxStatsDoesNotCauseFalseNotExecuted() = runBlocking {
+        val env = FakeEnv(receiverParticipating = true)
+        var callCount = 0
+        env.customRxSupplier = {
+            callCount++
+            if (callCount <= 1) {
+                // First call before or at scenario start returns null (initial periodic stats not arrived yet)
+                null
+            } else {
+                HatTestControlMessage.RxStats(
+                    testSessionId = env.announcedSessionId ?: "HAT-123",
+                    generation = env.generation.get(),
+                    timestamp = System.currentTimeMillis(),
+                    packetsReceived = 100L * callCount,
+                    packetsLost = 0L,
+                    packetsLate = 0L,
+                    packetsOutOfOrder = 0L,
+                    packetsDuplicate = 0L,
+                    fecRecovered = 0L,
+                    decodeErrors = 0L,
+                    bufferPackets = 4,
+                    bufferFrames = 384,
+                    bufferMs = 20.0,
+                    targetLatencyMs = 35.0,
+                    jitterMs = 2.0,
+                    driftPpm = 0.0,
+                    audioTrackWrites = 50L * callCount,
+                    framesWritten = 48000L * callCount,
+                    underruns = 0L,
+                    writeErrors = 0L
+                )
+            }
+        }
+
+        val runner = HatTestRunner(env, testConfig(), VirtualClock(), RecordingExporter())
+        val report = runner.run()
+
+        val baseline = report.scenarios.first()
+        assertFalse("Scenario 1 must not be NOT_EXECUTED", baseline.verdict == HatTestVerdict.NOT_EXECUTED)
+        assertEquals(HatTestVerdict.PASS, baseline.verdict)
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Test Doubles
     // ---------------------------------------------------------------------------------------------
@@ -463,7 +506,7 @@ class HatTestRunnerTest {
         var sessionEnded: Boolean = false
 
         var customTxSupplier: (() -> HatTestTxMetrics)? = null
-        var customRxSupplier: (() -> HatTestControlMessage.RxStats)? = null
+        var customRxSupplier: (() -> HatTestControlMessage.RxStats?)? = null
 
         val rxPackets = AtomicLong(500L)
         val rxWrites = AtomicLong(250L)
@@ -529,8 +572,8 @@ class HatTestRunnerTest {
 
         override fun latestRxStats(testSessionId: String): HatTestControlMessage.RxStats? {
             if (!receiverParticipating) return null
-            val custom = customRxSupplier?.invoke()
-            if (custom != null) return custom
+            val supplier = customRxSupplier
+            if (supplier != null) return supplier.invoke()
 
             val timestamp = if (telemetryTimeout) 1_000L else System.currentTimeMillis()
             val rP = rxPackets.addAndGet(50L)

@@ -488,4 +488,90 @@ class FecHandlerTest {
         jitterBuffer.copyPacketData(0, dest)
         assertArrayEquals(p2, dest)
     }
+
+    @Test
+    fun testExistingPacketWithMismatchedLengthDoesNotGetOverwritten() {
+        val encoder = FecEncoder(blockSize = 4)
+        val jitterBuffer = JitterBuffer(AudioConfig.PROFILE_MUSIC)
+        val decoder = FecDecoder(jitterBuffer)
+
+        val wireP0 = createPayload(500, 11L)
+        val wireP1 = createPayload(1920, 12L)
+        val wireP2 = createPayload(1920, 13L)
+        val wireP3 = createPayload(1920, 14L)
+
+        encoder.encode(0, 0L, wireP0, 0, wireP0.size)
+        encoder.encode(1, 480L, wireP1, 0, wireP1.size)
+        encoder.encode(2, 960L, wireP2, 0, wireP2.size)
+        val parity = encoder.encode(3, 1440L, wireP3, 0, wireP3.size)!!
+
+        // Suppose packet 0 in JitterBuffer was decompressed into 1920 bytes
+        val decompressedP0 = createPayload(1920, 99L)
+        jitterBuffer.write(0, 0L, decompressedP0, 0, decompressedP0.size)
+        jitterBuffer.write(1, 480L, wireP1, 0, wireP1.size)
+        jitterBuffer.write(2, 960L, wireP2, 0, wireP2.size)
+        jitterBuffer.write(3, 1440L, wireP3, 0, wireP3.size)
+
+        val parityLen = parity.size - HatPacket.HEADER_SIZE
+        val recovered = decoder.decode(
+            baseSeq = 0,
+            baseTimestamp = 0L,
+            blockSize = 4,
+            parityPayload = parity,
+            parityOffset = HatPacket.HEADER_SIZE,
+            parityLen = parityLen
+        )
+
+        // Decode must safely return false and never overwrite packet 0 with wire bytes
+        assertFalse("Mismatched slot length must not trigger false recovery", recovered)
+        assertEquals("Packet 0 must retain original decompressed length", 1920, jitterBuffer.getPacketLength(0))
+
+        val checkBuf = ByteArray(1920)
+        jitterBuffer.copyPacketData(0, checkBuf)
+        assertArrayEquals("Packet 0 contents must NOT be overwritten with compressed wire bytes", decompressedP0, checkBuf)
+    }
+
+    @Test
+    fun testPurePcmStreamRecovery() {
+        val encoder = FecEncoder(blockSize = 4)
+        val jitterBuffer = JitterBuffer(AudioConfig.PROFILE_MUSIC)
+        val decoder = FecDecoder(jitterBuffer)
+
+        val pcmSize = 1920 // 480 frames stereo 16-bit
+        val p0 = createPayload(pcmSize, 101L)
+        val p1 = createPayload(pcmSize, 102L)
+        val p2 = createPayload(pcmSize, 103L)
+        val p3 = createPayload(pcmSize, 104L)
+
+        encoder.encode(10, 1000L, p0, 0, p0.size, codec = HatPacket.CODEC_RAW_PCM)
+        encoder.encode(11, 1480L, p1, 0, p1.size, codec = HatPacket.CODEC_RAW_PCM)
+        encoder.encode(12, 1960L, p2, 0, p2.size, codec = HatPacket.CODEC_RAW_PCM)
+        val parity = encoder.encode(13, 2440L, p3, 0, p3.size, codec = HatPacket.CODEC_RAW_PCM)!!
+
+        // Deliver packets 10, 11, 13 (packet 12 lost)
+        jitterBuffer.write(10, 1000L, p0, 0, p0.size)
+        jitterBuffer.write(11, 1480L, p1, 0, p1.size)
+        jitterBuffer.write(13, 2440L, p3, 0, p3.size)
+
+        assertFalse(jitterBuffer.hasPacket(12))
+
+        val parityLen = parity.size - HatPacket.HEADER_SIZE
+        val recovered = decoder.decode(
+            baseSeq = 10,
+            baseTimestamp = 1000L,
+            blockSize = 4,
+            parityPayload = parity,
+            parityOffset = HatPacket.HEADER_SIZE,
+            parityLen = parityLen
+        )
+
+        assertTrue("Lost PCM packet 12 must be recovered", recovered)
+        assertTrue(jitterBuffer.hasPacket(12))
+        assertEquals(pcmSize, jitterBuffer.getPacketLength(12))
+        assertEquals(1960L, jitterBuffer.getPacketTimestamp(12))
+
+        val dest = ByteArray(pcmSize)
+        jitterBuffer.copyPacketData(12, dest)
+        assertArrayEquals("Recovered PCM data must be bit-exact", p2, dest)
+    }
 }

@@ -58,13 +58,13 @@ sealed class HatTestControlMessage {
         val framesWritten: Long,
         val underruns: Long,
         val writeErrors: Long,
-        val avgReceiveMs: Double?,
-        val maxReceiveMs: Double?,
-        val avgDecodeMs: Double?,
-        val maxDecodeMs: Double?,
-        val avgWriteMs: Double?,
-        val maxWriteMs: Double?,
-        val playbackHead: Long
+        val avgReceiveMs: Double? = null,
+        val maxReceiveMs: Double? = null,
+        val avgDecodeMs: Double? = null,
+        val maxDecodeMs: Double? = null,
+        val avgWriteMs: Double? = null,
+        val maxWriteMs: Double? = null,
+        val playbackHead: Long = 0L
     ) : HatTestControlMessage() {
         override val type: String = TYPE
         companion object { const val TYPE = "RX_TEST_STATS" }
