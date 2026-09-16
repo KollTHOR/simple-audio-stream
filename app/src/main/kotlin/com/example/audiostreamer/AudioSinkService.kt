@@ -144,8 +144,13 @@ class AudioSinkService : Service() {
     }
 
     private fun applyBufferSizeForProfile(track: AudioTrack, profile: String, sampleRate: Int) {
+        val normProfile = when (profile.uppercase()) {
+            "BALANCED", AudioConfig.PROFILE_AUTO -> AudioConfig.PROFILE_AUTO
+            "RELIABLE", AudioConfig.PROFILE_MUSIC -> AudioConfig.PROFILE_MUSIC
+            else -> AudioConfig.PROFILE_LOW_LATENCY
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            val targetFrames = when (profile) {
+            val targetFrames = when (normProfile) {
                 AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> {
                     (sampleRate * 35) / 1000
                 }
@@ -160,7 +165,7 @@ class AudioSinkService : Service() {
             }
             val clampedFrames = track.setBufferSizeInFrames(targetFrames)
             val clampedMs = (clampedFrames * 1000L) / sampleRate
-            Log.i(TAG, "AudioTrack setBufferSizeInFrames for profile $profile: requested=$targetFrames, actual=$clampedFrames (~${clampedMs}ms), capacity=${track.bufferCapacityInFrames} frames")
+            Log.i(TAG, "AudioTrack setBufferSizeInFrames for profile $normProfile: requested=$targetFrames, actual=$clampedFrames (~${clampedMs}ms), capacity=${track.bufferCapacityInFrames} frames")
         }
     }
 
@@ -181,15 +186,18 @@ class AudioSinkService : Service() {
 
     @Synchronized
     private fun configureAudioTrack(sampleRate: Int, encoding: Int, profile: String, currentVolume: Int): AudioTrack {
-        // HAT Phase 3.0 experiment: request the low-latency output path. Buffer sizing is deliberately
-        // unchanged in this phase. This is never a hard failure: a refused request falls back to
-        // PERFORMANCE_MODE_NONE and playback continues normally.
-        val perfMode = AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
+        val normProfile = when (profile.uppercase()) {
+            "BALANCED", AudioConfig.PROFILE_AUTO -> AudioConfig.PROFILE_AUTO
+            "RELIABLE", AudioConfig.PROFILE_MUSIC -> AudioConfig.PROFILE_MUSIC
+            else -> AudioConfig.PROFILE_LOW_LATENCY
+        }
+        // PERFORMANCE_MODE_NONE ensures stable AudioFlinger buffering and eliminates FastMixer hardware underruns
+        val perfMode = AudioTrack.PERFORMANCE_MODE_NONE
         val existing = audioTrack
         if (existing != null && currentSampleRate == sampleRate && currentEncoding == encoding && requestedPerformanceMode == perfMode && existing.state == AudioTrack.STATE_INITIALIZED) {
-            if (currentTrackProfile != profile) {
-                currentTrackProfile = profile
-                applyBufferSizeForProfile(existing, profile, sampleRate)
+            if (currentTrackProfile != normProfile) {
+                currentTrackProfile = normProfile
+                applyBufferSizeForProfile(existing, normProfile, sampleRate)
             }
             return existing
         }
@@ -213,8 +221,8 @@ class AudioSinkService : Service() {
 
         val is24 = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && encoding == AudioFormat.ENCODING_PCM_24BIT_PACKED)
         val packetSize = AudioConfig.getPacketPayloadSize(sampleRate, is24)
-        val bufferSize = when (profile) {
-            AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> minBufferSize
+        val bufferSize = when (normProfile) {
+            AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> maxOf(minBufferSize, packetSize * 4)
             AudioConfig.PROFILE_AUTO -> maxOf(minBufferSize * 2, packetSize * 20)
             else -> maxOf(minBufferSize * 4, packetSize * 40)
         }
@@ -226,11 +234,11 @@ class AudioSinkService : Service() {
         } else {
             Log.w(
                 TAG,
-                "AudioTrack PERFORMANCE_MODE_LOW_LATENCY creation failed (state=${requestedTrack.state}, " +
-                    "sampleRate=$sampleRate, encoding=$encoding, bufferSizeBytes=$bufferSize); falling back to PERFORMANCE_MODE_NONE"
+                "AudioTrack creation failed (state=${requestedTrack.state}, " +
+                    "sampleRate=$sampleRate, encoding=$encoding, bufferSizeBytes=$bufferSize)"
             )
             HatDiagnostics.warn(
-                "PLAYBACK_PERF_MODE_FALLBACK",
+                "PLAYBACK_TRACK_INIT_RETRY",
                 mapOf(
                     "requestedPerformanceMode" to perfMode,
                     "sampleRate" to sampleRate,
@@ -247,12 +255,12 @@ class AudioSinkService : Service() {
         if (track.state != AudioTrack.STATE_INITIALIZED && encoding != AudioConfig.ENCODING) {
             Log.w(TAG, "AudioTrack failed to initialize with encoding $encoding at $sampleRate Hz, falling back to 16-bit PCM")
             try { track.release() } catch (ignored: Exception) {}
-            return configureAudioTrack(sampleRate, AudioConfig.ENCODING, profile, currentVolume)
+            return configureAudioTrack(sampleRate, AudioConfig.ENCODING, normProfile, currentVolume)
         }
 
         // Clamp AudioTrack active buffer depth via setBufferSizeInFrames
-        applyBufferSizeForProfile(track, profile, sampleRate)
-        currentTrackProfile = profile
+        applyBufferSizeForProfile(track, normProfile, sampleRate)
+        currentTrackProfile = normProfile
 
         val floatVol = (currentVolume / 100.0f).coerceIn(0.0f, 1.0f)
         track.setVolume(floatVol)
@@ -263,7 +271,7 @@ class AudioSinkService : Service() {
         }
 
         // Prime AudioTrack with pre-roll silence using WRITE_NON_BLOCKING so UdpReceiverThread is never blocked
-        val primeBytes = when (profile) {
+        val primeBytes = when (normProfile) {
             AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> packetSize
             AudioConfig.PROFILE_AUTO -> packetSize * 2
             else -> packetSize * 4
@@ -375,7 +383,7 @@ class AudioSinkService : Service() {
 
         val isServer24Bit = config.is24Bit
         currentIsServer24Bit = isServer24Bit
-        val serverProfile = config.transportProfile.latencyTarget.name
+        val serverProfile = config.transportProfile.latencyTarget.toAudioConfigProfile()
         val currentCodec = config.codec.name
 
         val profileChanged = (serverProfile != currentProfile || serverProfile != currentTrackProfile)
@@ -392,7 +400,7 @@ class AudioSinkService : Service() {
         } else {
             AudioConfig.ENCODING
         }
-        val targetPerfMode = AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
+        val targetPerfMode = AudioTrack.PERFORMANCE_MODE_NONE
         if (targetSampleRate != currentSampleRate || targetEncoding != currentEncoding || targetPerfMode != requestedPerformanceMode || profileChanged) {
             configureAudioTrack(targetSampleRate, targetEncoding, serverProfile, currentRemoteVolume)
             currentTrackProfile = serverProfile
@@ -1421,12 +1429,14 @@ class AudioSinkService : Service() {
 
     private fun writeToPlaybackTrack(track: AudioTrack, buffer: ByteArray, length: Int) {
         if (length <= 0) return
+        val bytesPerFrame = if (currentEncoding == AudioFormat.ENCODING_PCM_24BIT_PACKED) 6 else 4
+        val safeLen = (length / bytesPerFrame) * bytesPerFrame
+        if (safeLen <= 0) return
         val startNs = SystemClock.elapsedRealtimeNanos()
         try {
-            val written = track.write(buffer, 0, length, AudioTrack.WRITE_BLOCKING)
+            val written = track.write(buffer, 0, safeLen, AudioTrack.WRITE_BLOCKING)
             if (written > 0) {
                 diagAudioTrackWrites.incrementAndGet()
-                val bytesPerFrame = if (currentEncoding == AudioFormat.ENCODING_PCM_24BIT_PACKED) 6 else 4
                 diagFramesWritten.addAndGet((written / bytesPerFrame).toLong())
             }
         } finally {
@@ -1434,7 +1444,7 @@ class AudioSinkService : Service() {
             val generation = configAuthority.currentGeneration
             if (generation > 0L && generation != firstWriteGeneration) {
                 firstWriteGeneration = generation
-                HatDiagnostics.lifecycle("GENERATION_FIRST_AUDIO_WRITE", generation, mapOf("frames" to (length / 4)))
+                HatDiagnostics.lifecycle("GENERATION_FIRST_AUDIO_WRITE", generation, mapOf("frames" to (safeLen / bytesPerFrame)))
                 onGenerationFirstAudioWrite(generation)
             }
         }

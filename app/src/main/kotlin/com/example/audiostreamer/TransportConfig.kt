@@ -159,10 +159,12 @@ sealed class CodecValidationResult {
     val isValid: Boolean get() = this is Valid
 }
 
-enum class LatencyTarget(val wireCode: Byte, val displayName: String) {
-    LOW_LATENCY(HatPacket.PROFILE_LOW_LATENCY, "Low Latency"),
-    BALANCED(HatPacket.PROFILE_AUTO, "Auto Adaptive"),
-    RELIABLE(HatPacket.PROFILE_MUSIC, "Music");
+enum class LatencyTarget(val wireCode: Byte, val displayName: String, val profileKey: String) {
+    LOW_LATENCY(HatPacket.PROFILE_LOW_LATENCY, "Low Latency", AudioConfig.PROFILE_LOW_LATENCY),
+    BALANCED(HatPacket.PROFILE_AUTO, "Auto Adaptive", AudioConfig.PROFILE_AUTO),
+    RELIABLE(HatPacket.PROFILE_MUSIC, "Music", AudioConfig.PROFILE_MUSIC);
+
+    fun toAudioConfigProfile(): String = profileKey
 
     companion object {
         fun fromWireCode(code: Byte): LatencyTarget = when (code) {
@@ -173,7 +175,7 @@ enum class LatencyTarget(val wireCode: Byte, val displayName: String) {
 
         fun fromString(str: String): LatencyTarget = when (str.uppercase()) {
             AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> LOW_LATENCY
-            AudioConfig.PROFILE_AUTO -> BALANCED
+            AudioConfig.PROFILE_AUTO, "BALANCED" -> BALANCED
             else -> RELIABLE
         }
     }

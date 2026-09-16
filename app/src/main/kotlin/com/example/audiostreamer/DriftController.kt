@@ -273,8 +273,8 @@ class DriftController(initialFill: Float = 2.0f) {
     ) {
         packetsSinceDriftAdjust++
         val driftDelta = smoothBufferFill - targetWatermarkSlots
-        val isLowLat = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY || currentProfile == AudioConfig.PROFILE_VIDEO)
-        val isAuto = (currentProfile == AudioConfig.PROFILE_AUTO)
+        val isLowLat = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY || currentProfile == AudioConfig.PROFILE_VIDEO || currentProfile.equals("LOW_LATENCY", ignoreCase = true))
+        val isAuto = (currentProfile == AudioConfig.PROFILE_AUTO || currentProfile.equals("BALANCED", ignoreCase = true))
         val driftThreshold = if (isLowLat) 12f else if (isAuto) 16f else 20f
         val minInterval = if (isLowLat) 500 else if (isAuto) 600 else 800
 
