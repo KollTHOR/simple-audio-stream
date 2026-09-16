@@ -23,7 +23,7 @@ A high-performance, low-latency, single-module Android application written in Ko
   - **Autonomous Wi-Fi Direct (P2P)**: Direct device-to-device streaming without an external router or access point.
   - **Automatic Discovery**: UDP broadcast discovery on port `50006`.
 - **Integrated Diagnostics & Testing**:
-  - **In-App Updater**: Directly checks GitHub releases and updates the APK from Settings.
+  - **In-App Update Center**: Dual-channel release model (Stable & Nightly), historical release browsing, SHA-256 verification, and downgrade/rollback protection. See [Release Model Guide](docs/RELEASE_MODEL.md).
   - **Runtime Diagnostics (`HatDiagnostics`)**: Central event ring buffer, periodic telemetry snapshots, and jitter metrics.
 
 ---

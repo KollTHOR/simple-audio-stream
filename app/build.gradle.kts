@@ -1,5 +1,10 @@
 import java.util.Properties
 import java.io.File
+import java.io.ByteArrayOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 plugins {
     alias(libs.plugins.android.application)
@@ -9,14 +14,6 @@ plugins {
 android {
     namespace = "com.example.audiostreamer"
     compileSdk = 35
-
-    defaultConfig {
-        applicationId = "com.example.audiostreamer"
-        minSdk = 29
-        targetSdk = 35
-        versionCode = 66
-        versionName = "1.8.13"
-    }
 
     val keystorePropsFile = rootProject.file("keystore.properties")
     val keystoreProps = Properties().apply {
@@ -31,7 +28,7 @@ android {
         }
     }
 
-    fun findSigningProp(vararg names: String): String? {
+    fun findProp(vararg names: String): String? {
         for (name in names) {
             val envVal = System.getenv(name)
             if (!envVal.isNullOrBlank()) return envVal
@@ -45,10 +42,75 @@ android {
         return null
     }
 
-    val storeFilePath = findSigningProp("RELEASE_KEYSTORE_PATH", "KEYSTORE_PATH", "releaseKeystorePath")
-    val storePassword = findSigningProp("RELEASE_KEYSTORE_PASSWORD", "KEYSTORE_PASSWORD", "releaseKeystorePassword")
-    val keyAlias = findSigningProp("RELEASE_KEY_ALIAS", "KEY_ALIAS", "releaseKeyAlias")
-    val keyPassword = findSigningProp("RELEASE_KEY_PASSWORD", "KEY_PASSWORD", "releaseKeyPassword")
+    val baseVersionCode = 67
+    val baseVersionName = "1.8.13"
+
+    val channelProp = findProp("BUILD_CHANNEL", "RELEASE_CHANNEL", "channel") ?: "stable"
+    val buildChannel = channelProp.lowercase()
+
+    fun resolveGitCommit(): String {
+        val envSha = System.getenv("GITHUB_SHA") ?: System.getenv("GIT_COMMIT_SHA")
+        if (!envSha.isNullOrBlank()) return envSha.take(7)
+        return try {
+            val stdout = ByteArrayOutputStream()
+            exec {
+                commandLine("git", "rev-parse", "--short=7", "HEAD")
+                standardOutput = stdout
+                isIgnoreExitValue = true
+            }
+            val trimmed = stdout.toString().trim()
+            if (trimmed.isNotEmpty()) trimmed else "unknown"
+        } catch (e: Exception) {
+            "unknown"
+        }
+    }
+    val gitCommitSha = resolveGitCommit()
+
+    fun resolveVersionCode(): Int {
+        val envCode = findProp("VERSION_CODE", "versionCode")?.toIntOrNull()
+        if (envCode != null) return envCode
+        return try {
+            val stdout = ByteArrayOutputStream()
+            exec {
+                commandLine("git", "rev-list", "--count", "HEAD")
+                standardOutput = stdout
+                isIgnoreExitValue = true
+            }
+            val count = stdout.toString().trim().toIntOrNull()
+            if (count != null && count >= baseVersionCode) count else baseVersionCode
+        } catch (e: Exception) {
+            baseVersionCode
+        }
+    }
+    val finalVersionCode = resolveVersionCode()
+
+    val buildTimestamp = SimpleDateFormat("yyyyMMdd", Locale.US).apply {
+        timeZone = TimeZone.getTimeZone("UTC")
+    }.format(Date())
+
+    val finalVersionName = if (buildChannel == "nightly") {
+        "$baseVersionName-nightly.$buildTimestamp+$gitCommitSha"
+    } else {
+        baseVersionName
+    }
+
+    defaultConfig {
+        applicationId = "com.example.audiostreamer"
+        minSdk = 29
+        targetSdk = 35
+        versionCode = finalVersionCode
+        versionName = finalVersionName
+
+        buildConfigField("String", "BUILD_CHANNEL", "\"$buildChannel\"")
+        buildConfigField("String", "GIT_COMMIT_SHA", "\"$gitCommitSha\"")
+        buildConfigField("String", "BUILD_TIMESTAMP", "\"$buildTimestamp\"")
+        buildConfigField("String", "BASE_VERSION_NAME", "\"$baseVersionName\"")
+    }
+
+    val storeFilePath = findProp("RELEASE_KEYSTORE_PATH", "KEYSTORE_PATH", "releaseKeystorePath")
+    val storePassword = findProp("RELEASE_KEYSTORE_PASSWORD", "KEYSTORE_PASSWORD", "releaseKeystorePassword")
+    val keyAlias = findProp("RELEASE_KEY_ALIAS", "KEY_ALIAS", "releaseKeyAlias")
+    val keyPassword = findProp("RELEASE_KEY_PASSWORD", "KEY_PASSWORD", "releaseKeyPassword")
 
     val resolvedKeystoreFile = storeFilePath?.let {
         val f = file(it)
@@ -114,4 +176,5 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.concentus)
     testImplementation(libs.junit)
+    testImplementation("org.json:json:20240303")
 }
