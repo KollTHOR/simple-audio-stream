@@ -59,10 +59,10 @@ class AudioSinkService : Service() {
          *
          * Estimated Receiver Playout Latency is derived from:
          * 1. JitterBuffer audio depth (availablePackets * packetDurationMs)
-         * 2. Queued AudioTrack playback frames (pendingFrames / sampleRate * 1000.0)
+         * 2. Actual queued AudioTrack playback frames (audioTrackQueuedFrames / sampleRate * 1000.0)
          *
          * It does not measure network one-way latency, wall-clock end-to-end latency,
-         * or physical speaker acoustic emission latency.
+         * physical speaker acoustic emission latency, or exact DAC hardware latency.
          */
         fun snapshotReceiverDiagnostics(): com.example.audiostreamer.diagnostics.ReceiverDiagnosticsState? {
             val instance = currentInstance ?: return null
@@ -75,13 +75,20 @@ class AudioSinkService : Service() {
 
             val track = instance.audioTrack
             val sampleRate = instance.currentSampleRate
-            val framesWritten = instance.diagFramesWritten.get()
-            val playbackHead = try { track?.playbackHeadPosition?.toLong() ?: 0L } catch (e: Exception) { 0L }
-            val trackCapacity = try { track?.bufferCapacityInFrames?.toLong() ?: 4800L } catch (e: Exception) { 4800L }
-            val pendingFrames = (framesWritten - playbackHead).coerceIn(0L, trackCapacity)
-            val trackMs = if (sampleRate > 0) (pendingFrames.toFloat() / sampleRate.toFloat()) * 1000f else 0f
+            val tracker = instance.trackPlaybackTracker
 
-            val totalLatency = jbMs + trackMs
+            val rawHeadInt = try {
+                if (track != null && track.state == AudioTrack.STATE_INITIALIZED) {
+                    track.playbackHeadPosition
+                } else 0
+            } catch (e: Exception) { 0 }
+
+            val queuedFrames = tracker?.computeQueuedFrames(rawHeadInt) ?: 0L
+            val queuedMs = if (sampleRate > 0) (queuedFrames.toFloat() / sampleRate.toFloat()) * 1000f else 0f
+            val targetFrames = try { track?.bufferSizeInFrames ?: 0 } catch (e: Exception) { 0 }
+            val capacityFrames = try { track?.bufferCapacityInFrames ?: 0 } catch (e: Exception) { 0 }
+
+            val totalLatency = jbMs + queuedMs
             val targetWatermark = jb.getTargetWatermarkMs()
 
             return com.example.audiostreamer.diagnostics.ReceiverDiagnosticsState(
@@ -90,7 +97,11 @@ class AudioSinkService : Service() {
                 profileName = instance.currentProfile,
                 estimatedPlayoutLatencyMs = totalLatency,
                 jitterBufferMs = jbMs,
-                audioTrackBufferMs = trackMs,
+                audioTrackQueuedMs = queuedMs,
+                audioTrackQueuedFrames = queuedFrames,
+                audioTrackBufferSizeFrames = targetFrames,
+                audioTrackBufferCapacityFrames = capacityFrames,
+                audioTrackBufferMs = queuedMs,
                 targetWatermarkMs = targetWatermark,
                 jitterMs = jb.getEstimatedJitterMs(),
                 bufferAvailableSlots = available,
@@ -105,8 +116,8 @@ class AudioSinkService : Service() {
                 fecRecovered = instance.diagFecRecovered.get(),
                 underruns = try { track?.underrunCount?.toLong() ?: 0L } catch (e: Exception) { 0L },
                 audioTrackWrites = instance.diagAudioTrackWrites.get(),
-                framesWritten = framesWritten,
-                playbackHead = playbackHead,
+                framesWritten = tracker?.getSubmittedFrames() ?: 0L,
+                playbackHead = tracker?.getPlayedFrames() ?: 0L,
                 timestampMs = System.currentTimeMillis()
             )
         }
@@ -116,6 +127,7 @@ class AudioSinkService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     private var multicastLock: WifiManager.MulticastLock? = null
     @Volatile private var audioTrack: AudioTrack? = null
+    @Volatile internal var trackPlaybackTracker: com.example.audiostreamer.diagnostics.AudioTrackPlaybackTracker? = null
     private val trackLock = Any()
     private val decoderLock = Any()
     private var datagramSocket: DatagramSocket? = null
@@ -253,6 +265,7 @@ class AudioSinkService : Service() {
                 currentTrackProfile = normProfile
                 applyBufferSizeForProfile(existing, normProfile, sampleRate)
             }
+            trackPlaybackTracker?.sampleRate = sampleRate
             return existing
         }
 
@@ -324,6 +337,10 @@ class AudioSinkService : Service() {
             Log.w(TAG, "AudioTrack play failed: ${e.message}")
         }
 
+        // Initialize fresh playback accounting for this new AudioTrack instance
+        val tracker = com.example.audiostreamer.diagnostics.AudioTrackPlaybackTracker(track, sampleRate)
+        val bytesPerFrame = if (is24) 6 else 4
+
         // Prime AudioTrack with pre-roll silence using WRITE_NON_BLOCKING so UdpReceiverThread is never blocked
         val primeBytes = when (normProfile) {
             AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> packetSize
@@ -331,15 +348,20 @@ class AudioSinkService : Service() {
             else -> packetSize * 4
         }
         val primeBuf = ByteArray(primeBytes)
-        try {
+        val primeWritten = try {
             track.write(primeBuf, 0, primeBytes, AudioTrack.WRITE_NON_BLOCKING)
         } catch (e: Exception) {
             Log.w(TAG, "AudioTrack non-blocking prime failed: ${e.message}")
+            0
+        }
+        if (primeWritten > 0) {
+            tracker.onFramesSubmitted((primeWritten / bytesPerFrame).toLong(), track)
         }
 
         val oldTrack = existing
         synchronized(trackLock) {
             audioTrack = track
+            trackPlaybackTracker = tracker
             currentSampleRate = sampleRate
             currentEncoding = encoding
             currentPerformanceMode = actualPerfMode
@@ -1312,23 +1334,32 @@ class AudioSinkService : Service() {
 
     private fun playbackDiagnosticsSnapshot(): Map<String, Any?> {
         val track = audioTrack
+        val tracker = trackPlaybackTracker
+        val rawHead = try {
+            if (track != null && track.state == AudioTrack.STATE_INITIALIZED) {
+                track.playbackHeadPosition
+            } else 0
+        } catch (e: Exception) { 0 }
+        val queuedFrames = tracker?.computeQueuedFrames(rawHead) ?: 0L
+        val queuedMs = if (currentSampleRate > 0) (queuedFrames.toFloat() / currentSampleRate.toFloat()) * 1000f else 0f
+        val bufferSize = try { track?.bufferSizeInFrames ?: 0 } catch (e: Exception) { 0 }
+        val capacity = try { track?.bufferCapacityInFrames ?: 0 } catch (e: Exception) { 0 }
         return linkedMapOf(
             "generation" to configAuthority.currentGeneration,
             "sampleRate" to currentSampleRate,
             "channels" to AudioConfig.CHANNELS,
-            "bufferSizeFrames" to (try { track?.bufferSizeInFrames ?: 0 } catch (e: Exception) { 0 }),
-            "bufferCapacityFrames" to (try { track?.bufferCapacityInFrames ?: 0 } catch (e: Exception) { 0 }),
-            "availableFrames" to (try {
-                val t = track
-                if (t != null) t.bufferCapacityInFrames - t.bufferSizeInFrames else 0
-            } catch (e: Exception) { 0 }),
-            "playbackHead" to (try { track?.playbackHeadPosition ?: 0 } catch (e: Exception) { 0 }),
+            "queuedFrames" to queuedFrames,
+            "queuedMs" to queuedMs,
+            "bufferSizeFrames" to bufferSize,
+            "bufferCapacityFrames" to capacity,
+            "availableFrames" to (capacity - bufferSize),
+            "playbackHead" to (tracker?.getPlayedFrames() ?: 0L),
             "underruns" to (try { track?.underrunCount ?: 0 } catch (e: Exception) { 0 }),
             "performanceMode" to currentPerformanceMode,
             "requestedPerformanceMode" to requestedPerformanceMode,
             "playState" to (try { track?.playState ?: 0 } catch (e: Exception) { 0 }),
             "audioTrackWrites" to diagAudioTrackWrites.get(),
-            "framesWritten" to diagFramesWritten.get(),
+            "framesWritten" to (tracker?.getSubmittedFrames() ?: 0L),
             "writeErrors" to HatDiagnostics.counter("playback_write_errors")
         )
     }
@@ -1409,11 +1440,16 @@ class AudioSinkService : Service() {
         diagLastLatencyTargetMs = targetMs
 
         val track = audioTrack
+        val tracker = trackPlaybackTracker
         if (track != null) {
             val underruns = try { track.underrunCount } catch (e: Exception) { 0 }
             val activeFrames = try { track.bufferSizeInFrames } catch (e: Exception) { 0 }
             val capacityFrames = try { track.bufferCapacityInFrames } catch (e: Exception) { 0 }
-            val playbackHead = try { track.playbackHeadPosition } catch (e: Exception) { 0 }
+            val rawHead = try { track.playbackHeadPosition } catch (e: Exception) { 0 }
+            val queuedFrames = tracker?.computeQueuedFrames(rawHead) ?: 0L
+            val queuedMs = if (currentSampleRate > 0) (queuedFrames.toFloat() / currentSampleRate.toFloat()) * 1000f else 0f
+            val playedFrames = tracker?.getPlayedFrames() ?: 0L
+            val submittedFrames = tracker?.getSubmittedFrames() ?: 0L
             val playState = try { track.playState } catch (e: Exception) { 0 }
             HatDiagnostics.stats(
                 "PLAYBACK_STATS",
@@ -1421,15 +1457,17 @@ class AudioSinkService : Service() {
                     "generation" to generation,
                     "sampleRate" to currentSampleRate,
                     "channels" to AudioConfig.CHANNELS,
+                    "queuedFrames" to queuedFrames,
+                    "queuedMs" to queuedMs,
                     "bufferSizeFrames" to activeFrames,
                     "bufferCapacityFrames" to capacityFrames,
                     "availableFrames" to (capacityFrames - activeFrames),
-                    "playbackHead" to playbackHead,
+                    "playbackHead" to playedFrames,
                     "underruns" to underruns,
                     "performanceMode" to currentPerformanceMode,
                     "playState" to playState,
                     "writeErrors" to HatDiagnostics.counter("playback_write_errors"),
-                    "framesWritten" to playbackHead
+                    "framesWritten" to submittedFrames
                 )
             )
             diagStatsLastUnderruns = underruns
@@ -1479,8 +1517,10 @@ class AudioSinkService : Service() {
         try {
             val written = track.write(buffer, 0, safeLen, AudioTrack.WRITE_BLOCKING)
             if (written > 0) {
+                val frames = (written / bytesPerFrame).toLong()
                 diagAudioTrackWrites.incrementAndGet()
-                diagFramesWritten.addAndGet((written / bytesPerFrame).toLong())
+                diagFramesWritten.addAndGet(frames)
+                trackPlaybackTracker?.onFramesSubmitted(frames, track)
             }
         } finally {
             HatDiagnostics.recordTime("audioTrackWrite", SystemClock.elapsedRealtimeNanos() - startNs)
@@ -1682,6 +1722,8 @@ class AudioSinkService : Service() {
                 Log.e(TAG, "Error stopping AudioTrack", e)
             }
             audioTrack = null
+            trackPlaybackTracker?.reset()
+            trackPlaybackTracker = null
         }
 
         synchronized(decoderLock) {

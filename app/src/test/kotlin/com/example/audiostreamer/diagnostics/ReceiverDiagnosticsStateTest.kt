@@ -15,6 +15,10 @@ class ReceiverDiagnosticsStateTest {
         assertEquals("Auto", state.profileName)
         assertEquals(0f, state.estimatedPlayoutLatencyMs, 0.001f)
         assertEquals(0f, state.jitterBufferMs, 0.001f)
+        assertEquals(0f, state.audioTrackQueuedMs, 0.001f)
+        assertEquals(0L, state.audioTrackQueuedFrames)
+        assertEquals(0, state.audioTrackBufferSizeFrames)
+        assertEquals(0, state.audioTrackBufferCapacityFrames)
         assertEquals(0f, state.audioTrackBufferMs, 0.001f)
         assertEquals(0f, state.targetWatermarkMs, 0.001f)
         assertEquals(0.0, state.jitterMs, 0.001)
@@ -42,6 +46,10 @@ class ReceiverDiagnosticsStateTest {
             profileName = "Low Latency (Opus)",
             estimatedPlayoutLatencyMs = totalMs,
             jitterBufferMs = jbMs,
+            audioTrackQueuedMs = trackMs,
+            audioTrackQueuedFrames = 1152L,
+            audioTrackBufferSizeFrames = 1680,
+            audioTrackBufferCapacityFrames = 7680,
             audioTrackBufferMs = trackMs,
             targetWatermarkMs = 40.0f,
             jitterMs = 1.5,
@@ -59,7 +67,10 @@ class ReceiverDiagnosticsStateTest {
 
         assertTrue(state.isReceiving)
         assertEquals(54.0f, state.estimatedPlayoutLatencyMs, 0.001f)
-        assertEquals(state.jitterBufferMs + state.audioTrackBufferMs, state.estimatedPlayoutLatencyMs, 0.001f)
+        assertEquals(state.jitterBufferMs + state.audioTrackQueuedMs, state.estimatedPlayoutLatencyMs, 0.001f)
+        assertEquals(1152L, state.audioTrackQueuedFrames)
+        assertEquals(1680, state.audioTrackBufferSizeFrames)
+        assertEquals(7680, state.audioTrackBufferCapacityFrames)
         assertEquals(1500L, state.packetsReceived)
         assertEquals(2L, state.packetsLost)
     }
