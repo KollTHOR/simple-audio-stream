@@ -118,6 +118,9 @@ class AudioSinkService : Service() {
                 audioTrackWrites = instance.diagAudioTrackWrites.get(),
                 framesWritten = tracker?.getSubmittedFrames() ?: 0L,
                 playbackHead = tracker?.getPlayedFrames() ?: 0L,
+                opusPlcPackets = instance.diagOpusPlcPackets.get(),
+                opusPlcFrames = instance.diagOpusPlcFrames.get(),
+                opusDecodeErrors = instance.diagOpusDecodeErrors.get(),
                 timestampMs = System.currentTimeMillis()
             )
         }
@@ -184,6 +187,9 @@ class AudioSinkService : Service() {
     @Volatile private var firstWriteGeneration: Long = -1L
     internal val diagAudioTrackWrites = java.util.concurrent.atomic.AtomicLong(0L)
     internal val diagFramesWritten = java.util.concurrent.atomic.AtomicLong(0L)
+    private val diagOpusPlcPackets = java.util.concurrent.atomic.AtomicLong(0L)
+    private val diagOpusPlcFrames = java.util.concurrent.atomic.AtomicLong(0L)
+    private val diagOpusDecodeErrors = java.util.concurrent.atomic.AtomicLong(0L)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -1020,75 +1026,121 @@ class AudioSinkService : Service() {
 
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                     try {
-                        val bytesToPlay = jitterBuffer.read(chunk)
+                        val readResult = jitterBuffer.readPacket(chunk)
+                        val bytesToPlay = readResult.bytesRead
+                        val readStatus = readResult.status
                         if (bytesToPlay > 0) {
                             val track = audioTrack
                             if (track != null && track.playState == AudioTrack.PLAYSTATE_PLAYING) {
                                 if (currentIsOpus) {
-                                     val isSilenceFill = (bytesToPlay < 8) || (chunk[0] == 0.toByte() && chunk[1] == 0.toByte() && chunk[2] == 0.toByte())
-                                     if (!isSilenceFill) {
-                                         val t0 = SystemClock.elapsedRealtimeNanos()
-                                         val pcmList = synchronized(decoderLock) {
-                                             opusDecoder?.decode(chunk, 0, bytesToPlay)
-                                         } ?: emptyList()
-                                         lastDecodeDurationNs = SystemClock.elapsedRealtimeNanos() - t0
-                                         HatDiagnostics.recordTime("decode", lastDecodeDurationNs)
-                                         val decodeGeneration = configAuthority.currentGeneration
-                                         if (decodeGeneration > 0L && decodeGeneration != firstDecodeGeneration) {
-                                             firstDecodeGeneration = decodeGeneration
-                                             HatDiagnostics.lifecycle("GENERATION_FIRST_DECODE", decodeGeneration)
-                                         }
-                                         for (i in pcmList.indices) {
-                                             val pcm = pcmList[i]
-                                             if (pcm.isNotEmpty()) {
-                                                 if (wasInSilenceFill && i == 0) {
-                                                     val rampFrames = minOf(64, pcm.size / 4)
-                                                     for (f in 0 until rampFrames) {
-                                                         val factor = f.toFloat() / rampFrames.toFloat()
-                                                         val p = f * 4
-                                                         val sL = (((pcm[p].toInt() and 0xFF) or (pcm[p + 1].toInt() shl 8)).toShort() * factor).toInt().toShort()
-                                                         val sR = (((pcm[p + 2].toInt() and 0xFF) or (pcm[p + 3].toInt() shl 8)).toShort() * factor).toInt().toShort()
-                                                         pcm[p] = (sL.toInt() and 0xFF).toByte()
-                                                         pcm[p + 1] = ((sL.toInt() shr 8) and 0xFF).toByte()
-                                                         pcm[p + 2] = (sR.toInt() and 0xFF).toByte()
-                                                         pcm[p + 3] = ((sR.toInt() shr 8) and 0xFF).toByte()
-                                                     }
-                                                     wasInSilenceFill = false
-                                                 }
+                                    if (readStatus == JitterBuffer.ReadStatus.PACKET) {
+                                        val t0 = SystemClock.elapsedRealtimeNanos()
+                                        val pcmList = synchronized(decoderLock) {
+                                            opusDecoder?.decode(chunk, 0, bytesToPlay)
+                                        } ?: emptyList()
+                                        lastDecodeDurationNs = SystemClock.elapsedRealtimeNanos() - t0
+                                        HatDiagnostics.recordTime("decode", lastDecodeDurationNs)
+                                        val decodeGeneration = configAuthority.currentGeneration
+                                        if (decodeGeneration > 0L && decodeGeneration != firstDecodeGeneration) {
+                                            firstDecodeGeneration = decodeGeneration
+                                            HatDiagnostics.lifecycle("GENERATION_FIRST_DECODE", decodeGeneration)
+                                        }
+                                        for (i in pcmList.indices) {
+                                            val pcm = pcmList[i]
+                                            if (pcm.isNotEmpty()) {
+                                                if (wasInSilenceFill && i == 0) {
+                                                    val rampFrames = minOf(64, pcm.size / 4)
+                                                    for (f in 0 until rampFrames) {
+                                                        val factor = f.toFloat() / rampFrames.toFloat()
+                                                        val p = f * 4
+                                                        val sL = (((pcm[p].toInt() and 0xFF) or (pcm[p + 1].toInt() shl 8)).toShort() * factor).toInt().toShort()
+                                                        val sR = (((pcm[p + 2].toInt() and 0xFF) or (pcm[p + 3].toInt() shl 8)).toShort() * factor).toInt().toShort()
+                                                        pcm[p] = (sL.toInt() and 0xFF).toByte()
+                                                        pcm[p + 1] = ((sL.toInt() shr 8) and 0xFF).toByte()
+                                                        pcm[p + 2] = (sR.toInt() and 0xFF).toByte()
+                                                        pcm[p + 3] = ((sR.toInt() shr 8) and 0xFF).toByte()
+                                                    }
+                                                    wasInSilenceFill = false
+                                                }
 
-                                         writeToPlaybackTrack(track, pcm, pcm.size)
-                                         audioLevelMeter.analyze(pcm, 0, pcm.size, is24Bit = false)
-                                             }
-                                         }
-                                         val lastPcm = pcmList.lastOrNull { it.size >= 4 }
-                                         if (lastPcm != null) {
-                                             val lastOff = lastPcm.size - 4
-                                             lastPlayedSampleLeft16 = ((lastPcm[lastOff].toInt() and 0xFF) or (lastPcm[lastOff + 1].toInt() shl 8)).toShort()
-                                             lastPlayedSampleRight16 = ((lastPcm[lastOff + 2].toInt() and 0xFF) or (lastPcm[lastOff + 3].toInt() shl 8)).toShort()
-                                             wasInSilenceFill = false
-                                         }
-                                     } else {
-                                         val silenceBytes = if (currentSampleRate == AudioConfig.SAMPLE_RATE_44100) 3528 else 3840
-                                         val silence = ByteArray(silenceBytes)
-                                         if (!wasInSilenceFill && (lastPlayedSampleLeft16 != 0.toShort() || lastPlayedSampleRight16 != 0.toShort())) {
-                                             val rampFrames = minOf(64, silenceBytes / 4)
-                                             for (f in 0 until rampFrames) {
-                                                 val factor = (rampFrames - f).toFloat() / rampFrames.toFloat()
-                                                 val sL = (lastPlayedSampleLeft16 * factor).toInt().toShort()
-                                                 val sR = (lastPlayedSampleRight16 * factor).toInt().toShort()
-                                                 val p = f * 4
-                                                 silence[p] = (sL.toInt() and 0xFF).toByte()
-                                                 silence[p + 1] = ((sL.toInt() shr 8) and 0xFF).toByte()
-                                                 silence[p + 2] = (sR.toInt() and 0xFF).toByte()
-                                                 silence[p + 3] = ((sR.toInt() shr 8) and 0xFF).toByte()
-                                             }
-                                         }
-                                         lastPlayedSampleLeft16 = 0
-                                         lastPlayedSampleRight16 = 0
-                                         wasInSilenceFill = true
-                                         writeToPlaybackTrack(track, silence, silence.size)
-                                     }
-                                 } else if (currentIsAac) {
+                                                writeToPlaybackTrack(track, pcm, pcm.size)
+                                                audioLevelMeter.analyze(pcm, 0, pcm.size, is24Bit = false)
+                                            }
+                                        }
+                                        val lastPcm = pcmList.lastOrNull { it.size >= 4 }
+                                        if (lastPcm != null) {
+                                            val lastOff = lastPcm.size - 4
+                                            lastPlayedSampleLeft16 = ((lastPcm[lastOff].toInt() and 0xFF) or (lastPcm[lastOff + 1].toInt() shl 8)).toShort()
+                                            lastPlayedSampleRight16 = ((lastPcm[lastOff + 2].toInt() and 0xFF) or (lastPcm[lastOff + 3].toInt() shl 8)).toShort()
+                                            wasInSilenceFill = false
+                                        }
+                                    } else if (readStatus == JitterBuffer.ReadStatus.PACKET_LOST) {
+                                        // Missing/late Opus packet detected at playback time: invoke native decoder PLC
+                                        val t0 = SystemClock.elapsedRealtimeNanos()
+                                        val plcPcm = synchronized(decoderLock) {
+                                            opusDecoder?.decodePlc()
+                                        }
+                                        lastDecodeDurationNs = SystemClock.elapsedRealtimeNanos() - t0
+                                        HatDiagnostics.recordTime("decode_plc", lastDecodeDurationNs)
+
+                                        if (plcPcm != null && plcPcm.isNotEmpty()) {
+                                            diagOpusPlcPackets.incrementAndGet()
+                                            val plcFrames = (plcPcm.size / 4).toLong()
+                                            diagOpusPlcFrames.addAndGet(plcFrames)
+                                            HatDiagnostics.increment("rx_opus_plc_packets")
+                                            HatDiagnostics.increment("rx_opus_plc_frames", plcFrames)
+
+                                            if (wasInSilenceFill) {
+                                                val rampFrames = minOf(64, plcPcm.size / 4)
+                                                for (f in 0 until rampFrames) {
+                                                    val factor = f.toFloat() / rampFrames.toFloat()
+                                                    val p = f * 4
+                                                    val sL = (((plcPcm[p].toInt() and 0xFF) or (plcPcm[p + 1].toInt() shl 8)).toShort() * factor).toInt().toShort()
+                                                    val sR = (((plcPcm[p + 2].toInt() and 0xFF) or (plcPcm[p + 3].toInt() shl 8)).toShort() * factor).toInt().toShort()
+                                                    plcPcm[p] = (sL.toInt() and 0xFF).toByte()
+                                                    plcPcm[p + 1] = ((sL.toInt() shr 8) and 0xFF).toByte()
+                                                    plcPcm[p + 2] = (sR.toInt() and 0xFF).toByte()
+                                                    plcPcm[p + 3] = ((sR.toInt() shr 8) and 0xFF).toByte()
+                                                }
+                                                wasInSilenceFill = false
+                                            }
+
+                                            writeToPlaybackTrack(track, plcPcm, plcPcm.size)
+                                            audioLevelMeter.analyze(plcPcm, 0, plcPcm.size, is24Bit = false)
+
+                                            if (plcPcm.size >= 4) {
+                                                val lastOff = plcPcm.size - 4
+                                                lastPlayedSampleLeft16 = ((plcPcm[lastOff].toInt() and 0xFF) or (plcPcm[lastOff + 1].toInt() shl 8)).toShort()
+                                                lastPlayedSampleRight16 = ((plcPcm[lastOff + 2].toInt() and 0xFF) or (plcPcm[lastOff + 3].toInt() shl 8)).toShort()
+                                                wasInSilenceFill = false
+                                            }
+                                        } else {
+                                            diagOpusDecodeErrors.incrementAndGet()
+                                            HatDiagnostics.increment("rx_opus_decode_errors")
+                                        }
+                                    } else {
+                                        // Prolonged starvation / rebuffering (ReadStatus.BUFFERING)
+                                        val silenceBytes = if (currentSampleRate == AudioConfig.SAMPLE_RATE_44100) 3528 else 3840
+                                        val silence = ByteArray(silenceBytes)
+                                        if (!wasInSilenceFill && (lastPlayedSampleLeft16 != 0.toShort() || lastPlayedSampleRight16 != 0.toShort())) {
+                                            val rampFrames = minOf(64, silenceBytes / 4)
+                                            for (f in 0 until rampFrames) {
+                                                val factor = (rampFrames - f).toFloat() / rampFrames.toFloat()
+                                                val sL = (lastPlayedSampleLeft16 * factor).toInt().toShort()
+                                                val sR = (lastPlayedSampleRight16 * factor).toInt().toShort()
+                                                val p = f * 4
+                                                silence[p] = (sL.toInt() and 0xFF).toByte()
+                                                silence[p + 1] = ((sL.toInt() shr 8) and 0xFF).toByte()
+                                                silence[p + 2] = (sR.toInt() and 0xFF).toByte()
+                                                silence[p + 3] = ((sR.toInt() shr 8) and 0xFF).toByte()
+                                            }
+                                        }
+                                        lastPlayedSampleLeft16 = 0
+                                        lastPlayedSampleRight16 = 0
+                                        wasInSilenceFill = true
+                                        writeToPlaybackTrack(track, silence, silence.size)
+                                    }
+                                } else if (currentIsAac) {
                                      val isAdts = (bytesToPlay >= 7 && (chunk[0].toInt() and 0xFF) == 0xFF && (chunk[1].toInt() and 0xF0) == 0xF0)
                                      if (isAdts) {
                                          val t0 = SystemClock.elapsedRealtimeNanos()
@@ -1303,6 +1355,9 @@ class AudioSinkService : Service() {
         "outOfOrder" to jitterBuffer.getOutOfOrderPackets(),
         "latePackets" to jitterBuffer.getLatePackets(),
         "lostPackets" to jitterBuffer.getConcealedPackets(),
+        "opusPlcPackets" to diagOpusPlcPackets.get(),
+        "opusPlcFrames" to diagOpusPlcFrames.get(),
+        "opusDecodeErrors" to diagOpusDecodeErrors.get(),
         "fecRecovered" to diagFecRecovered.get(),
         "decodeErrors" to HatDiagnostics.counter("rx_decode_errors"),
         "unknownGeneration" to HatDiagnostics.counter("rx_generation_mismatch"),
@@ -1328,6 +1383,8 @@ class AudioSinkService : Service() {
             "duplicates" to jitterBuffer.getDuplicatePackets(),
             "latePackets" to jitterBuffer.getLatePackets(),
             "missingPackets" to jitterBuffer.getConcealedPackets(),
+            "opusPlcPackets" to diagOpusPlcPackets.get(),
+            "opusPlcFrames" to diagOpusPlcFrames.get(),
             "fecRecovered" to diagFecRecovered.get()
         )
     }
@@ -1360,6 +1417,9 @@ class AudioSinkService : Service() {
             "playState" to (try { track?.playState ?: 0 } catch (e: Exception) { 0 }),
             "audioTrackWrites" to diagAudioTrackWrites.get(),
             "framesWritten" to (tracker?.getSubmittedFrames() ?: 0L),
+            "opusPlcPackets" to diagOpusPlcPackets.get(),
+            "opusPlcFrames" to diagOpusPlcFrames.get(),
+            "opusDecodeErrors" to diagOpusDecodeErrors.get(),
             "writeErrors" to HatDiagnostics.counter("playback_write_errors")
         )
     }
@@ -1388,6 +1448,9 @@ class AudioSinkService : Service() {
                 "outOfOrder" to jitterBuffer.getOutOfOrderPackets(),
                 "latePackets" to jitterBuffer.getLatePackets(),
                 "lostPackets" to jitterBuffer.getConcealedPackets(),
+                "opusPlcPackets" to diagOpusPlcPackets.get(),
+                "opusPlcFrames" to diagOpusPlcFrames.get(),
+                "opusDecodeErrors" to diagOpusDecodeErrors.get(),
                 "fecRecovered" to fecRecovered,
                 "decodeErrors" to HatDiagnostics.counter("rx_decode_errors"),
                 "unknownGeneration" to HatDiagnostics.counter("rx_generation_mismatch"),
@@ -1415,6 +1478,8 @@ class AudioSinkService : Service() {
                 "duplicates" to duplicates,
                 "latePackets" to late,
                 "missingPackets" to concealed,
+                "opusPlcPackets" to diagOpusPlcPackets.get(),
+                "opusPlcFrames" to diagOpusPlcFrames.get(),
                 "outOfOrder" to outOfOrder,
                 "fecRecovered" to fecRecovered
             )
@@ -1467,6 +1532,9 @@ class AudioSinkService : Service() {
                     "performanceMode" to currentPerformanceMode,
                     "playState" to playState,
                     "writeErrors" to HatDiagnostics.counter("playback_write_errors"),
+                    "opusPlcPackets" to diagOpusPlcPackets.get(),
+                    "opusPlcFrames" to diagOpusPlcFrames.get(),
+                    "opusDecodeErrors" to diagOpusDecodeErrors.get(),
                     "framesWritten" to submittedFrames
                 )
             )
@@ -1745,6 +1813,9 @@ class AudioSinkService : Service() {
         currentIsOpus = false
         currentIsAac = false
         audioLevelMeter.resetInterval()
+        diagOpusPlcPackets.set(0L)
+        diagOpusPlcFrames.set(0L)
+        diagOpusDecodeErrors.set(0L)
 
         jitterBuffer.reset()
         releaseLocks()
@@ -1974,113 +2045,77 @@ class AudioSinkService : Service() {
         }
     }
 
-    private class OpusDecoder(private val sampleRate: Int, private val channelCount: Int = 2) {
-        private var codec: MediaCodec? = null
-        private val bufferInfo = MediaCodec.BufferInfo()
-        private var presentationTimeUs = 0L
+    internal class OpusDecoder(val sampleRate: Int, val channelCount: Int = 2) {
+        private var decoder: io.github.jaredmdobson.concentus.OpusDecoder? = null
+        private val pcmOutBuffer = ByteArray(5760 * channelCount * 2)
+        var lastFrameSizeSamples: Int = AudioConfig.getFramesPerPacket(sampleRate)
+            private set
 
         init {
-            initCodec()
+            initDecoder()
         }
 
-        private fun initCodec() {
+        private fun initDecoder() {
             try {
-                val format = MediaFormat.createAudioFormat(AudioConfig.OPUS_MIME_TYPE, sampleRate, channelCount).apply {
-                    setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
-                }
-
-                // Construct 19-byte OpusHead identification header
-                val header = ByteArray(19)
-                val magic = "OpusHead".toByteArray(Charsets.US_ASCII)
-                System.arraycopy(magic, 0, header, 0, 8)
-                header[8] = 1 // Version
-                header[9] = channelCount.toByte()
-                // Pre-skip = 0 for live streaming (no encoder delay discard)
-                header[10] = 0
-                header[11] = 0
-                // Sample rate (little endian)
-                header[12] = (sampleRate and 0xFF).toByte()
-                header[13] = ((sampleRate shr 8) and 0xFF).toByte()
-                header[14] = ((sampleRate shr 16) and 0xFF).toByte()
-                header[15] = ((sampleRate shr 24) and 0xFF).toByte()
-                // Gain = 0
-                header[16] = 0
-                header[17] = 0
-                // Channel mapping family = 0
-                header[18] = 0
-
-                val csd0 = ByteBuffer.wrap(header)
-                format.setByteBuffer("csd-0", csd0)
-
-                // csd-1: Pre-skip in nanoseconds (Long, little-endian) = 0 ns
-                val csd1 = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(0L).apply { flip() }
-                format.setByteBuffer("csd-1", csd1)
-
-                // csd-2: Seek pre-roll in nanoseconds (Long, little-endian) = 0 ns
-                val csd2 = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(0L).apply { flip() }
-                format.setByteBuffer("csd-2", csd2)
-
-                val decoder = MediaCodec.createDecoderByType(AudioConfig.OPUS_MIME_TYPE)
-                decoder.configure(format, null, null, 0)
-                decoder.start()
-                codec = decoder
-                Log.i(TAG, "Initialized Opus MediaCodec decoder: rate=$sampleRate, channels=$channelCount")
+                decoder = io.github.jaredmdobson.concentus.OpusDecoder(sampleRate, channelCount)
+                Log.i(TAG, "Initialized Concentus Opus decoder: rate=$sampleRate, channels=$channelCount")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed initializing Opus decoder", e)
+                decoder = null
             }
         }
 
         fun decode(opusData: ByteArray, offset: Int, length: Int): List<ByteArray> {
-            val decoder = codec ?: return emptyList()
+            val dec = decoder ?: return emptyList()
             if (length <= 0) return emptyList()
-            val results = mutableListOf<ByteArray>()
-
-            try {
-                val inIndex = decoder.dequeueInputBuffer(2000L)
-                if (inIndex >= 0) {
-                    val inBuf = decoder.getInputBuffer(inIndex)
-                    inBuf?.clear()
-                    inBuf?.put(opusData, offset, length)
-                    val pts = presentationTimeUs
-                    presentationTimeUs += 20_000L // 20ms frame
-                    decoder.queueInputBuffer(inIndex, 0, length, pts, 0)
-                }
-
-                var outIndex = decoder.dequeueOutputBuffer(bufferInfo, 2000L)
-                while (outIndex >= 0 || outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        Log.i(TAG, "Opus decoder output format changed: ${decoder.outputFormat}")
-                    } else {
-                        val outBuf = decoder.getOutputBuffer(outIndex)
-                        val outSize = bufferInfo.size
-                        if (outBuf != null && outSize > 0) {
-                            val pcm = ByteArray(outSize)
-                            outBuf.position(bufferInfo.offset)
-                            outBuf.get(pcm, 0, outSize)
-                            results.add(pcm)
-                        }
-                        decoder.releaseOutputBuffer(outIndex, false)
-                    }
-                    outIndex = decoder.dequeueOutputBuffer(bufferInfo, 0L)
+            return try {
+                val samplesPerChannel = dec.decode(opusData, offset, length, pcmOutBuffer, 0, 5760, false)
+                if (samplesPerChannel > 0) {
+                    lastFrameSizeSamples = samplesPerChannel
+                    val byteCount = samplesPerChannel * channelCount * 2
+                    val pcm = ByteArray(byteCount)
+                    System.arraycopy(pcmOutBuffer, 0, pcm, 0, byteCount)
+                    listOf(pcm)
+                } else {
+                    emptyList()
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Opus decode error: ${e.message}, re-initializing")
-                try {
-                    decoder.stop()
-                    decoder.release()
-                } catch (ignored: Exception) {}
-                codec = null
-                initCodec()
+                Log.w(TAG, "Opus decode error: ${e.message}")
+                HatDiagnostics.increment("rx_opus_decode_errors")
+                emptyList()
             }
-            return results
+        }
+
+        /**
+         * Invokes stateful packet loss concealment (PLC) on the Opus decoder for a missing packet.
+         *
+         * Decodes with null data and 0 length, signaling to the underlying CELT/SILK decoder to
+         * extrapolate audio based on previous pitch, spectral envelope, and filter state.
+         * The internal decoder state is advanced seamlessly so subsequent valid packets decode
+         * without clicks or phase discontinuity.
+         */
+        fun decodePlc(frameSizeSamples: Int = lastFrameSizeSamples): ByteArray? {
+            val dec = decoder ?: return null
+            val framesToDecode = if (frameSizeSamples > 0) frameSizeSamples else lastFrameSizeSamples
+            return try {
+                val samplesPerChannel = dec.decode(null, 0, 0, pcmOutBuffer, 0, framesToDecode, false)
+                if (samplesPerChannel > 0) {
+                    val byteCount = samplesPerChannel * channelCount * 2
+                    val pcm = ByteArray(byteCount)
+                    System.arraycopy(pcmOutBuffer, 0, pcm, 0, byteCount)
+                    pcm
+                } else {
+                    null
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Opus PLC decode error: ${e.message}")
+                HatDiagnostics.increment("rx_opus_decode_errors")
+                null
+            }
         }
 
         fun release() {
-            try {
-                codec?.stop()
-                codec?.release()
-            } catch (ignored: Exception) {}
-            codec = null
+            decoder = null
         }
     }
 }

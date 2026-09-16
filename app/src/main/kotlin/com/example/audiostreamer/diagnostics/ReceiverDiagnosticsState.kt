@@ -103,5 +103,10 @@ data class ReceiverDiagnosticsState(
     val framesWritten: Long = 0L,
     val playbackHead: Long = 0L,
 
+    // --- Opus Codec & PLC Counters ---
+    val opusPlcPackets: Long = 0L,
+    val opusPlcFrames: Long = 0L,
+    val opusDecodeErrors: Long = 0L,
+
     val timestampMs: Long = System.currentTimeMillis()
 )

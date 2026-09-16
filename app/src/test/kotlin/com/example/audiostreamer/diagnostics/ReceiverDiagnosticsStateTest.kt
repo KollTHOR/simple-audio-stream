@@ -31,6 +31,9 @@ class ReceiverDiagnosticsStateTest {
         assertEquals(0L, state.underruns)
         assertEquals(0L, state.framesWritten)
         assertEquals(0L, state.playbackHead)
+        assertEquals(0L, state.opusPlcPackets)
+        assertEquals(0L, state.opusPlcFrames)
+        assertEquals(0L, state.opusDecodeErrors)
     }
 
     @Test
@@ -62,7 +65,10 @@ class ReceiverDiagnosticsStateTest {
             underruns = 0L,
             audioTrackWrites = 750L,
             framesWritten = 720000L,
-            playbackHead = 718848L
+            playbackHead = 718848L,
+            opusPlcPackets = 5L,
+            opusPlcFrames = 1200L,
+            opusDecodeErrors = 0L
         )
 
         assertTrue(state.isReceiving)
@@ -73,5 +79,8 @@ class ReceiverDiagnosticsStateTest {
         assertEquals(7680, state.audioTrackBufferCapacityFrames)
         assertEquals(1500L, state.packetsReceived)
         assertEquals(2L, state.packetsLost)
+        assertEquals(5L, state.opusPlcPackets)
+        assertEquals(1200L, state.opusPlcFrames)
+        assertEquals(0L, state.opusDecodeErrors)
     }
 }
