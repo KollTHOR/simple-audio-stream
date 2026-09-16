@@ -8,7 +8,7 @@ package com.example.audiostreamer.diagnostics
  * Estimated Receiver Playout Latency is defined as the total estimated delay (in milliseconds)
  * currently queued across the receiver pipeline awaiting playout.
  *
- * It is derived strictly as an estimate from receiver jitter-buffer occupancy plus queued
+ * It is derived strictly as an estimate from receiver jitter-buffer occupancy plus actual queued
  * AudioTrack playback frames:
  *
  * 1. JITTER BUFFER AUDIO DEPTH (T_jb):
@@ -20,23 +20,26 @@ package com.example.audiostreamer.diagnostics
  *    Equivalently in timeline frames:
  *    T_jb = ((latestReceivedTimelineFrame - nextReadTimelineFrame) / sampleRate) * 1000.0
  *
- * 2. AUDIOTRACK HARDWARE QUEUE DEPTH (T_track):
+ * 2. ACTUAL AUDIOTRACK QUEUE DEPTH (T_track):
  *    The audio duration of decoded PCM frames written into the Android AudioTrack buffer
- *    that have not yet been rendered.
+ *    that have not yet been rendered by the audio hardware.
  *
- *    framesPending = max(0, diagFramesWritten - audioTrack.playbackHeadPosition)
- *    T_track = (framesPending / sampleRate) * 1000.0
- *    (Clamped to track.bufferSizeInFrames / sampleRate * 1000.0 to reflect active hardware buffer capacity)
+ *    queuedFrames = maxOf(0, submittedFramesForCurrentTrack - playedFramesForCurrentTrack)
+ *    T_track = (queuedFrames / sampleRate) * 1000.0
+ *
+ *    Note: This measures actual queued PCM audio awaiting rendering, NOT the configured buffer capacity
+ *    (bufferCapacityInFrames) or the active write target (bufferSizeInFrames).
  *
  * 3. TOTAL ESTIMATED RECEIVER PLAYOUT LATENCY (T_playout):
  *    T_playout = T_jb + T_track
  *
  * BOUNDARIES & EXCLUSIONS:
- * - This metric is an estimate derived purely from receiver jitter-buffer occupancy plus queued
+ * - This metric is an estimate derived purely from receiver jitter-buffer occupancy plus actual queued
  *   AudioTrack playback frames.
  * - It does NOT measure network one-way latency.
  * - It does NOT measure wall-clock end-to-end latency.
  * - It does NOT measure physical speaker acoustic emission latency.
+ * - It does NOT measure exact DAC hardware latency.
  * - Observational and read-only: safely sampled from atomic counters without taking audio locks.
  * =================================================================================================
  */
@@ -46,14 +49,26 @@ data class ReceiverDiagnosticsState(
     val profileName: String = "Auto",
 
     // --- Primary Metric: Estimated Receiver Playout Latency ---
-    /** Total Estimated Receiver Playout Latency (JitterBuffer depth + AudioTrack playback queue depth) in ms. */
+    /** Total Estimated Receiver Playout Latency (JitterBuffer depth + actual AudioTrack playback queue depth) in ms. */
     val estimatedPlayoutLatencyMs: Float = 0f,
 
     /** Audio duration currently queued in the JitterBuffer in ms. */
     val jitterBufferMs: Float = 0f,
 
-    /** Decoded audio duration queued in the AudioTrack hardware buffer awaiting playback in ms. */
-    val audioTrackBufferMs: Float = 0f,
+    /** Actual estimated audio duration queued in the AudioTrack buffer awaiting playback in ms. */
+    val audioTrackQueuedMs: Float = 0f,
+
+    /** Actual estimated audio frames queued in the AudioTrack buffer awaiting playback. */
+    val audioTrackQueuedFrames: Long = 0L,
+
+    /** Active AudioTrack buffer size limit / target in frames (from setBufferSizeInFrames). */
+    val audioTrackBufferSizeFrames: Int = 0,
+
+    /** Maximum allocated buffer capacity of the AudioTrack in frames (from bufferCapacityInFrames). */
+    val audioTrackBufferCapacityFrames: Int = 0,
+
+    /** Legacy alias for audioTrackQueuedMs to preserve compatibility with existing diagnostics consumers. */
+    val audioTrackBufferMs: Float = audioTrackQueuedMs,
 
     /** Target watermark latency computed by RFC 3550 jitter estimator in ms. */
     val targetWatermarkMs: Float = 0f,

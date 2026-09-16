@@ -143,6 +143,9 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var tvDiagBufferDepth: TextView
     private lateinit var pbDiagBufferHealth: ProgressBar
     private lateinit var tvDiagClockDrift: TextView
+    private lateinit var tvDiagTrackQueue: TextView
+    private lateinit var tvDiagTrackTarget: TextView
+    private lateinit var tvDiagTrackCapacity: TextView
     private lateinit var tvDiagUnderruns: TextView
     private lateinit var tvDiagTrackWrites: TextView
     private lateinit var tvDiagPktsReceived: TextView
@@ -292,6 +295,9 @@ class SettingsActivity : AppCompatActivity() {
         tvDiagBufferDepth = findViewById(R.id.tv_diag_buffer_depth)
         pbDiagBufferHealth = findViewById(R.id.pb_diag_buffer_health)
         tvDiagClockDrift = findViewById(R.id.tv_diag_clock_drift)
+        tvDiagTrackQueue = findViewById(R.id.tv_diag_track_queue)
+        tvDiagTrackTarget = findViewById(R.id.tv_diag_track_target)
+        tvDiagTrackCapacity = findViewById(R.id.tv_diag_track_capacity)
         tvDiagUnderruns = findViewById(R.id.tv_diag_underruns)
         tvDiagTrackWrites = findViewById(R.id.tv_diag_track_writes)
         tvDiagPktsReceived = findViewById(R.id.tv_diag_pkts_received)
@@ -726,7 +732,7 @@ class SettingsActivity : AppCompatActivity() {
                 Locale.US,
                 "Jitter Buffer: %.1fms | AudioTrack Queue: %.1fms",
                 state.jitterBufferMs,
-                state.audioTrackBufferMs
+                state.audioTrackQueuedMs
             )
         } else {
             tvDiagTimelineBreakdown.text = "Jitter Buffer: -- | AudioTrack Queue: --"
@@ -740,6 +746,37 @@ class SettingsActivity : AppCompatActivity() {
         pbDiagBufferHealth.progress = if (isRx) fillPct.coerceIn(0, 100) else 0
 
         tvDiagClockDrift.text = String.format(Locale.US, "%.4fx", state.driftCorrectionRatio)
+
+        val sr = if (state.sampleRate > 0) state.sampleRate else 48000
+        if (isRx) {
+            tvDiagTrackQueue.text = String.format(
+                Locale.US,
+                "%d frames (%.1f ms)",
+                state.audioTrackQueuedFrames,
+                state.audioTrackQueuedMs
+            )
+
+            val targetFrames = state.audioTrackBufferSizeFrames
+            val targetMs = if (targetFrames > 0) (targetFrames.toFloat() / sr.toFloat()) * 1000f else 0f
+            tvDiagTrackTarget.text = if (targetFrames > 0) {
+                String.format(Locale.US, "%d frames (%.1f ms)", targetFrames, targetMs)
+            } else {
+                "--"
+            }
+
+            val capFrames = state.audioTrackBufferCapacityFrames
+            val capMs = if (capFrames > 0) (capFrames.toFloat() / sr.toFloat()) * 1000f else 0f
+            tvDiagTrackCapacity.text = if (capFrames > 0) {
+                String.format(Locale.US, "%d frames (%.1f ms)", capFrames, capMs)
+            } else {
+                "--"
+            }
+        } else {
+            tvDiagTrackQueue.text = "--"
+            tvDiagTrackTarget.text = "--"
+            tvDiagTrackCapacity.text = "--"
+        }
+
         tvDiagUnderruns.text = "${state.underruns}"
         tvDiagUnderruns.setTextColor(if (state.underruns > 0) ContextCompat.getColor(this, R.color.status_red) else greenColor)
         tvDiagTrackWrites.text = "${state.audioTrackWrites} writes / ${state.framesWritten} frames"
