@@ -17,11 +17,22 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
+import com.example.audiostreamer.update.BuildInfo
+import com.example.audiostreamer.update.GithubRelease
+import com.example.audiostreamer.update.ReleaseChannel
+import com.example.audiostreamer.update.UpdateCompatibility
+import com.example.audiostreamer.update.UpdateDownloader
+import com.example.audiostreamer.update.UpdateInstaller
+import com.example.audiostreamer.update.UpdateRepository
+import com.example.audiostreamer.update.VersionComparator
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
@@ -159,11 +170,39 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var btnCopyLogs: MaterialButton
     private lateinit var btnShareLogs: MaterialButton
 
-    // Updates Category Views
+    // Updates Category Views (Update Center)
     private lateinit var tvAppVersion: TextView
+    private lateinit var tvInstalledDetails: TextView
+    private lateinit var btnCheckUpdate: MaterialButton
+    private lateinit var rgUpdateChannel: RadioGroup
+    private lateinit var rbChannelStable: RadioButton
+    private lateinit var rbChannelNightly: RadioButton
+    private lateinit var tvChannelDescription: TextView
+    private lateinit var tvLatestTitle: TextView
+    private lateinit var tvLatestMeta: TextView
     private lateinit var tvUpdateStatus: TextView
     private lateinit var pbDownload: ProgressBar
-    private lateinit var btnCheckUpdate: MaterialButton
+    private lateinit var tvDownloadProgress: TextView
+    private lateinit var btnLatestAction: MaterialButton
+    private lateinit var rgHistoryFilter: RadioGroup
+    private lateinit var rbFilterAll: RadioButton
+    private lateinit var rbFilterStable: RadioButton
+    private lateinit var rbFilterNightly: RadioButton
+    private lateinit var llReleaseHistoryList: LinearLayout
+    private lateinit var tvHistoryStatus: TextView
+    private lateinit var btnLoadMoreReleases: MaterialButton
+
+    private lateinit var updateRepo: UpdateRepository
+    private lateinit var updateDownloader: UpdateDownloader
+    private lateinit var updateInstaller: UpdateInstaller
+    private val buildInfo: BuildInfo by lazy { BuildInfo.current() }
+
+    private val allLoadedReleases = mutableListOf<GithubRelease>()
+    private var latestCandidate: GithubRelease? = null
+    private var currentPage = 1
+    private var hasMorePages = false
+    private var isFetchingReleases = false
+    private var pendingInstallApk: File? = null
 
     // About Category Views
     private lateinit var tvAboutVersion: TextView
@@ -176,24 +215,18 @@ class SettingsActivity : AppCompatActivity() {
 
     // State
     private var currentCategory = Category.MENU
-    private var updateState = UpdateState.CHECK
-    private var latestReleaseTag: String? = null
-    private var latestApkUrl: String? = null
-    private var downloadedApkFile: File? = null
-    private var isWaitingForInstallPermission = false
 
     private val installPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (packageManager.canRequestPackageInstalls()) {
-                isWaitingForInstallPermission = false
-                val file = downloadedApkFile
-                if (file != null && file.exists() && file.length() > 500_000) {
-                    installApk(file)
+                val file = pendingInstallApk
+                if (file != null && file.exists()) {
+                    updateInstaller.launchInstallIntent(file)
                 }
             } else {
-                Toast.makeText(this, "Install permission is required to update", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Permission required to install APK update", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -311,11 +344,31 @@ class SettingsActivity : AppCompatActivity() {
         btnCopyLogs = findViewById(R.id.btn_copy_logs)
         btnShareLogs = findViewById(R.id.btn_share_logs)
 
-        // Updates Views
+        // Updates Views (Update Center)
         tvAppVersion = findViewById(R.id.tv_app_version)
+        tvInstalledDetails = findViewById(R.id.tv_installed_details)
+        btnCheckUpdate = findViewById(R.id.btn_check_update)
+        rgUpdateChannel = findViewById(R.id.rg_update_channel)
+        rbChannelStable = findViewById(R.id.rb_channel_stable)
+        rbChannelNightly = findViewById(R.id.rb_channel_nightly)
+        tvChannelDescription = findViewById(R.id.tv_channel_description)
+        tvLatestTitle = findViewById(R.id.tv_latest_title)
+        tvLatestMeta = findViewById(R.id.tv_latest_meta)
         tvUpdateStatus = findViewById(R.id.tv_update_status)
         pbDownload = findViewById(R.id.pb_download)
-        btnCheckUpdate = findViewById(R.id.btn_check_update)
+        tvDownloadProgress = findViewById(R.id.tv_download_progress)
+        btnLatestAction = findViewById(R.id.btn_latest_action)
+        rgHistoryFilter = findViewById(R.id.rg_history_filter)
+        rbFilterAll = findViewById(R.id.rb_filter_all)
+        rbFilterStable = findViewById(R.id.rb_filter_stable)
+        rbFilterNightly = findViewById(R.id.rb_filter_nightly)
+        llReleaseHistoryList = findViewById(R.id.ll_release_history_list)
+        tvHistoryStatus = findViewById(R.id.tv_history_status)
+        btnLoadMoreReleases = findViewById(R.id.btn_load_more_releases)
+
+        updateRepo = UpdateRepository(this)
+        updateDownloader = UpdateDownloader(this)
+        updateInstaller = UpdateInstaller(this)
 
         // About Views
         tvAboutVersion = findViewById(R.id.tv_about_version)
@@ -803,347 +856,417 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     // =========================================================================
-    // APP UPDATES
+    // APP UPDATES (UPDATE CENTER)
     // =========================================================================
     private fun setupUpdatesCategory() {
-        tvAppVersion.text = "Installed: Version ${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})"
-        btnCheckUpdate.text = "Check for Updates"
-        updateState = UpdateState.CHECK
+        tvAppVersion.text = buildInfo.displayVersion
+        tvInstalledDetails.text = "Channel: ${buildInfo.channel.displayName} • Commit: ${buildInfo.commitShort} • Built: ${buildInfo.formattedBuildDate}"
 
+        // Set channel radio group from persisted preference
+        val currentPref = updateRepo.getPreferredChannel()
+        if (currentPref == ReleaseChannel.NIGHTLY) {
+            rbChannelNightly.isChecked = true
+        } else {
+            rbChannelStable.isChecked = true
+        }
+
+        rgUpdateChannel.setOnCheckedChangeListener { _, checkedId ->
+            val newChannel = if (checkedId == R.id.rb_channel_nightly) ReleaseChannel.NIGHTLY else ReleaseChannel.STABLE
+            updateRepo.setPreferredChannel(newChannel)
+            updateChannelDescription(newChannel)
+            updateLatestCandidateView()
+            renderReleaseHistoryList()
+        }
+        updateChannelDescription(currentPref)
+
+        // Set history filter listener
+        rgHistoryFilter.setOnCheckedChangeListener { _, _ ->
+            renderReleaseHistoryList()
+        }
+
+        // Action button listeners
         btnCheckUpdate.setOnClickListener {
-            when (updateState) {
-                UpdateState.CHECK -> checkForUpdates()
-                UpdateState.DOWNLOAD -> {
-                    val url = latestApkUrl
-                    val tag = latestReleaseTag
-                    if (url != null && tag != null) {
-                        downloadAndPromptInstall(url, tag)
-                    } else {
-                        checkForUpdates()
-                    }
-                }
-                UpdateState.INSTALL -> {
-                    val file = downloadedApkFile
-                    if (file != null && file.exists() && file.length() > 500_000) {
-                        checkPermissionAndInstall(file)
-                    } else {
-                        checkForUpdates()
-                    }
-                }
+            refreshUpdateCenter(forceRefresh = true)
+        }
+
+        btnLatestAction.setOnClickListener {
+            val candidate = latestCandidate
+            if (candidate != null) {
+                handleReleaseAction(candidate)
+            } else {
+                refreshUpdateCenter(forceRefresh = true)
             }
         }
-    }
 
-    private fun parseVersion(versionStr: String): List<Int> {
-        val clean = versionStr.removePrefix("v").trim()
-        return clean.split(".").mapNotNull { it.toIntOrNull() }
-    }
-
-    private fun compareVersions(v1: List<Int>, v2: List<Int>): Int {
-        val maxLen = maxOf(v1.size, v2.size)
-        for (i in 0 until maxLen) {
-            val p1 = v1.getOrElse(i) { 0 }
-            val p2 = v2.getOrElse(i) { 0 }
-            if (p1 != p2) return p1.compareTo(p2)
+        btnLoadMoreReleases.setOnClickListener {
+            loadMoreReleases()
         }
-        return 0
+
+        // Initial fetch from cache or network
+        refreshUpdateCenter(forceRefresh = false)
     }
 
-    private fun isNewerVersion(remoteTag: String, currentVersion: String): Boolean {
-        return compareVersions(parseVersion(remoteTag), parseVersion(currentVersion)) > 0
+    private fun updateChannelDescription(channel: ReleaseChannel) {
+        if (channel == ReleaseChannel.NIGHTLY) {
+            tvChannelDescription.text = "Nightly channel: Receives automated development builds with latest features and experimental changes."
+        } else {
+            tvChannelDescription.text = "Stable channel: Receives officially validated releases with production reliability."
+        }
     }
 
-    private fun checkForUpdates() {
+    private fun refreshUpdateCenter(forceRefresh: Boolean) {
+        if (isFetchingReleases) return
+        isFetchingReleases = true
         btnCheckUpdate.isEnabled = false
-        tvUpdateStatus.text = "Checking GitHub for latest release..."
+        btnLatestAction.isEnabled = false
+        tvUpdateStatus.text = "Checking GitHub for releases..."
+        tvHistoryStatus.text = "Loading release history from GitHub..."
         pbDownload.visibility = View.VISIBLE
         pbDownload.isIndeterminate = true
+        tvDownloadProgress.visibility = View.GONE
 
-        lifecycleScope.launch(Dispatchers.IO) {
+        lifecycleScope.launch(Dispatchers.Main) {
             try {
-                var tagName: String? = null
-                var apkDownloadUrl: String? = null
+                val result = updateRepo.fetchReleases(page = 1, forceRefresh = forceRefresh)
+                pbDownload.visibility = View.GONE
+                pbDownload.isIndeterminate = false
+                btnCheckUpdate.isEnabled = true
+                btnLatestAction.isEnabled = true
+                isFetchingReleases = false
 
-                try {
-                    val releasesUrl = URL(GITHUB_API_RELEASES)
-                    val conn = (releasesUrl.openConnection() as HttpURLConnection).apply {
-                        connectTimeout = 8000
-                        readTimeout = 8000
-                        setRequestProperty("Accept", "application/vnd.github.v3+json")
-                        setRequestProperty("User-Agent", "SimpleAudioStream-Android")
-                    }
+                allLoadedReleases.clear()
+                allLoadedReleases.addAll(result.releases)
+                currentPage = 1
+                hasMorePages = result.hasMorePages
 
-                    if (conn.responseCode == 200) {
-                        val responseText = conn.inputStream.bufferedReader().use { it.readText() }
-                        val releasesArray = JSONArray(responseText)
-
-                        var bestTag: String? = null
-                        var bestUrl: String? = null
-                        var bestVer: List<Int>? = null
-
-                        for (i in 0 until releasesArray.length()) {
-                            val rel = releasesArray.getJSONObject(i)
-                            if (rel.optBoolean("draft", false)) continue
-                            val tag = rel.optString("tag_name", "")
-                            if (tag.isEmpty()) continue
-
-                            val assets = rel.optJSONArray("assets") ?: continue
-                            var foundApk: String? = null
-                            for (j in 0 until assets.length()) {
-                                val asset = assets.getJSONObject(j)
-                                val name = asset.optString("name")
-                                if (name.endsWith(".apk", ignoreCase = true)) {
-                                    foundApk = asset.optString("browser_download_url")
-                                    break
-                                }
-                            }
-
-                            if (foundApk != null) {
-                                val ver = parseVersion(tag)
-                                if (bestVer == null || compareVersions(ver, bestVer) > 0) {
-                                    bestVer = ver
-                                    bestTag = tag
-                                    bestUrl = foundApk
-                                }
-                            }
-                        }
-
-                        tagName = bestTag
-                        apkDownloadUrl = bestUrl
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Releases list query failed, falling back to latest: ${e.message}")
+                if (result.errorMessage != null && result.releases.isEmpty()) {
+                    tvUpdateStatus.text = result.errorMessage
+                    tvHistoryStatus.text = "Could not load release history: ${result.errorMessage}"
+                    btnLatestAction.text = "Retry"
+                    btnLoadMoreReleases.visibility = View.GONE
+                    return@launch
                 }
 
-                if (tagName == null || apkDownloadUrl == null) {
-                    val latestConn = (URL(GITHUB_API_LATEST_RELEASE).openConnection() as HttpURLConnection).apply {
-                        connectTimeout = 8000
-                        readTimeout = 8000
-                        setRequestProperty("Accept", "application/vnd.github.v3+json")
-                        setRequestProperty("User-Agent", "SimpleAudioStream-Android")
-                    }
-                    if (latestConn.responseCode == 200) {
-                        val responseText = latestConn.inputStream.bufferedReader().use { it.readText() }
-                        val releaseJson = JSONObject(responseText)
-                        tagName = releaseJson.optString("tag_name", "v1.0.0")
-                        val assets = releaseJson.optJSONArray("assets")
-                        if (assets != null) {
-                            for (i in 0 until assets.length()) {
-                                val asset = assets.getJSONObject(i)
-                                val name = asset.optString("name")
-                                if (name.endsWith(".apk", ignoreCase = true)) {
-                                    apkDownloadUrl = asset.optString("browser_download_url")
-                                    break
-                                }
-                            }
-                        }
-                    }
-                }
+                updateLatestCandidateView()
+                renderReleaseHistoryList()
 
-                val finalTag = tagName
-                val finalApkUrl = apkDownloadUrl
-
-                withContext(Dispatchers.Main) {
-                    pbDownload.visibility = View.GONE
-                    btnCheckUpdate.isEnabled = true
-
-                    if (finalTag == null) {
-                        updateState = UpdateState.CHECK
-                        tvUpdateStatus.text = "No releases found on GitHub."
-                        btnCheckUpdate.text = "Check for Updates"
-                        return@withContext
-                    }
-
-                    latestReleaseTag = finalTag
-
-                    if (finalApkUrl != null) {
-                        latestApkUrl = finalApkUrl
-                        val targetDir = cacheDir
-                        val versionedApk = File(targetDir, "simple-audio-stream-$finalTag.apk")
-
-                        if (isNewerVersion(finalTag, BuildConfig.VERSION_NAME)) {
-                            try {
-                                listOfNotNull(cacheDir, externalCacheDir).forEach { dir ->
-                                    dir.listFiles { _, name ->
-                                        name.startsWith("simple-audio-stream") && name.endsWith(".apk") && !name.contains(finalTag)
-                                    }?.forEach { it.delete() }
-                                }
-                            } catch (ignored: Exception) {}
-
-                            if (versionedApk.exists() && versionedApk.length() > 500_000) {
-                                downloadedApkFile = versionedApk
-                                updateState = UpdateState.INSTALL
-                                tvUpdateStatus.text = "Update downloaded ($finalTag).\nTap below to install."
-                                btnCheckUpdate.text = "Install APK ($finalTag)"
-                            } else {
-                                downloadedApkFile = null
-                                updateState = UpdateState.DOWNLOAD
-                                tvUpdateStatus.text = "New release found: $finalTag\nTap below to download and install."
-                                btnCheckUpdate.text = "Download Update ($finalTag)"
-                            }
-                        } else {
-                            downloadedApkFile = null
-                            updateState = UpdateState.CHECK
-                            tvUpdateStatus.text = "You are on the latest version ($finalTag)."
-                            btnCheckUpdate.text = "Check for Updates"
-
-                            try {
-                                listOfNotNull(cacheDir, externalCacheDir).forEach { dir ->
-                                    dir.listFiles { _, name ->
-                                        name.startsWith("simple-audio-stream") && name.endsWith(".apk")
-                                    }?.forEach { it.delete() }
-                                }
-                            } catch (ignored: Exception) {}
-                        }
-                    } else {
-                        updateState = UpdateState.CHECK
-                        tvUpdateStatus.text = "Latest release $finalTag found, but no APK asset attached."
-                        btnCheckUpdate.text = "Check for Updates"
-                    }
+                if (result.isFromCache) {
+                    tvHistoryStatus.text = "Showing ${allLoadedReleases.size} releases (Offline cache)"
                 }
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    pbDownload.visibility = View.GONE
-                    btnCheckUpdate.isEnabled = true
-                    updateState = UpdateState.CHECK
-                    tvUpdateStatus.text = "Failed checking updates: ${e.localizedMessage}"
-                    btnCheckUpdate.text = "Check for Updates"
-                }
+                isFetchingReleases = false
+                pbDownload.visibility = View.GONE
+                btnCheckUpdate.isEnabled = true
+                btnLatestAction.isEnabled = true
+                tvUpdateStatus.text = "Error: ${e.localizedMessage ?: "Failed querying releases"}"
+                tvHistoryStatus.text = "Failed loading releases: ${e.localizedMessage}"
             }
         }
     }
 
-    private fun downloadAndPromptInstall(apkUrl: String, tagName: String) {
+    private fun loadMoreReleases() {
+        if (isFetchingReleases || !hasMorePages) return
+        isFetchingReleases = true
+        btnLoadMoreReleases.isEnabled = false
+        btnLoadMoreReleases.text = "Loading..."
+
+        val nextPage = currentPage + 1
+        lifecycleScope.launch(Dispatchers.Main) {
+            try {
+                val result = updateRepo.fetchReleases(page = nextPage, forceRefresh = true)
+                isFetchingReleases = false
+                btnLoadMoreReleases.isEnabled = true
+                btnLoadMoreReleases.text = "Load More Releases"
+
+                if (result.releases.isNotEmpty()) {
+                    currentPage = nextPage
+                    hasMorePages = result.hasMorePages
+                    allLoadedReleases.addAll(result.releases)
+                    renderReleaseHistoryList()
+                } else {
+                    hasMorePages = false
+                    btnLoadMoreReleases.visibility = View.GONE
+                }
+            } catch (e: Exception) {
+                isFetchingReleases = false
+                btnLoadMoreReleases.isEnabled = true
+                btnLoadMoreReleases.text = "Retry Loading More"
+                Toast.makeText(this@SettingsActivity, "Failed loading more: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun updateLatestCandidateView() {
+        val preferredChannel = updateRepo.getPreferredChannel()
+        latestCandidate = updateRepo.findLatestCandidate(allLoadedReleases, preferredChannel)
+
+        val candidate = latestCandidate
+        if (candidate == null) {
+            tvLatestTitle.text = "No releases available for ${preferredChannel.displayName}"
+            tvLatestMeta.text = ""
+            tvUpdateStatus.text = "No downloadable release asset found in this channel."
+            tvUpdateStatus.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
+            btnLatestAction.text = "Check Again"
+            return
+        }
+
+        val compatibility = VersionComparator.compare(candidate, buildInfo)
+        tvLatestTitle.text = "${candidate.tagName} (${candidate.channel.displayName})"
+        val commitText = candidate.commitShort?.let { "• Commit: $it " } ?: ""
+        tvLatestMeta.text = "Published: ${candidate.formattedPublishDate} • ${candidate.formattedSize} $commitText"
+
+        when (compatibility) {
+            UpdateCompatibility.NEWER -> {
+                tvUpdateStatus.text = "Newer update available for installation."
+                tvUpdateStatus.setTextColor(ContextCompat.getColor(this, R.color.status_green))
+                btnLatestAction.text = "Update to ${candidate.cleanVersion}"
+            }
+            UpdateCompatibility.SAME -> {
+                tvUpdateStatus.text = "You are on the latest version."
+                tvUpdateStatus.setTextColor(ContextCompat.getColor(this, R.color.status_blue))
+                btnLatestAction.text = "Re-install (${candidate.cleanVersion})"
+            }
+            UpdateCompatibility.OLDER -> {
+                tvUpdateStatus.text = "Older release selected (Rollback path)."
+                tvUpdateStatus.setTextColor(ContextCompat.getColor(this, R.color.status_orange))
+                btnLatestAction.text = "Rollback (${candidate.cleanVersion})"
+            }
+        }
+    }
+
+    private fun renderReleaseHistoryList() {
+        llReleaseHistoryList.removeAllViews()
+
+        val filterChannel = when (rgHistoryFilter.checkedRadioButtonId) {
+            R.id.rb_filter_stable -> ReleaseChannel.STABLE
+            R.id.rb_filter_nightly -> ReleaseChannel.NIGHTLY
+            else -> null
+        }
+
+        val filtered = allLoadedReleases.filter { release ->
+            filterChannel == null || release.channel == filterChannel
+        }
+
+        if (filtered.isEmpty()) {
+            tvHistoryStatus.text = if (allLoadedReleases.isEmpty()) "No releases found." else "No releases match selected filter."
+            tvHistoryStatus.visibility = View.VISIBLE
+        } else {
+            tvHistoryStatus.text = "Showing ${filtered.size} of ${allLoadedReleases.size} loaded releases"
+            tvHistoryStatus.visibility = View.VISIBLE
+
+            for (release in filtered) {
+                val itemView = layoutInflater.inflate(R.layout.item_release_history, llReleaseHistoryList, false)
+                val tvTag = itemView.findViewById<TextView>(R.id.tv_item_tag)
+                val tvChannelPill = itemView.findViewById<TextView>(R.id.tv_item_channel_badge)
+                val tvStatusPill = itemView.findViewById<TextView>(R.id.tv_item_status_badge)
+                val tvMeta = itemView.findViewById<TextView>(R.id.tv_item_meta)
+                val tvNotes = itemView.findViewById<TextView>(R.id.tv_item_notes_preview)
+                val btnDetails = itemView.findViewById<MaterialButton>(R.id.btn_item_details)
+                val btnAction = itemView.findViewById<MaterialButton>(R.id.btn_item_action)
+
+                tvTag.text = release.tagName
+                tvChannelPill.text = release.channel.displayName
+                if (release.channel == ReleaseChannel.NIGHTLY) {
+                    tvChannelPill.setTextColor(ContextCompat.getColor(this, R.color.status_orange))
+                } else {
+                    tvChannelPill.setTextColor(ContextCompat.getColor(this, R.color.status_green))
+                }
+
+                val compatibility = VersionComparator.compare(release, buildInfo)
+                when (compatibility) {
+                    UpdateCompatibility.NEWER -> {
+                        tvStatusPill.text = "NEWER"
+                        tvStatusPill.setTextColor(ContextCompat.getColor(this, R.color.status_green))
+                        btnAction.text = "Update"
+                    }
+                    UpdateCompatibility.SAME -> {
+                        tvStatusPill.text = "INSTALLED"
+                        tvStatusPill.setTextColor(ContextCompat.getColor(this, R.color.status_blue))
+                        btnAction.text = "Installed"
+                    }
+                    UpdateCompatibility.OLDER -> {
+                        tvStatusPill.text = "OLDER"
+                        tvStatusPill.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
+                        btnAction.text = "Rollback"
+                    }
+                }
+
+                val commitStr = release.commitShort?.let { "• $it " } ?: ""
+                tvMeta.text = "Published: ${release.formattedPublishDate} • ${release.formattedSize} $commitStr"
+
+                val cleanedNotes = release.body.lines()
+                    .filter { !it.startsWith("<!--") && it.isNotBlank() }
+                    .take(2)
+                    .joinToString(" ")
+                    .replace("#", "")
+                    .trim()
+                tvNotes.text = if (cleanedNotes.isNotEmpty()) cleanedNotes else "Release asset available on GitHub."
+
+                btnDetails.setOnClickListener {
+                    showReleaseDetailsDialog(release)
+                }
+
+                btnAction.setOnClickListener {
+                    handleReleaseAction(release)
+                }
+
+                llReleaseHistoryList.addView(itemView)
+            }
+        }
+
+        btnLoadMoreReleases.visibility = if (hasMorePages) View.VISIBLE else View.GONE
+    }
+
+    private fun handleReleaseAction(release: GithubRelease) {
+        val compatibility = VersionComparator.compare(release, buildInfo)
+        if (compatibility == UpdateCompatibility.OLDER) {
+            showRollbackDialog(release) {
+                downloadAndInstallRelease(release)
+            }
+        } else {
+            downloadAndInstallRelease(release)
+        }
+    }
+
+    private fun showRollbackDialog(release: GithubRelease, onProceed: () -> Unit) {
+        AlertDialog.Builder(this)
+            .setTitle("Older Version Selected (Rollback)")
+            .setMessage(
+                "Installed: ${buildInfo.displayVersion}\n" +
+                "Selected:  Version ${release.cleanVersion} (Build ${release.parsedVersionCode ?: "unknown"})\n\n" +
+                "Android System Restriction:\n" +
+                "Android security policy normally prevents installing an older version over a newer one without uninstalling the current version first.\n\n" +
+                "Recommended Rollback Steps:\n" +
+                "1. Tap 'Proceed' to download the APK.\n" +
+                "2. If the Android installer blocks the downgrade, uninstall Simple Audio Stream from your device Settings.\n" +
+                "   (Note: Uninstalling clears local preferences).\n" +
+                "3. Open the downloaded APK from Downloads or Cache to install.\n\n" +
+                "Alternatively, via ADB (preserves data):\n" +
+                "adb install -d -r simple-audio-stream-${release.tagName}.apk"
+            )
+            .setPositiveButton("Proceed to Download & Install") { _, _ ->
+                onProceed()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showReleaseDetailsDialog(release: GithubRelease) {
+        val dialogView = layoutInflater.inflate(R.layout.dialog_release_details, null)
+        val tvTag = dialogView.findViewById<TextView>(R.id.tv_dialog_tag)
+        val tvChannel = dialogView.findViewById<TextView>(R.id.tv_dialog_channel_pill)
+        val tvPublished = dialogView.findViewById<TextView>(R.id.tv_dialog_published)
+        val tvCommit = dialogView.findViewById<TextView>(R.id.tv_dialog_commit)
+        val tvApkInfo = dialogView.findViewById<TextView>(R.id.tv_dialog_apk_info)
+        val tvCompat = dialogView.findViewById<TextView>(R.id.tv_dialog_compatibility)
+        val tvNotes = dialogView.findViewById<TextView>(R.id.tv_dialog_notes)
+        val btnClose = dialogView.findViewById<MaterialButton>(R.id.btn_dialog_close)
+        val btnAction = dialogView.findViewById<MaterialButton>(R.id.btn_dialog_action)
+
+        tvTag.text = release.name.ifEmpty { release.tagName }
+        tvChannel.text = release.channel.displayName
+        if (release.channel == ReleaseChannel.NIGHTLY) {
+            tvChannel.setTextColor(ContextCompat.getColor(this, R.color.status_orange))
+        } else {
+            tvChannel.setTextColor(ContextCompat.getColor(this, R.color.status_green))
+        }
+
+        tvPublished.text = "Published: ${release.formattedPublishDate}"
+        tvCommit.text = "Git Commit: ${release.commitSha ?: "unknown"}"
+        val checksumStatus = if (release.checksumAsset != null) "SHA-256 Available" else "No checksum published"
+        tvApkInfo.text = "APK Size: ${release.formattedSize} • $checksumStatus"
+
+        val compatibility = VersionComparator.compare(release, buildInfo)
+        when (compatibility) {
+            UpdateCompatibility.NEWER -> {
+                tvCompat.text = "Status: Newer than installed (Update Available)"
+                tvCompat.setTextColor(ContextCompat.getColor(this, R.color.status_green))
+                btnAction.text = "Download & Install"
+            }
+            UpdateCompatibility.SAME -> {
+                tvCompat.text = "Status: Matches installed version"
+                tvCompat.setTextColor(ContextCompat.getColor(this, R.color.status_blue))
+                btnAction.text = "Re-install APK"
+            }
+            UpdateCompatibility.OLDER -> {
+                tvCompat.text = "Status: Older than installed (Rollback requires uninstall)"
+                tvCompat.setTextColor(ContextCompat.getColor(this, R.color.status_orange))
+                btnAction.text = "Rollback"
+            }
+        }
+
+        tvNotes.text = release.body.ifEmpty { "No release notes published for this release." }
+
+        val dialog = AlertDialog.Builder(this)
+            .setView(dialogView)
+            .create()
+
+        btnClose.setOnClickListener { dialog.dismiss() }
+        btnAction.setOnClickListener {
+            dialog.dismiss()
+            handleReleaseAction(release)
+        }
+
+        dialog.show()
+    }
+
+    private fun downloadAndInstallRelease(release: GithubRelease) {
         btnCheckUpdate.isEnabled = false
-        btnCheckUpdate.text = "Downloading..."
+        btnLatestAction.isEnabled = false
         pbDownload.visibility = View.VISIBLE
         pbDownload.isIndeterminate = false
         pbDownload.progress = 0
-        tvUpdateStatus.text = "Downloading APK from GitHub ($tagName)..."
+        tvDownloadProgress.visibility = View.VISIBLE
+        tvDownloadProgress.text = "Starting download for ${release.tagName}..."
+        tvUpdateStatus.text = "Downloading APK: ${release.tagName}..."
 
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                val targetDir = cacheDir
-                val apkFile = File(targetDir, "simple-audio-stream-$tagName.apk")
-                listOfNotNull(cacheDir, externalCacheDir).forEach { dir ->
-                    val f = File(dir, "simple-audio-stream-$tagName.apk")
-                    if (f.exists()) f.delete()
-                }
-
-                var currentUrl = apkUrl
-                var redirectCount = 0
-                var conn: HttpURLConnection
-
-                while (true) {
-                    val url = URL(currentUrl)
-                    conn = url.openConnection() as HttpURLConnection
-                    conn.connectTimeout = 15000
-                    conn.readTimeout = 15000
-                    conn.instanceFollowRedirects = false
-                    conn.setRequestProperty("User-Agent", "SimpleAudioStream-Android")
-
-                    val code = conn.responseCode
-                    if (code in 301..308) {
-                        currentUrl = conn.getHeaderField("Location")
-                        redirectCount++
-                        if (redirectCount > 5) throw RuntimeException("Too many redirects")
-                    } else if (code == 200) {
-                        break
-                    } else {
-                        throw RuntimeException("HTTP $code on download")
-                    }
-                }
-
-                val totalLength = conn.contentLength
-                var downloadedBytes = 0L
-
-                conn.inputStream.use { input ->
-                    FileOutputStream(apkFile).use { output ->
-                        val buffer = ByteArray(8192)
-                        var bytesRead: Int
-                        while (input.read(buffer).also { bytesRead = it } != -1) {
-                            output.write(buffer, 0, bytesRead)
-                            downloadedBytes += bytesRead
-                            if (totalLength > 0) {
-                                val progress = ((downloadedBytes * 100) / totalLength).toInt()
-                                withContext(Dispatchers.Main) {
-                                    pbDownload.progress = progress
-                                    tvUpdateStatus.text = "Downloading: $progress% (${downloadedBytes / 1024 / 1024}MB / ${totalLength / 1024 / 1024}MB)"
-                                }
-                            }
-                        }
-                    }
-                }
-
-                downloadedApkFile = apkFile
-
-                withContext(Dispatchers.Main) {
-                    pbDownload.visibility = View.GONE
-                    btnCheckUpdate.isEnabled = true
-                    btnCheckUpdate.text = "Install APK ($tagName)"
-                    updateState = UpdateState.INSTALL
-                    tvUpdateStatus.text = "Download complete! Opening package installer..."
-
-                    checkPermissionAndInstall(apkFile)
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    pbDownload.visibility = View.GONE
-                    btnCheckUpdate.isEnabled = true
-                    btnCheckUpdate.text = "Retry Download"
-                    updateState = UpdateState.DOWNLOAD
-                    tvUpdateStatus.text = "Download failed: ${e.localizedMessage}"
+        lifecycleScope.launch(Dispatchers.Main) {
+            val result = updateDownloader.downloadAndVerify(release) { percent, downloaded, total ->
+                runOnUiThread {
+                    pbDownload.progress = percent
+                    val mbDownloaded = downloaded / (1024.0 * 1024.0)
+                    val mbTotal = total / (1024.0 * 1024.0)
+                    tvDownloadProgress.text = String.format(
+                        Locale.US,
+                        "Downloading: %d%% (%.1f MB / %.1f MB)",
+                        percent,
+                        mbDownloaded,
+                        mbTotal
+                    )
                 }
             }
-        }
-    }
 
-    private fun checkPermissionAndInstall(apkFile: File) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            if (!packageManager.canRequestPackageInstalls()) {
-                isWaitingForInstallPermission = true
-                Toast.makeText(this, "Allow 'Install unknown apps' permission to update", Toast.LENGTH_LONG).show()
-                val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                    data = Uri.parse("package:$packageName")
-                }
-                installPermissionLauncher.launch(intent)
-                return
-            }
-        }
-        isWaitingForInstallPermission = false
-        installApk(apkFile)
-    }
+            pbDownload.visibility = View.GONE
+            tvDownloadProgress.visibility = View.GONE
+            btnCheckUpdate.isEnabled = true
+            btnLatestAction.isEnabled = true
 
-    private fun installApk(apkFile: File) {
-        try {
-            apkFile.setReadable(true, false)
-            val contentUri = FileProvider.getUriForFile(
-                this,
-                "$packageName.fileprovider",
-                apkFile
-            )
+            result.onSuccess { downloadInfo ->
+                tvUpdateStatus.text = "Download verified (SHA-256: ${if (downloadInfo.isChecksumVerified) "Valid" else "N/A"}). Opening installer..."
+                pendingInstallApk = downloadInfo.apkFile
 
-            val installIntent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(contentUri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
-            }
-
-            val resolveList = packageManager.queryIntentActivities(installIntent, PackageManager.MATCH_DEFAULT_ONLY)
-            for (resolveInfo in resolveList) {
-                grantUriPermission(
-                    resolveInfo.activityInfo.packageName,
-                    contentUri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                val preCheck = updateInstaller.checkPreInstall(
+                    targetVersionCode = downloadInfo.archiveVersionCode,
+                    targetVersionName = downloadInfo.archiveVersionName,
+                    installed = buildInfo
                 )
-            }
 
-            startActivity(installIntent)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to launch installer", e)
-            Toast.makeText(this, "Failed to launch installer: ${e.message}", Toast.LENGTH_LONG).show()
+                when (preCheck) {
+                    is UpdateInstaller.PreInstallCheck.MissingInstallPermission -> {
+                        Toast.makeText(this@SettingsActivity, "Please grant 'Install unknown apps' permission", Toast.LENGTH_LONG).show()
+                        installPermissionLauncher.launch(updateInstaller.createPermissionIntent())
+                    }
+                    is UpdateInstaller.PreInstallCheck.DowngradeDetected -> {
+                        updateInstaller.launchInstallIntent(downloadInfo.apkFile)
+                    }
+                    is UpdateInstaller.PreInstallCheck.Ready -> {
+                        updateInstaller.launchInstallIntent(downloadInfo.apkFile)
+                    }
+                }
+            }.onFailure { error ->
+                tvUpdateStatus.text = "Download/Verification failed: ${error.localizedMessage}"
+                Toast.makeText(this@SettingsActivity, "Error: ${error.message}", Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -1214,12 +1337,12 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun checkInstallPermissionOnResume() {
-        if (isWaitingForInstallPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val file = pendingInstallApk
+        if (file != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (packageManager.canRequestPackageInstalls()) {
-                isWaitingForInstallPermission = false
-                val file = downloadedApkFile
-                if (file != null && file.exists() && file.length() > 500_000) {
-                    installApk(file)
+                pendingInstallApk = null
+                if (file.exists()) {
+                    updateInstaller.launchInstallIntent(file)
                 }
             }
         }

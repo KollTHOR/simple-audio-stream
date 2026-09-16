@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@color/card_bg"
+    android:padding="16dp">
+
+    <!-- Title and Tag -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/tv_dialog_tag"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Release v1.8.14"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="@color/text_primary" />
+
+        <TextView
+            android:id="@+id/tv_dialog_channel_pill"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Stable"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:textColor="@color/status_green"
+            android:background="@drawable/bg_stat_badge"
+            android:paddingHorizontal="8dp"
+            android:paddingVertical="3dp"
+            android:layout_marginStart="8dp" />
+    </LinearLayout>
+
+    <!-- Metadata breakdown -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:background="@drawable/bg_stat_badge"
+        android:padding="10dp"
+        android:layout_marginTop="10dp">
+
+        <TextView
+            android:id="@+id/tv_dialog_published"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Published: 2026-09-16"
+            android:textSize="12sp"
+            android:textColor="@color/text_secondary" />
+
+        <TextView
+            android:id="@+id/tv_dialog_commit"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Git Commit: abc1234"
+            android:textSize="12sp"
+            android:textColor="@color/text_secondary"
+            android:layout_marginTop="2dp" />
+
+        <TextView
+            android:id="@+id/tv_dialog_apk_info"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="APK Size: 11.2 MB • SHA-256 Verified"
+            android:textSize="12sp"
+            android:textColor="@color/text_secondary"
+            android:layout_marginTop="2dp" />
+
+        <TextView
+            android:id="@+id/tv_dialog_compatibility"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Status: Newer than installed (Update Available)"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:textColor="@color/status_blue"
+            android:layout_marginTop="4dp" />
+    </LinearLayout>
+
+    <!-- Release Notes Scrollable Area -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="RELEASE NOTES"
+        android:textSize="11sp"
+        android:textStyle="bold"
+        android:textColor="@color/text_hint"
+        android:letterSpacing="0.05"
+        android:layout_marginTop="14dp"
+        android:layout_marginBottom="6dp" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="180dp"
+        android:background="@drawable/bg_stat_badge"
+        android:padding="10dp">
+
+        <TextView
+            android:id="@+id/tv_dialog_notes"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Full release notes..."
+            android:textSize="13sp"
+            android:textColor="@color/text_primary"
+            android:lineSpacingMultiplier="1.2" />
+    </ScrollView>
+
+    <!-- Dialog Actions -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="end"
+        android:layout_marginTop="14dp">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_dialog_close"
+            style="@style/Widget.MaterialComponents.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="@dimen/toggle_height"
+            android:text="Close"
+            android:textSize="13sp"
+            android:textColor="@color/text_secondary"
+            android:layout_marginEnd="8dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_dialog_action"
+            android:layout_width="wrap_content"
+            android:layout_height="@dimen/toggle_height"
+            android:text="Install Update"
+            android:textSize="13sp"
+            android:textColor="@color/white"
+            app:backgroundTint="@color/primary"
+            app:cornerRadius="8dp" />
+    </LinearLayout>
+</LinearLayout>

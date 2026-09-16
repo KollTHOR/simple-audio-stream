@@ -1630,6 +1630,7 @@
                 android:orientation="vertical"
                 android:visibility="gone">
 
+                <!-- 1. Current Installation Card -->
                 <com.google.android.material.card.MaterialCardView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -1649,7 +1650,7 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="APP UPDATES"
+                            android:text="CURRENT INSTALLATION"
                             android:textSize="11sp"
                             android:textStyle="bold"
                             android:textColor="@color/text_hint"
@@ -1660,32 +1661,20 @@
                             android:id="@+id/tv_app_version"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="Installed: Version 1.8.13 (Build 66)"
-                            android:textSize="13sp"
-                            android:textColor="@color/text_secondary"
-                            android:layout_marginBottom="12dp" />
+                            android:text="Installed: Version 1.8.14 (Build 67)"
+                            android:textSize="15sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_primary" />
 
                         <TextView
-                            android:id="@+id/tv_update_status"
+                            android:id="@+id/tv_installed_details"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:text="Check GitHub releases for latest features, fixes, and improvements."
-                            android:textSize="13sp"
-                            android:textColor="@color/text_primary"
-                            android:layout_marginBottom="12dp"
-                            android:lineSpacingMultiplier="1.2" />
-
-                        <ProgressBar
-                            android:id="@+id/pb_download"
-                            style="?android:attr/progressBarStyleHorizontal"
-                            android:layout_width="match_parent"
-                            android:layout_height="@dimen/progress_height"
-                            android:layout_marginBottom="12dp"
-                            android:max="100"
-                            android:progress="0"
-                            android:visibility="gone"
-                            android:progressBackgroundTint="#272732"
-                            android:progressTint="@color/primary" />
+                            android:text="Channel: Stable • Commit: unknown"
+                            android:textSize="12sp"
+                            android:textColor="@color/text_secondary"
+                            android:layout_marginTop="4dp"
+                            android:layout_marginBottom="12dp" />
 
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/btn_check_update"
@@ -1697,6 +1686,269 @@
                             android:textColor="@color/white"
                             app:backgroundTint="@color/primary"
                             app:cornerRadius="8dp" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- 2. Release Channel Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="RELEASE CHANNEL"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_hint"
+                            android:letterSpacing="0.05"
+                            android:layout_marginBottom="8dp" />
+
+                        <RadioGroup
+                            android:id="@+id/rg_update_channel"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content">
+
+                            <RadioButton
+                                android:id="@+id/rb_channel_stable"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:text="Stable (Official production releases)"
+                                android:textColor="@color/text_primary"
+                                android:textSize="13sp"
+                                android:checked="true"
+                                android:buttonTint="@color/primary" />
+
+                            <RadioButton
+                                android:id="@+id/rb_channel_nightly"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:text="Nightly (Automated development builds)"
+                                android:textColor="@color/text_primary"
+                                android:textSize="13sp"
+                                android:buttonTint="@color/primary"
+                                android:layout_marginTop="4dp" />
+                        </RadioGroup>
+
+                        <TextView
+                            android:id="@+id/tv_channel_description"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Stable provides validated releases. Nightly includes latest experimental changes."
+                            android:textSize="11sp"
+                            android:textColor="@color/text_hint"
+                            android:layout_marginTop="8dp" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- 3. Latest Available Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/card_latest_release"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="LATEST AVAILABLE"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_hint"
+                            android:letterSpacing="0.05"
+                            android:layout_marginBottom="8dp" />
+
+                        <TextView
+                            android:id="@+id/tv_latest_title"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Checking for latest release..."
+                            android:textSize="15sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_primary" />
+
+                        <TextView
+                            android:id="@+id/tv_latest_meta"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text=""
+                            android:textSize="12sp"
+                            android:textColor="@color/text_secondary"
+                            android:layout_marginTop="2dp" />
+
+                        <TextView
+                            android:id="@+id/tv_update_status"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Tap 'Check for Updates' to query GitHub."
+                            android:textSize="13sp"
+                            android:textColor="@color/text_primary"
+                            android:layout_marginTop="6dp"
+                            android:layout_marginBottom="10dp"
+                            android:lineSpacingMultiplier="1.2" />
+
+                        <ProgressBar
+                            android:id="@+id/pb_download"
+                            style="?android:attr/progressBarStyleHorizontal"
+                            android:layout_width="match_parent"
+                            android:layout_height="@dimen/progress_height"
+                            android:layout_marginBottom="6dp"
+                            android:max="100"
+                            android:progress="0"
+                            android:visibility="gone"
+                            android:progressBackgroundTint="#272732"
+                            android:progressTint="@color/primary" />
+
+                        <TextView
+                            android:id="@+id/tv_download_progress"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text=""
+                            android:textSize="11sp"
+                            android:textColor="@color/text_secondary"
+                            android:visibility="gone"
+                            android:layout_marginBottom="10dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_latest_action"
+                            android:layout_width="match_parent"
+                            android:layout_height="@dimen/btn_height"
+                            android:text="Check for Updates"
+                            android:textSize="14sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/white"
+                            app:backgroundTint="@color/primary"
+                            app:cornerRadius="8dp" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- 4. Release History Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
+
+                        <!-- Title and Filter Chips -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="10dp">
+
+                            <TextView
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="RELEASE HISTORY"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_hint"
+                                android:letterSpacing="0.05" />
+
+                            <RadioGroup
+                                android:id="@+id/rg_history_filter"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:orientation="horizontal">
+
+                                <RadioButton
+                                    android:id="@+id/rb_filter_all"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="All"
+                                    android:textSize="11sp"
+                                    android:textColor="@color/text_secondary"
+                                    android:buttonTint="@color/primary"
+                                    android:checked="true"
+                                    android:paddingEnd="6dp" />
+
+                                <RadioButton
+                                    android:id="@+id/rb_filter_stable"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Stable"
+                                    android:textSize="11sp"
+                                    android:textColor="@color/text_secondary"
+                                    android:buttonTint="@color/primary"
+                                    android:paddingEnd="6dp" />
+
+                                <RadioButton
+                                    android:id="@+id/rb_filter_nightly"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Nightly"
+                                    android:textSize="11sp"
+                                    android:textColor="@color/text_secondary"
+                                    android:buttonTint="@color/primary" />
+                            </RadioGroup>
+                        </LinearLayout>
+
+                        <!-- Dynamic List of History Releases -->
+                        <LinearLayout
+                            android:id="@+id/ll_release_history_list"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical" />
+
+                        <!-- Status text / loading indicator -->
+                        <TextView
+                            android:id="@+id/tv_history_status"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="No releases loaded yet."
+                            android:textSize="12sp"
+                            android:textColor="@color/text_hint"
+                            android:gravity="center"
+                            android:paddingVertical="10dp" />
+
+                        <!-- Load More Button -->
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_load_more_releases"
+                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                            android:layout_width="match_parent"
+                            android:layout_height="@dimen/toggle_height"
+                            android:text="Load More Releases"
+                            android:textSize="13sp"
+                            android:textColor="@color/text_primary"
+                            app:strokeColor="@color/card_stroke"
+                            app:cornerRadius="8dp"
+                            android:visibility="gone"
+                            android:layout_marginTop="8dp" />
                     </LinearLayout>
                 </com.google.android.material.card.MaterialCardView>
             </LinearLayout>
