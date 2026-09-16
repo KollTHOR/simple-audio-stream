@@ -14,8 +14,8 @@ android {
         applicationId = "com.example.audiostreamer"
         minSdk = 29
         targetSdk = 35
-        versionCode = 64
-        versionName = "1.8.11"
+        versionCode = 65
+        versionName = "1.8.12"
     }
 
     val keystorePropsFile = rootProject.file("keystore.properties")
