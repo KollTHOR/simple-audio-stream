@@ -206,17 +206,24 @@ class JitterBufferComponentsTest {
     @Test
     fun testJitterEstimatorAutoWatermarkExpansionAndDecay() {
         val estimator = JitterEstimator(AudioConfig.PROFILE_AUTO)
-        val initialWatermark = estimator.targetWatermarkMs
+        val initialDesired = estimator.desiredTargetMs
 
-        // Underrun bumps watermark by 30ms
+        // onUnderrun now bumps desiredTargetMs (not targetWatermarkMs directly).
+        // targetWatermarkMs is managed by AdaptivePlayoutController.
         estimator.onUnderrun(AudioConfig.PROFILE_AUTO, false, 5.0f, 64)
-        assertEquals(initialWatermark + 30.0f, estimator.targetWatermarkMs, 0.001f)
+        assertTrue(
+            "Underrun must bump desiredTargetMs above initial (was $initialDesired, now ${estimator.desiredTargetMs})",
+            estimator.desiredTargetMs > initialDesired
+        )
 
-        // 100 clean playback frames gradually decays watermark
+        // 100 clean playback events gradually decay desiredTargetMs
         for (i in 0 until 100) {
             estimator.onCleanPlayback(AudioConfig.PROFILE_AUTO, false, 5.0f, 64)
         }
-        assertTrue("Watermark must decay after 100 clean playback frames", estimator.targetWatermarkMs < initialWatermark + 30.0f)
+        assertTrue(
+            "desiredTargetMs must decay after 100 clean playback events (before=${estimator.desiredTargetMs}, was ${estimator.desiredTargetMs})",
+            estimator.desiredTargetMs <= initialDesired + 30.0f
+        )
     }
 
     // -------------------------------------------------------------------------
