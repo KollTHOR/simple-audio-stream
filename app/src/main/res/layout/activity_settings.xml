@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/root_settings"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -22,19 +23,19 @@
             android:orientation="vertical"
             android:padding="@dimen/screen_padding">
 
-            <!-- Top Header Bar with Back Button -->
+            <!-- Top Header Bar with Back Button & Dynamic Title -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
                 android:gravity="center_vertical"
-                android:layout_marginBottom="@dimen/card_spacing">
+                android:layout_marginBottom="16dp">
 
                 <ImageView
                     android:id="@+id/btn_back"
-                    android:layout_width="36dp"
-                    android:layout_height="36dp"
-                    android:padding="6dp"
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:padding="7dp"
                     android:src="@drawable/ic_back"
                     app:tint="@color/white"
                     android:background="?attr/selectableItemBackgroundBorderless"
@@ -42,985 +43,1736 @@
                     android:focusable="true"
                     android:contentDescription="Back" />
 
-                <TextView
+                <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="Settings &amp; About"
-                    android:textSize="@dimen/title_text_size"
-                    android:textStyle="bold"
-                    android:textColor="@color/text_primary"
-                    android:layout_marginStart="8dp" />
-            </LinearLayout>
-
-            <!-- App Info Card -->
-            <com.google.android.material.card.MaterialCardView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="@dimen/card_spacing"
-                app:cardCornerRadius="14dp"
-                app:cardElevation="1dp"
-                app:strokeColor="@color/card_stroke"
-                app:strokeWidth="1dp"
-                app:cardBackgroundColor="@color/card_bg">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
                     android:orientation="vertical"
-                    android:padding="@dimen/card_inner_padding">
+                    android:layout_marginStart="8dp">
 
                     <TextView
+                        android:id="@+id/tv_settings_title"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="ABOUT THIS APP"
-                        android:textSize="11sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/text_hint"
-                        android:letterSpacing="0.05"
-                        android:layout_marginBottom="8dp" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/app_name"
-                        android:textSize="17sp"
+                        android:text="Settings"
+                        android:textSize="20sp"
                         android:textStyle="bold"
                         android:textColor="@color/text_primary" />
 
                     <TextView
-                        android:id="@+id/tv_app_version"
+                        android:id="@+id/tv_settings_subtitle"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Version 1.0.0"
-                        android:textSize="13sp"
-                        android:textColor="@color/text_secondary"
-                        android:layout_marginTop="2dp"
-                        android:layout_marginBottom="14dp" />
-
-                    <!-- GitHub Repo Link Button -->
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btn_github_repo"
-                        style="?attr/materialButtonOutlinedStyle"
-                        android:layout_width="match_parent"
-                        android:layout_height="@dimen/btn_height"
-                        android:text="GitHub Repository"
-                        android:textSize="13sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/text_primary"
-                        app:strokeColor="@color/card_stroke"
-                        app:cornerRadius="8dp"
-                        app:icon="@drawable/ic_github"
-                        app:iconTint="@color/white"
-                        app:iconGravity="textStart"
-                        app:iconPadding="8dp"
-                        app:iconSize="18dp" />
-
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
-
-            <!-- Streaming Profile Card -->
-            <com.google.android.material.card.MaterialCardView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="@dimen/card_spacing"
-                app:cardCornerRadius="14dp"
-                app:cardElevation="1dp"
-                app:strokeColor="@color/card_stroke"
-                app:strokeWidth="1dp"
-                app:cardBackgroundColor="@color/card_bg">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="@dimen/card_inner_padding">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="STREAMING PROFILE"
-                        android:textSize="11sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/text_hint"
-                        android:letterSpacing="0.05"
-                        android:layout_marginBottom="8dp" />
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="Choose playback strategy based on your listening scenario:"
-                        android:textSize="13sp"
-                        android:textColor="@color/text_secondary"
-                        android:layout_marginBottom="12dp" />
-
-                    <com.google.android.material.button.MaterialButtonToggleGroup
-                        android:id="@+id/toggle_profile_group"
-                        android:layout_width="match_parent"
-                        android:layout_height="@dimen/toggle_height"
-                        android:layout_marginBottom="10dp"
-                        app:singleSelection="true"
-                        app:selectionRequired="true"
-                        app:checkedButton="@+id/btn_profile_auto">
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/btn_profile_auto"
-                            style="?attr/materialButtonOutlinedStyle"
-                            android:layout_width="0dp"
-                            android:layout_height="match_parent"
-                            android:layout_weight="1"
-                            android:text="Auto Adaptive"
-                            android:textSize="11sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary"
-                            app:strokeColor="@color/card_stroke"
-                            app:cornerRadius="8dp" />
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/btn_profile_video"
-                            style="?attr/materialButtonOutlinedStyle"
-                            android:layout_width="0dp"
-                            android:layout_height="match_parent"
-                            android:layout_weight="1"
-                            android:text="Low Latency (Opus)"
-                            android:textSize="11sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary"
-                            app:strokeColor="@color/card_stroke"
-                            app:cornerRadius="8dp" />
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/btn_profile_music"
-                            style="?attr/materialButtonOutlinedStyle"
-                            android:layout_width="0dp"
-                            android:layout_height="match_parent"
-                            android:layout_weight="1"
-                            android:text="Uncapped Music"
-                            android:textSize="11sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary"
-                            app:strokeColor="@color/card_stroke"
-                            app:cornerRadius="8dp" />
-                    </com.google.android.material.button.MaterialButtonToggleGroup>
-
-                    <TextView
-                        android:id="@+id/tv_profile_description"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="Music Mode (500ms): Deep 500ms buffer with 2.56s headroom. Lossless 24-bit studio quality for uninterrupted listening."
+                        android:text="Audio Streamer"
                         android:textSize="12sp"
-                        android:textColor="@color/text_hint"
-                        android:lineSpacingMultiplier="1.15" />
-
+                        android:textColor="@color/text_secondary" />
                 </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
+            </LinearLayout>
 
-            <!-- Detected Audio Stats Card -->
-            <com.google.android.material.card.MaterialCardView
-                android:id="@+id/card_audio_stats"
+            <!-- ================================================================= -->
+            <!-- 0. TOP-LEVEL CATEGORY MENU                                        -->
+            <!-- ================================================================= -->
+            <LinearLayout
+                android:id="@+id/layout_category_menu"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginBottom="@dimen/card_spacing"
-                app:cardCornerRadius="14dp"
-                app:cardElevation="1dp"
-                app:strokeColor="@color/card_stroke"
-                app:strokeWidth="1dp"
-                app:cardBackgroundColor="@color/card_bg">
+                android:orientation="vertical"
+                android:visibility="visible">
 
-                <LinearLayout
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="CATEGORIES"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/text_hint"
+                    android:letterSpacing="0.05"
+                    android:layout_marginBottom="10dp" />
+
+                <!-- Category 1: Audio -->
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/card_menu_audio"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="@dimen/card_inner_padding">
+                    android:layout_marginBottom="10dp"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:foreground="?attr/selectableItemBackground"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
 
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:orientation="horizontal"
                         android:gravity="center_vertical"
-                        android:layout_marginBottom="12dp">
+                        android:padding="14dp">
 
-                        <TextView
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="DETECTED AUDIO STATS"
-                            android:textSize="11sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_hint"
-                            android:letterSpacing="0.05" />
+                        <FrameLayout
+                            android:layout_width="42dp"
+                            android:layout_height="42dp"
+                            android:background="@drawable/bg_ip_pill">
 
-                        <ImageView
-                            android:id="@+id/btn_refresh_audio_stats"
-                            android:layout_width="28dp"
-                            android:layout_height="28dp"
-                            android:padding="4dp"
-                            android:src="@drawable/ic_refresh"
-                            app:tint="@color/text_secondary"
-                            android:background="?attr/selectableItemBackgroundBorderless"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:contentDescription="Refresh audio stats" />
-                    </LinearLayout>
-
-                    <!-- Row 1: Source / Capture Capability -->
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="horizontal"
-                        android:layout_marginBottom="8dp">
-
-                        <TextView
-                            android:layout_width="120dp"
-                            android:layout_height="wrap_content"
-                            android:text="Source Capability:"
-                            android:textSize="13sp"
-                            android:textColor="@color/text_secondary" />
-
-                        <TextView
-                            android:id="@+id/tv_source_capability"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="Android HAL: 24-bit • 48.0 kHz Stereo"
-                            android:textSize="13sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary" />
-                    </LinearLayout>
-
-                    <!-- Row 2: Receiver / Output Capability -->
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="horizontal"
-                        android:layout_marginBottom="8dp">
-
-                        <TextView
-                            android:layout_width="120dp"
-                            android:layout_height="wrap_content"
-                            android:text="Receiver Capability:"
-                            android:textSize="13sp"
-                            android:textColor="@color/text_secondary" />
-
-                        <TextView
-                            android:id="@+id/tv_receiver_capability"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="Pending receiver discovery"
-                            android:textSize="13sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_secondary" />
-                    </LinearLayout>
-
-                    <!-- Row 3: Active App / Source -->
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="horizontal"
-                        android:layout_marginBottom="8dp">
-
-                        <TextView
-                            android:layout_width="120dp"
-                            android:layout_height="wrap_content"
-                            android:text="Active Media:"
-                            android:textSize="13sp"
-                            android:textColor="@color/text_secondary" />
-
-                        <TextView
-                            android:id="@+id/tv_detected_media_app"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="Detecting..."
-                            android:textSize="13sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/status_green" />
-                    </LinearLayout>
-
-                    <!-- Row 4: Detected Media Format -->
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="horizontal"
-                        android:layout_marginBottom="8dp">
-
-                        <TextView
-                            android:layout_width="120dp"
-                            android:layout_height="wrap_content"
-                            android:text="Detected Format:"
-                            android:textSize="13sp"
-                            android:textColor="@color/text_secondary" />
-
-                        <TextView
-                            android:id="@+id/tv_detected_media_format"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="44.1 kHz • 16-bit"
-                            android:textSize="13sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary" />
-                    </LinearLayout>
-
-                    <!-- Row 5: Active Transmission Pipeline -->
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="horizontal"
-                        android:layout_marginBottom="10dp">
-
-                        <TextView
-                            android:layout_width="120dp"
-                            android:layout_height="wrap_content"
-                            android:text="Stream Pipeline:"
-                            android:textSize="13sp"
-                            android:textColor="@color/text_secondary" />
-
-                        <TextView
-                            android:id="@+id/tv_detected_stream_status"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="Idle (Not transmitting)"
-                            android:textSize="13sp"
-                            android:textColor="@color/text_secondary" />
-                    </LinearLayout>
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="Format is detected from active Android audio sessions (e.g. Tidal, Spotify, YouTube) to guide automatic bitrate and sampling selection."
-                        android:textSize="11sp"
-                        android:textColor="@color/text_hint"
-                        android:lineSpacingMultiplier="1.15" />
-
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
-
-            <!-- Server Sample Rate Card -->
-            <com.google.android.material.card.MaterialCardView
-                android:id="@+id/card_sample_rate"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="@dimen/card_spacing"
-                app:cardCornerRadius="14dp"
-                app:cardElevation="1dp"
-                app:strokeColor="@color/card_stroke"
-                app:strokeWidth="1dp"
-                app:cardBackgroundColor="@color/card_bg">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="@dimen/card_inner_padding">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="TRANSMITTER SAMPLE RATE"
-                        android:textSize="11sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/text_hint"
-                        android:letterSpacing="0.05"
-                        android:layout_marginBottom="8dp" />
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="Select studio master capture rate for Uncapped Music mode:"
-                        android:textSize="13sp"
-                        android:textColor="@color/text_secondary"
-                        android:layout_marginBottom="12dp" />
-
-                    <com.google.android.material.button.MaterialButtonToggleGroup
-                        android:id="@+id/toggle_rate_group"
-                        android:layout_width="match_parent"
-                        android:layout_height="@dimen/toggle_height"
-                        android:layout_marginBottom="10dp"
-                        app:singleSelection="true"
-                        app:selectionRequired="true"
-                        app:checkedButton="@+id/btn_rate_auto">
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/btn_rate_auto"
-                            style="?attr/materialButtonOutlinedStyle"
-                            android:layout_width="0dp"
-                            android:layout_height="match_parent"
-                            android:layout_weight="1"
-                            android:paddingStart="2dp"
-                            android:paddingEnd="2dp"
-                            android:text="Auto"
-                            android:textSize="11sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary"
-                            app:strokeColor="@color/card_stroke"
-                            app:cornerRadius="8dp" />
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/btn_rate_44k"
-                            style="?attr/materialButtonOutlinedStyle"
-                            android:layout_width="0dp"
-                            android:layout_height="match_parent"
-                            android:layout_weight="1"
-                            android:paddingStart="2dp"
-                            android:paddingEnd="2dp"
-                            android:text="44.1k"
-                            android:textSize="11sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary"
-                            app:strokeColor="@color/card_stroke"
-                            app:cornerRadius="8dp" />
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/btn_rate_48k"
-                            style="?attr/materialButtonOutlinedStyle"
-                            android:layout_width="0dp"
-                            android:layout_height="match_parent"
-                            android:layout_weight="1"
-                            android:paddingStart="2dp"
-                            android:paddingEnd="2dp"
-                            android:text="48.0k"
-                            android:textSize="11sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary"
-                            app:strokeColor="@color/card_stroke"
-                            app:cornerRadius="8dp" />
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/btn_rate_96k"
-                            style="?attr/materialButtonOutlinedStyle"
-                            android:layout_width="0dp"
-                            android:layout_height="match_parent"
-                            android:layout_weight="1"
-                            android:paddingStart="2dp"
-                            android:paddingEnd="2dp"
-                            android:text="96.0k"
-                            android:textSize="11sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary"
-                            app:strokeColor="@color/card_stroke"
-                            app:cornerRadius="8dp" />
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/btn_rate_192k"
-                            style="?attr/materialButtonOutlinedStyle"
-                            android:layout_width="0dp"
-                            android:layout_height="match_parent"
-                            android:layout_weight="1"
-                            android:paddingStart="2dp"
-                            android:paddingEnd="2dp"
-                            android:text="192k"
-                            android:textSize="11sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary"
-                            app:strokeColor="@color/card_stroke"
-                            app:cornerRadius="8dp" />
-                    </com.google.android.material.button.MaterialButtonToggleGroup>
-
-                    <TextView
-                        android:id="@+id/tv_rate_description"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="Auto: Synchronizes with active media playback (Tidal, Spotify, YouTube). Avoids audio resampler comb filtering."
-                        android:textSize="12sp"
-                        android:textColor="@color/text_hint"
-                        android:lineSpacingMultiplier="1.15" />
-
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
-
-            <!-- Server Bit Depth Card -->
-            <com.google.android.material.card.MaterialCardView
-                android:id="@+id/card_bit_depth"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="@dimen/card_spacing"
-                app:cardCornerRadius="14dp"
-                app:cardElevation="1dp"
-                app:strokeColor="@color/card_stroke"
-                app:strokeWidth="1dp"
-                app:cardBackgroundColor="@color/card_bg">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="@dimen/card_inner_padding">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="TRANSMITTER BIT DEPTH"
-                        android:textSize="11sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/text_hint"
-                        android:letterSpacing="0.05"
-                        android:layout_marginBottom="8dp" />
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="Select audio bit depth resolution:"
-                        android:textSize="13sp"
-                        android:textColor="@color/text_secondary"
-                        android:layout_marginBottom="12dp" />
-
-                    <com.google.android.material.button.MaterialButtonToggleGroup
-                        android:id="@+id/toggle_bit_group"
-                        android:layout_width="match_parent"
-                        android:layout_height="@dimen/toggle_height"
-                        android:layout_marginBottom="10dp"
-                        app:singleSelection="true"
-                        app:selectionRequired="true"
-                        app:checkedButton="@+id/btn_bit_auto">
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/btn_bit_auto"
-                            style="?attr/materialButtonOutlinedStyle"
-                            android:layout_width="0dp"
-                            android:layout_height="match_parent"
-                            android:layout_weight="1"
-                            android:text="Auto"
-                            android:textSize="11sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary"
-                            app:strokeColor="@color/card_stroke"
-                            app:cornerRadius="8dp" />
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/btn_bit_16"
-                            style="?attr/materialButtonOutlinedStyle"
-                            android:layout_width="0dp"
-                            android:layout_height="match_parent"
-                            android:layout_weight="1"
-                            android:text="16-bit"
-                            android:textSize="11sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary"
-                            app:strokeColor="@color/card_stroke"
-                            app:cornerRadius="8dp" />
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/btn_bit_24"
-                            style="?attr/materialButtonOutlinedStyle"
-                            android:layout_width="0dp"
-                            android:layout_height="match_parent"
-                            android:layout_weight="1"
-                            android:text="24-bit"
-                            android:textSize="11sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary"
-                            app:strokeColor="@color/card_stroke"
-                            app:cornerRadius="8dp" />
-                    </com.google.android.material.button.MaterialButtonToggleGroup>
-
-                    <TextView
-                        android:id="@+id/tv_bit_description"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="Auto: Automatically chooses 16-bit for standard CD/stream audio and 24-bit for Hi-Res (>=88.2 kHz)."
-                        android:textSize="12sp"
-                        android:textColor="@color/text_hint"
-                        android:lineSpacingMultiplier="1.15" />
-
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
-
-            <!-- Receiver Hardware Volume Sync Card -->
-            <com.google.android.material.card.MaterialCardView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="@dimen/card_spacing"
-                app:cardCornerRadius="14dp"
-                app:cardElevation="1dp"
-                app:strokeColor="@color/card_stroke"
-                app:strokeWidth="1dp"
-                app:cardBackgroundColor="@color/card_bg">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="@dimen/card_inner_padding">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="RECEIVER VOLUME SYNCHRONIZATION"
-                        android:textSize="11sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/text_hint"
-                        android:letterSpacing="0.05"
-                        android:layout_marginBottom="8dp" />
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="horizontal"
-                        android:gravity="center_vertical">
+                            <ImageView
+                                android:layout_width="22dp"
+                                android:layout_height="22dp"
+                                android:layout_gravity="center"
+                                android:src="@drawable/ic_category_audio"
+                                app:tint="@color/primary"
+                                android:contentDescription="Audio" />
+                        </FrameLayout>
 
                         <LinearLayout
                             android:layout_width="0dp"
                             android:layout_height="wrap_content"
                             android:layout_weight="1"
-                            android:orientation="vertical">
+                            android:orientation="vertical"
+                            android:layout_marginStart="12dp"
+                            android:layout_marginEnd="8dp">
 
                             <TextView
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="[Receiver Only] Sync System Media Slider"
-                                android:textSize="14sp"
+                                android:text="Audio"
+                                android:textSize="16sp"
                                 android:textStyle="bold"
                                 android:textColor="@color/text_primary" />
 
                             <TextView
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="When acting as a Receiver, also aligns the Android system media volume slider (STREAM_MUSIC) to match remote volume."
+                                android:text="Profiles, sample rate, bit depth, volume sync"
                                 android:textSize="12sp"
                                 android:textColor="@color/text_secondary"
                                 android:layout_marginTop="2dp" />
+
+                            <TextView
+                                android:id="@+id/tv_menu_audio_badge"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Auto Profile"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/status_blue"
+                                android:layout_marginTop="4dp" />
                         </LinearLayout>
 
-                        <com.google.android.material.switchmaterial.SwitchMaterial
-                            android:id="@+id/switch_sync_device_volume"
+                        <ImageView
+                            android:layout_width="20dp"
+                            android:layout_height="20dp"
+                            android:src="@drawable/ic_chevron_right"
+                            app:tint="@color/text_hint"
+                            android:contentDescription="Open" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- Category 2: Diagnostics -->
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/card_menu_diagnostics"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="10dp"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:foreground="?attr/selectableItemBackground"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:padding="14dp">
+
+                        <FrameLayout
+                            android:layout_width="42dp"
+                            android:layout_height="42dp"
+                            android:background="@drawable/bg_ip_pill">
+
+                            <ImageView
+                                android:layout_width="22dp"
+                                android:layout_height="22dp"
+                                android:layout_gravity="center"
+                                android:src="@drawable/ic_category_diagnostics"
+                                app:tint="@color/status_green"
+                                android:contentDescription="Diagnostics" />
+                        </FrameLayout>
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:orientation="vertical"
+                            android:layout_marginStart="12dp"
+                            android:layout_marginEnd="8dp">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Diagnostics"
+                                android:textSize="16sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Playout latency graph, jitter buffer, packet loss, pipeline status"
+                                android:textSize="12sp"
+                                android:textColor="@color/text_secondary"
+                                android:layout_marginTop="2dp" />
+
+                            <TextView
+                                android:id="@+id/tv_menu_diag_badge"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Observational Telemetry"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/status_green"
+                                android:layout_marginTop="4dp" />
+                        </LinearLayout>
+
+                        <ImageView
+                            android:layout_width="20dp"
+                            android:layout_height="20dp"
+                            android:src="@drawable/ic_chevron_right"
+                            app:tint="@color/text_hint"
+                            android:contentDescription="Open" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- Category 3: Updates -->
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/card_menu_updates"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="10dp"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:foreground="?attr/selectableItemBackground"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:padding="14dp">
+
+                        <FrameLayout
+                            android:layout_width="42dp"
+                            android:layout_height="42dp"
+                            android:background="@drawable/bg_ip_pill">
+
+                            <ImageView
+                                android:layout_width="22dp"
+                                android:layout_height="22dp"
+                                android:layout_gravity="center"
+                                android:src="@drawable/ic_category_updates"
+                                app:tint="@color/status_orange"
+                                android:contentDescription="Updates" />
+                        </FrameLayout>
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:orientation="vertical"
+                            android:layout_marginStart="12dp"
+                            android:layout_marginEnd="8dp">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Updates"
+                                android:textSize="16sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="GitHub release checker, direct APK updater"
+                                android:textSize="12sp"
+                                android:textColor="@color/text_secondary"
+                                android:layout_marginTop="2dp" />
+
+                            <TextView
+                                android:id="@+id/tv_menu_updates_badge"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="v1.8.11"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_hint"
+                                android:layout_marginTop="4dp" />
+                        </LinearLayout>
+
+                        <ImageView
+                            android:layout_width="20dp"
+                            android:layout_height="20dp"
+                            android:src="@drawable/ic_chevron_right"
+                            app:tint="@color/text_hint"
+                            android:contentDescription="Open" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- Category 4: About -->
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/card_menu_about"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="10dp"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:foreground="?attr/selectableItemBackground"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:padding="14dp">
+
+                        <FrameLayout
+                            android:layout_width="42dp"
+                            android:layout_height="42dp"
+                            android:background="@drawable/bg_ip_pill">
+
+                            <ImageView
+                                android:layout_width="22dp"
+                                android:layout_height="22dp"
+                                android:layout_gravity="center"
+                                android:src="@drawable/ic_category_about"
+                                app:tint="@color/pill_text"
+                                android:contentDescription="About" />
+                        </FrameLayout>
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:orientation="vertical"
+                            android:layout_marginStart="12dp"
+                            android:layout_marginEnd="8dp">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="About"
+                                android:textSize="16sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="App details, GitHub repository, setup guide"
+                                android:textSize="12sp"
+                                android:textColor="@color/text_secondary"
+                                android:layout_marginTop="2dp" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Simple Audio Stream"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_hint"
+                                android:layout_marginTop="4dp" />
+                        </LinearLayout>
+
+                        <ImageView
+                            android:layout_width="20dp"
+                            android:layout_height="20dp"
+                            android:src="@drawable/ic_chevron_right"
+                            app:tint="@color/text_hint"
+                            android:contentDescription="Open" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+            </LinearLayout>
+
+            <!-- ================================================================= -->
+            <!-- 1. CATEGORY: AUDIO                                                -->
+            <!-- ================================================================= -->
+            <LinearLayout
+                android:id="@+id/layout_category_audio"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <!-- Streaming Profile Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
+
+                        <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:checked="true" />
+                            android:text="STREAMING PROFILE"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_hint"
+                            android:letterSpacing="0.05"
+                            android:layout_marginBottom="8dp" />
+
+                        <com.google.android.material.button.MaterialButtonToggleGroup
+                            android:id="@+id/toggle_profile_group"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginBottom="10dp"
+                            app:singleSelection="true"
+                            app:selectionRequired="true">
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_profile_auto"
+                                style="?attr/materialButtonOutlinedStyle"
+                                android:layout_width="0dp"
+                                android:layout_height="@dimen/btn_height"
+                                android:layout_weight="1"
+                                android:text="Auto"
+                                android:textSize="13sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary"
+                                app:strokeColor="@color/card_stroke" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_profile_video"
+                                style="?attr/materialButtonOutlinedStyle"
+                                android:layout_width="0dp"
+                                android:layout_height="@dimen/btn_height"
+                                android:layout_weight="1.2"
+                                android:text="Low Latency"
+                                android:textSize="12sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary"
+                                app:strokeColor="@color/card_stroke" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_profile_music"
+                                style="?attr/materialButtonOutlinedStyle"
+                                android:layout_width="0dp"
+                                android:layout_height="@dimen/btn_height"
+                                android:layout_weight="1"
+                                android:text="Music"
+                                android:textSize="13sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary"
+                                app:strokeColor="@color/card_stroke" />
+                        </com.google.android.material.button.MaterialButtonToggleGroup>
+
+                        <TextView
+                            android:id="@+id/tv_profile_description"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Select profile"
+                            android:textSize="12sp"
+                            android:textColor="@color/text_secondary"
+                            android:lineSpacingMultiplier="1.2" />
                     </LinearLayout>
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
+                </com.google.android.material.card.MaterialCardView>
 
-            <!-- Optional: Hardware Volume Keys (Pocket Mode) Card -->
-            <com.google.android.material.card.MaterialCardView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="@dimen/card_spacing"
-                app:cardCornerRadius="14dp"
-                app:cardElevation="1dp"
-                app:strokeColor="@color/card_stroke"
-                app:strokeWidth="1dp"
-                app:cardBackgroundColor="@color/card_bg">
-
-                <LinearLayout
+                <!-- Sample Rate Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/card_sample_rate"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="@dimen/card_inner_padding">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="OPTIONAL: HARDWARE VOLUME KEYS (POCKET MODE)"
-                        android:textSize="11sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/text_hint"
-                        android:letterSpacing="0.05"
-                        android:layout_marginBottom="8dp" />
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="Allow your phone's physical volume buttons to adjust remote DAP volume when the screen is off or in other apps. Requires Android Accessibility to redirect volume keys and prevent phone speaker bleed."
-                        android:textSize="13sp"
-                        android:textColor="@color/text_secondary"
-                        android:layout_marginBottom="12dp" />
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="If Android shows 'Restricted setting', tap Step 1 to open App Info, tap the 3 dots at top-right, and select 'Allow restricted settings'."
-                        android:textSize="12sp"
-                        android:textColor="@color/text_hint"
-                        android:layout_marginBottom="10dp" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btn_app_info"
-                        style="?attr/materialButtonOutlinedStyle"
-                        android:layout_width="match_parent"
-                        android:layout_height="@dimen/btn_height"
-                        android:text="Step 1: Open App Info (Allow Restricted Settings)"
-                        android:textSize="12sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/text_primary"
-                        app:strokeColor="@color/card_stroke"
-                        app:cornerRadius="8dp"
-                        android:layout_marginBottom="8dp" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btn_accessibility_settings"
-                        style="?attr/materialButtonOutlinedStyle"
-                        android:layout_width="match_parent"
-                        android:layout_height="@dimen/btn_height"
-                        android:text="Step 2: Enable in Accessibility Settings"
-                        android:textSize="12sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/text_primary"
-                        app:strokeColor="@color/card_stroke"
-                        app:cornerRadius="8dp" />
-
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
-
-            <!-- Diagnostics & Logs Card -->
-            <com.google.android.material.card.MaterialCardView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="@dimen/card_spacing"
-                app:cardCornerRadius="14dp"
-                app:cardElevation="1dp"
-                app:strokeColor="@color/card_stroke"
-                app:strokeWidth="1dp"
-                app:cardBackgroundColor="@color/card_bg">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="@dimen/card_inner_padding">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="DIAGNOSTICS &amp; SYSTEM LOGS"
-                        android:textSize="11sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/text_hint"
-                        android:letterSpacing="0.05"
-                        android:layout_marginBottom="8dp" />
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="Inspect real-time buffer telemetry, audio HAL metrics, or export complete logs for troubleshooting."
-                        android:textSize="13sp"
-                        android:textColor="@color/text_secondary"
-                        android:layout_marginBottom="12dp" />
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
 
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:orientation="horizontal"
-                        android:layout_marginBottom="8dp">
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
 
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/btn_copy_logs"
-                            style="?attr/materialButtonOutlinedStyle"
-                            android:layout_width="0dp"
-                            android:layout_height="@dimen/btn_height"
-                            android:layout_weight="1"
-                            android:text="Copy to Clipboard"
-                            android:textSize="13sp"
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="SAMPLE RATE (MUSIC MODE)"
+                            android:textSize="11sp"
                             android:textStyle="bold"
-                            android:textColor="@color/text_primary"
-                            android:layout_marginEnd="6dp"
-                            app:strokeColor="@color/card_stroke"
-                            app:cornerRadius="8dp" />
+                            android:textColor="@color/text_hint"
+                            android:letterSpacing="0.05"
+                            android:layout_marginBottom="8dp" />
 
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/btn_share_logs"
-                            style="?attr/materialButtonOutlinedStyle"
-                            android:layout_width="0dp"
-                            android:layout_height="@dimen/btn_height"
-                            android:layout_weight="1"
-                            android:text="Export / Share"
-                            android:textSize="13sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary"
-                            android:layout_marginStart="6dp"
-                            app:strokeColor="@color/card_stroke"
-                            app:cornerRadius="8dp" />
+                        <com.google.android.material.button.MaterialButtonToggleGroup
+                            android:id="@+id/toggle_rate_group"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginBottom="10dp"
+                            app:singleSelection="true"
+                            app:selectionRequired="true">
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_rate_auto"
+                                style="?attr/materialButtonOutlinedStyle"
+                                android:layout_width="0dp"
+                                android:layout_height="@dimen/btn_height"
+                                android:layout_weight="1"
+                                android:text="Auto"
+                                android:textSize="12sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary"
+                                app:strokeColor="@color/card_stroke" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_rate_44k"
+                                style="?attr/materialButtonOutlinedStyle"
+                                android:layout_width="0dp"
+                                android:layout_height="@dimen/btn_height"
+                                android:layout_weight="1"
+                                android:text="44.1k"
+                                android:textSize="12sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary"
+                                app:strokeColor="@color/card_stroke" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_rate_48k"
+                                style="?attr/materialButtonOutlinedStyle"
+                                android:layout_width="0dp"
+                                android:layout_height="@dimen/btn_height"
+                                android:layout_weight="1"
+                                android:text="48.0k"
+                                android:textSize="12sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary"
+                                app:strokeColor="@color/card_stroke" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_rate_96k"
+                                style="?attr/materialButtonOutlinedStyle"
+                                android:layout_width="0dp"
+                                android:layout_height="@dimen/btn_height"
+                                android:layout_weight="1"
+                                android:text="96k (N/A)"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_hint"
+                                android:enabled="false"
+                                app:strokeColor="@color/card_stroke" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_rate_192k"
+                                style="?attr/materialButtonOutlinedStyle"
+                                android:layout_width="0dp"
+                                android:layout_height="@dimen/btn_height"
+                                android:layout_weight="1"
+                                android:text="192k (N/A)"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_hint"
+                                android:enabled="false"
+                                app:strokeColor="@color/card_stroke" />
+                        </com.google.android.material.button.MaterialButtonToggleGroup>
+
+                        <TextView
+                            android:id="@+id/tv_rate_description"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Configure sampling rate"
+                            android:textSize="12sp"
+                            android:textColor="@color/text_secondary"
+                            android:lineSpacingMultiplier="1.2" />
                     </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btn_view_logs"
-                        android:layout_width="match_parent"
-                        android:layout_height="@dimen/btn_height"
-                        android:text="View Live Logs"
-                        android:textSize="14sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/white"
-                        app:backgroundTint="@color/card_bg"
-                        app:strokeColor="@color/card_stroke"
-                        app:strokeWidth="1dp"
-                        app:cornerRadius="8dp" />
-
-                    <!-- Full HAT Test (automated diagnostic scenario sweep) -->
-                    <View
-                        android:layout_width="match_parent"
-                        android:layout_height="1dp"
-                        android:layout_marginTop="12dp"
-                        android:layout_marginBottom="12dp"
-                        android:background="@color/card_stroke" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="FULL HAT TEST"
-                        android:textSize="11sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/text_hint"
-                        android:letterSpacing="0.05"
-                        android:layout_marginBottom="8dp" />
-
-                    <TextView
-                        android:id="@+id/tv_hat_test_state"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="Idle"
-                        android:textSize="13sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/text_primary"
-                        android:layout_marginBottom="6dp" />
-
-                    <TextView
-                        android:id="@+id/tv_hat_test_progress"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="Connect a transmitter/receiver first, then run the automated scenario sweep."
-                        android:textSize="13sp"
-                        android:textColor="@color/text_secondary"
-                        android:layout_marginBottom="8dp" />
-
-                    <ProgressBar
-                        android:id="@+id/pb_hat_test"
-                        style="?android:attr/progressBarStyleHorizontal"
-                        android:layout_width="match_parent"
-                        android:layout_height="@dimen/progress_height"
-                        android:layout_marginBottom="12dp"
-                        android:max="100"
-                        android:progress="0"
-                        android:progressBackgroundTint="#272732"
-                        android:progressTint="@color/primary" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btn_run_full_hat_test"
-                        android:layout_width="match_parent"
-                        android:layout_height="@dimen/btn_height"
-                        android:text="Run Full HAT Test"
-                        android:textSize="14sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/white"
-                        app:backgroundTint="@color/primary"
-                        app:cornerRadius="8dp" />
+                <!-- Bit Depth Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/card_bit_depth"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
 
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:orientation="horizontal"
-                        android:layout_marginTop="8dp">
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
 
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/btn_cancel_hat_test"
-                            style="?attr/materialButtonOutlinedStyle"
-                            android:layout_width="0dp"
-                            android:layout_height="@dimen/btn_height"
-                            android:layout_weight="1"
-                            android:text="Cancel Test"
-                            android:textSize="13sp"
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="BIT DEPTH (MUSIC MODE)"
+                            android:textSize="11sp"
                             android:textStyle="bold"
-                            android:textColor="@color/text_primary"
-                            android:layout_marginEnd="6dp"
-                            app:strokeColor="@color/card_stroke"
-                            app:cornerRadius="8dp" />
+                            android:textColor="@color/text_hint"
+                            android:letterSpacing="0.05"
+                            android:layout_marginBottom="8dp" />
 
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/btn_share_hat_test"
-                            style="?attr/materialButtonOutlinedStyle"
-                            android:layout_width="0dp"
-                            android:layout_height="@dimen/btn_height"
-                            android:layout_weight="1"
-                            android:text="Share Report"
-                            android:textSize="13sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary"
-                            android:layout_marginStart="6dp"
-                            app:strokeColor="@color/card_stroke"
-                            app:cornerRadius="8dp" />
+                        <com.google.android.material.button.MaterialButtonToggleGroup
+                            android:id="@+id/toggle_bit_group"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginBottom="10dp"
+                            app:singleSelection="true"
+                            app:selectionRequired="true">
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_bit_auto"
+                                style="?attr/materialButtonOutlinedStyle"
+                                android:layout_width="0dp"
+                                android:layout_height="@dimen/btn_height"
+                                android:layout_weight="1"
+                                android:text="Auto"
+                                android:textSize="13sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary"
+                                app:strokeColor="@color/card_stroke" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_bit_16"
+                                style="?attr/materialButtonOutlinedStyle"
+                                android:layout_width="0dp"
+                                android:layout_height="@dimen/btn_height"
+                                android:layout_weight="1"
+                                android:text="16-bit"
+                                android:textSize="13sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary"
+                                app:strokeColor="@color/card_stroke" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_bit_24"
+                                style="?attr/materialButtonOutlinedStyle"
+                                android:layout_width="0dp"
+                                android:layout_height="@dimen/btn_height"
+                                android:layout_weight="1"
+                                android:text="24-bit"
+                                android:textSize="13sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary"
+                                app:strokeColor="@color/card_stroke" />
+                        </com.google.android.material.button.MaterialButtonToggleGroup>
+
+                        <TextView
+                            android:id="@+id/tv_bit_description"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Configure bit depth"
+                            android:textSize="12sp"
+                            android:textColor="@color/text_secondary"
+                            android:lineSpacingMultiplier="1.2" />
                     </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btn_hat_test_continue"
-                        android:layout_width="match_parent"
-                        android:layout_height="@dimen/btn_height"
-                        android:layout_marginTop="8dp"
-                        android:text="Continue"
-                        android:textSize="14sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/white"
-                        android:visibility="gone"
-                        app:backgroundTint="@color/status_green"
-                        app:cornerRadius="8dp" />
-
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
-
-            <!-- Updates Card -->
-            <com.google.android.material.card.MaterialCardView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                app:cardCornerRadius="14dp"
-                app:cardElevation="1dp"
-                app:strokeColor="@color/card_stroke"
-                app:strokeWidth="1dp"
-                app:cardBackgroundColor="@color/card_bg">
-
-                <LinearLayout
+                <!-- Volume Sync Card -->
+                <com.google.android.material.card.MaterialCardView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="@dimen/card_inner_padding">
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
 
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="SOFTWARE UPDATES"
-                        android:textSize="11sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/text_hint"
-                        android:letterSpacing="0.05"
-                        android:layout_marginBottom="8dp" />
-
-                    <TextView
-                        android:id="@+id/tv_update_status"
+                    <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Check for the latest release on GitHub."
-                        android:textSize="13sp"
-                        android:textColor="@color/text_secondary"
-                        android:layout_marginBottom="12dp" />
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
 
-                    <!-- Download Progress Bar -->
-                    <ProgressBar
-                        android:id="@+id/pb_download"
-                        style="?android:attr/progressBarStyleHorizontal"
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="VOLUME SYNCHRONIZATION"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_hint"
+                            android:letterSpacing="0.05"
+                            android:layout_marginBottom="8dp" />
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical">
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical"
+                                android:layout_marginEnd="12dp">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Sync Hardware Volume"
+                                    android:textSize="14sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_primary" />
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="When enabled, device volume keys sync remote receiver volume in real-time."
+                                    android:textSize="12sp"
+                                    android:textColor="@color/text_secondary"
+                                    android:layout_marginTop="2dp" />
+                            </LinearLayout>
+
+                            <com.google.android.material.switchmaterial.SwitchMaterial
+                                android:id="@+id/switch_sync_device_volume"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:checked="true"
+                                app:thumbTint="@color/primary"
+                                app:trackTint="@color/pill_bg" />
+                        </LinearLayout>
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- Background Volume Control (Accessibility) Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
                         android:layout_width="match_parent"
-                        android:layout_height="@dimen/progress_height"
-                        android:layout_marginBottom="12dp"
-                        android:visibility="gone"
-                        android:progressBackgroundTint="#272732"
-                        android:progressTint="@color/primary"
-                        android:max="100" />
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btn_check_update"
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="BACKGROUND VOLUME INTERCEPTION"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_hint"
+                            android:letterSpacing="0.05"
+                            android:layout_marginBottom="8dp" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Intercept volume keys even when the screen is off or another app is in the foreground. Android 13+ requires allowing restricted settings."
+                            android:textSize="12sp"
+                            android:textColor="@color/text_secondary"
+                            android:layout_marginBottom="12dp"
+                            android:lineSpacingMultiplier="1.2" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_app_info"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="match_parent"
+                            android:layout_height="@dimen/btn_height"
+                            android:layout_marginBottom="8dp"
+                            android:text="Step 1: Open App Info (Allow Restricted Settings)"
+                            android:textSize="13sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_primary"
+                            app:strokeColor="@color/card_stroke"
+                            app:cornerRadius="8dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_accessibility_settings"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="match_parent"
+                            android:layout_height="@dimen/btn_height"
+                            android:text="Step 2: Enable in Accessibility Settings"
+                            android:textSize="13sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/primary"
+                            app:strokeColor="@color/primary"
+                            app:cornerRadius="8dp" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+            </LinearLayout>
+
+            <!-- ================================================================= -->
+            <!-- 2. CATEGORY: DIAGNOSTICS                                          -->
+            <!-- ================================================================= -->
+            <LinearLayout
+                android:id="@+id/layout_category_diagnostics"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <!-- Estimated Playout Latency & Timeline Graph Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
                         android:layout_width="match_parent"
-                        android:layout_height="@dimen/btn_height"
-                        android:text="Check for Updates"
-                        android:textSize="14sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/white"
-                        app:backgroundTint="@color/primary"
-                        app:cornerRadius="8dp"
-                        app:icon="@drawable/ic_play"
-                        app:iconTint="@color/white"
-                        app:iconGravity="textStart"
-                        app:iconPadding="8dp"
-                        app:iconSize="18dp" />
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
 
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="8dp">
+
+                            <TextView
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="ESTIMATED RECEIVER PLAYOUT LATENCY (60S)"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_hint"
+                                android:letterSpacing="0.05" />
+
+                            <TextView
+                                android:id="@+id/tv_diag_receiver_status"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Receiver Idle"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_hint" />
+                        </LinearLayout>
+
+                        <!-- Primary Metrics Grid (Latency, Jitter, Target Watermark) -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:layout_marginBottom="8dp">
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Estimated Playout Latency"
+                                    android:textSize="10sp"
+                                    android:textColor="@color/text_secondary" />
+
+                                <TextView
+                                    android:id="@+id/tv_diag_latency_val"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="0.0 ms"
+                                    android:textSize="18sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/status_blue" />
+                            </LinearLayout>
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="RFC 3550 Jitter"
+                                    android:textSize="10sp"
+                                    android:textColor="@color/text_secondary" />
+
+                                <TextView
+                                    android:id="@+id/tv_diag_jitter_val"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="0.0 ms"
+                                    android:textSize="18sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_primary" />
+                            </LinearLayout>
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Target Watermark"
+                                    android:textSize="10sp"
+                                    android:textColor="@color/text_secondary" />
+
+                                <TextView
+                                    android:id="@+id/tv_diag_watermark_val"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="0.0 ms"
+                                    android:textSize="18sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_primary" />
+                            </LinearLayout>
+                        </LinearLayout>
+
+                        <!-- Latency Graph View -->
+                        <com.example.audiostreamer.diagnostics.LatencyGraphView
+                            android:id="@+id/graph_playout_latency"
+                            android:layout_width="match_parent"
+                            android:layout_height="170dp"
+                            android:layout_marginTop="4dp"
+                            android:layout_marginBottom="6dp" />
+
+                        <!-- Rolling Min / Avg / Max Summary -->
+                        <TextView
+                            android:id="@+id/tv_diag_min_avg_max"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Min: 0.0ms • Avg: 0.0ms • Max: 0.0ms"
+                            android:textSize="12sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_primary"
+                            android:layout_marginBottom="4dp" />
+
+                        <!-- Estimated Playout Breakdown -->
+                        <TextView
+                            android:id="@+id/tv_diag_timeline_breakdown"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Jitter Buffer: 0ms | AudioTrack Queue: 0ms"
+                            android:textSize="11sp"
+                            android:textColor="@color/text_secondary" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- Jitter Buffer & Clock Subsystem Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="JITTER BUFFER &amp; CLOCK HEALTH"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_hint"
+                            android:letterSpacing="0.05"
+                            android:layout_marginBottom="8dp" />
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="4dp">
+
+                            <TextView
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="Buffer Depth &amp; Slots"
+                                android:textSize="12sp"
+                                android:textColor="@color/text_secondary" />
+
+                            <TextView
+                                android:id="@+id/tv_diag_buffer_depth"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="0 / 0 slots (0%)"
+                                android:textSize="12sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/primary" />
+                        </LinearLayout>
+
+                        <ProgressBar
+                            android:id="@+id/pb_diag_buffer_health"
+                            style="?android:attr/progressBarStyleHorizontal"
+                            android:layout_width="match_parent"
+                            android:layout_height="@dimen/progress_height"
+                            android:layout_marginBottom="10dp"
+                            android:max="100"
+                            android:progress="0"
+                            android:progressBackgroundTint="#272732"
+                            android:progressTint="@color/primary" />
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:layout_marginBottom="6dp">
+
+                            <TextView
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="Clock Drift Ratio"
+                                android:textSize="12sp"
+                                android:textColor="@color/text_secondary" />
+
+                            <TextView
+                                android:id="@+id/tv_diag_clock_drift"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="1.0000x (nominal)"
+                                android:textSize="12sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary" />
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:layout_marginBottom="6dp">
+
+                            <TextView
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="AudioTrack Underruns"
+                                android:textSize="12sp"
+                                android:textColor="@color/text_secondary" />
+
+                            <TextView
+                                android:id="@+id/tv_diag_underruns"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="0"
+                                android:textSize="12sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/status_green" />
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal">
+
+                            <TextView
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="AudioTrack Writes / Frames"
+                                android:textSize="12sp"
+                                android:textColor="@color/text_secondary" />
+
+                            <TextView
+                                android:id="@+id/tv_diag_track_writes"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="0 writes / 0 frames"
+                                android:textSize="12sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary" />
+                        </LinearLayout>
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- Network Reliability & Recovery Counters Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="PACKET TRANSPORT &amp; RECOVERY"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_hint"
+                            android:letterSpacing="0.05"
+                            android:layout_marginBottom="8dp" />
+
+                        <!-- Row 1: Received & Lost -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:layout_marginBottom="6dp">
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Packets Received"
+                                    android:textSize="11sp"
+                                    android:textColor="@color/text_secondary" />
+
+                                <TextView
+                                    android:id="@+id/tv_diag_pkts_received"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="0"
+                                    android:textSize="13sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_primary" />
+                            </LinearLayout>
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Packets Lost"
+                                    android:textSize="11sp"
+                                    android:textColor="@color/text_secondary" />
+
+                                <TextView
+                                    android:id="@+id/tv_diag_pkts_lost"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="0"
+                                    android:textSize="13sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_primary" />
+                            </LinearLayout>
+                        </LinearLayout>
+
+                        <!-- Row 2: Late & Duplicates -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:layout_marginBottom="6dp">
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Packets Late"
+                                    android:textSize="11sp"
+                                    android:textColor="@color/text_secondary" />
+
+                                <TextView
+                                    android:id="@+id/tv_diag_pkts_late"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="0"
+                                    android:textSize="13sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_primary" />
+                            </LinearLayout>
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Packets Duplicate"
+                                    android:textSize="11sp"
+                                    android:textColor="@color/text_secondary" />
+
+                                <TextView
+                                    android:id="@+id/tv_diag_pkts_dup"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="0"
+                                    android:textSize="13sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_primary" />
+                            </LinearLayout>
+                        </LinearLayout>
+
+                        <!-- Row 3: Out-of-Order & FEC Recovered -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal">
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Out of Order"
+                                    android:textSize="11sp"
+                                    android:textColor="@color/text_secondary" />
+
+                                <TextView
+                                    android:id="@+id/tv_diag_pkts_ooo"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="0"
+                                    android:textSize="13sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_primary" />
+                            </LinearLayout>
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="FEC Recovered"
+                                    android:textSize="11sp"
+                                    android:textColor="@color/text_secondary" />
+
+                                <TextView
+                                    android:id="@+id/tv_diag_fec_recovered"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="0"
+                                    android:textSize="13sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/status_green" />
+                            </LinearLayout>
+                        </LinearLayout>
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- Audio Pipeline & HAL Status Card (Moved from Audio Category to Diagnostics) -->
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/card_audio_stats"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="8dp">
+
+                            <TextView
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="AUDIO PIPELINE STATUS"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_hint"
+                                android:letterSpacing="0.05" />
+
+                            <ImageView
+                                android:id="@+id/btn_refresh_audio_stats"
+                                android:layout_width="24dp"
+                                android:layout_height="24dp"
+                                android:src="@drawable/ic_refresh"
+                                app:tint="@color/text_hint"
+                                android:background="?attr/selectableItemBackgroundBorderless"
+                                android:clickable="true"
+                                android:focusable="true"
+                                android:contentDescription="Refresh pipeline" />
+                        </LinearLayout>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Transmitter HAL Capabilities"
+                            android:textSize="11sp"
+                            android:textColor="@color/text_secondary" />
+
+                        <TextView
+                            android:id="@+id/tv_source_capability"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Detecting..."
+                            android:textSize="13sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_primary"
+                            android:layout_marginBottom="8dp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Receiver Capabilities"
+                            android:textSize="11sp"
+                            android:textColor="@color/text_secondary" />
+
+                        <TextView
+                            android:id="@+id/tv_receiver_capability"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Pending discovery"
+                            android:textSize="13sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_primary"
+                            android:layout_marginBottom="8dp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Active Media Source App"
+                            android:textSize="11sp"
+                            android:textColor="@color/text_secondary" />
+
+                        <TextView
+                            android:id="@+id/tv_detected_media_app"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="No Active Media"
+                            android:textSize="13sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_hint"
+                            android:layout_marginBottom="8dp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Detected Source Format"
+                            android:textSize="11sp"
+                            android:textColor="@color/text_secondary" />
+
+                        <TextView
+                            android:id="@+id/tv_detected_media_format"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="48.0 kHz • 16-bit"
+                            android:textSize="13sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_primary"
+                            android:layout_marginBottom="8dp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Active Stream Operating Format"
+                            android:textSize="11sp"
+                            android:textColor="@color/text_secondary" />
+
+                        <TextView
+                            android:id="@+id/tv_detected_stream_status"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Idle"
+                            android:textSize="13sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_hint" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- Diagnostics Log Actions & Live Snapshot Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="DIAGNOSTIC ACTIONS &amp; LOGS"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_hint"
+                            android:letterSpacing="0.05"
+                            android:layout_marginBottom="8dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_view_logs"
+                            android:layout_width="match_parent"
+                            android:layout_height="@dimen/btn_height"
+                            android:text="View Live Logs"
+                            android:textSize="13sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/white"
+                            app:backgroundTint="@color/primary"
+                            app:cornerRadius="8dp"
+                            android:layout_marginBottom="8dp" />
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:layout_marginBottom="12dp">
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_copy_logs"
+                                style="?attr/materialButtonOutlinedStyle"
+                                android:layout_width="0dp"
+                                android:layout_height="@dimen/btn_height"
+                                android:layout_weight="1"
+                                android:text="Copy Diagnostics"
+                                android:textSize="12sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary"
+                                android:layout_marginEnd="6dp"
+                                app:strokeColor="@color/card_stroke"
+                                app:cornerRadius="8dp" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_share_logs"
+                                style="?attr/materialButtonOutlinedStyle"
+                                android:layout_width="0dp"
+                                android:layout_height="@dimen/btn_height"
+                                android:layout_weight="1"
+                                android:text="Share Logs"
+                                android:textSize="12sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary"
+                                android:layout_marginStart="6dp"
+                                app:strokeColor="@color/card_stroke"
+                                app:cornerRadius="8dp" />
+                        </LinearLayout>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="DIAGNOSTIC SNAPSHOT PREVIEW"
+                            android:textSize="10sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_hint"
+                            android:layout_marginBottom="6dp" />
+
+                        <TextView
+                            android:id="@+id/tv_diag_snapshot_preview"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:maxHeight="200dp"
+                            android:background="@drawable/bg_ip_pill"
+                            android:padding="10dp"
+                            android:textSize="11sp"
+                            android:typeface="monospace"
+                            android:textColor="@color/text_secondary"
+                            android:textIsSelectable="true"
+                            android:lineSpacingMultiplier="1.15"
+                            android:text="Diagnostic snapshot pending..." />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+            </LinearLayout>
+
+            <!-- ================================================================= -->
+            <!-- 3. CATEGORY: UPDATES                                              -->
+            <!-- ================================================================= -->
+            <LinearLayout
+                android:id="@+id/layout_category_updates"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="APP UPDATES"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_hint"
+                            android:letterSpacing="0.05"
+                            android:layout_marginBottom="8dp" />
+
+                        <TextView
+                            android:id="@+id/tv_app_version"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Installed: Version 1.8.11 (Build 64)"
+                            android:textSize="13sp"
+                            android:textColor="@color/text_secondary"
+                            android:layout_marginBottom="12dp" />
+
+                        <TextView
+                            android:id="@+id/tv_update_status"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Check GitHub releases for latest features, fixes, and improvements."
+                            android:textSize="13sp"
+                            android:textColor="@color/text_primary"
+                            android:layout_marginBottom="12dp"
+                            android:lineSpacingMultiplier="1.2" />
+
+                        <ProgressBar
+                            android:id="@+id/pb_download"
+                            style="?android:attr/progressBarStyleHorizontal"
+                            android:layout_width="match_parent"
+                            android:layout_height="@dimen/progress_height"
+                            android:layout_marginBottom="12dp"
+                            android:max="100"
+                            android:progress="0"
+                            android:visibility="gone"
+                            android:progressBackgroundTint="#272732"
+                            android:progressTint="@color/primary" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_check_update"
+                            android:layout_width="match_parent"
+                            android:layout_height="@dimen/btn_height"
+                            android:text="Check for Updates"
+                            android:textSize="14sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/white"
+                            app:backgroundTint="@color/primary"
+                            app:cornerRadius="8dp" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+            </LinearLayout>
+
+            <!-- ================================================================= -->
+            <!-- 4. CATEGORY: ABOUT                                                -->
+            <!-- ================================================================= -->
+            <LinearLayout
+                android:id="@+id/layout_category_about"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <!-- About Info Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="ABOUT THIS APP"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_hint"
+                            android:letterSpacing="0.05"
+                            android:layout_marginBottom="8dp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/app_name"
+                            android:textSize="17sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_primary" />
+
+                        <TextView
+                            android:id="@+id/tv_about_version"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Version 1.8.11"
+                            android:textSize="13sp"
+                            android:textColor="@color/text_secondary"
+                            android:layout_marginTop="2dp"
+                            android:layout_marginBottom="12dp" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="High-performance, low-latency audio streaming for Android.\n\n• Estimated Receiver Playout Latency\n• Adaptive RFC 3550 jitter buffer\n• Real-time clock drift correction\n• XOR-based Forward Error Correction (FEC)\n• Bit-perfect lossless PCM and Opus low-latency"
+                            android:textSize="12sp"
+                            android:textColor="@color/text_secondary"
+                            android:lineSpacingMultiplier="1.25"
+                            android:layout_marginBottom="14dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_github_repo"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="match_parent"
+                            android:layout_height="@dimen/btn_height"
+                            android:text="GitHub Repository"
+                            android:textSize="13sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_primary"
+                            app:strokeColor="@color/card_stroke"
+                            app:icon="@drawable/ic_github"
+                            app:iconGravity="textStart"
+                            app:iconTint="@color/text_primary"
+                            app:cornerRadius="8dp" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- Accessibility Instructions Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="BACKGROUND VOLUME KEY INTERCEPTION"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_hint"
+                            android:letterSpacing="0.05"
+                            android:layout_marginBottom="8dp" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="To control remote stream volume using physical volume buttons when the screen is off or in background:\n\n1. In App Info, tap the 3 dots menu at top right and select 'Allow restricted settings'.\n2. Open Accessibility Settings and enable 'Audio Streamer'."
+                            android:textSize="12sp"
+                            android:textColor="@color/text_secondary"
+                            android:lineSpacingMultiplier="1.2"
+                            android:layout_marginBottom="12dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_about_app_info"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="match_parent"
+                            android:layout_height="@dimen/btn_height"
+                            android:layout_marginBottom="8dp"
+                            android:text="Open App Info"
+                            android:textSize="13sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_primary"
+                            app:strokeColor="@color/card_stroke"
+                            app:cornerRadius="8dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_about_accessibility"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="match_parent"
+                            android:layout_height="@dimen/btn_height"
+                            android:text="Open Accessibility Settings"
+                            android:textSize="13sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/primary"
+                            app:strokeColor="@color/primary"
+                            app:cornerRadius="8dp" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+            </LinearLayout>
 
         </LinearLayout>
     </LinearLayout>

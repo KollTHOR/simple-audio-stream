@@ -165,11 +165,7 @@ object HatDiagnostics {
         val streamId: String,
         val generation: Long,
         val fields: Map<String, Any?>?,
-        val throwable: Throwable?,
-        /** Automated-test harness run id, empty outside a [HatTestRunner] run. */
-        val testRunId: String = "",
-        /** Automated-test scenario id, empty outside a scenario. */
-        val testScenario: String = ""
+        val throwable: Throwable?
     ) {
         fun render(): String {
             val sb = StringBuilder(96)
@@ -177,8 +173,6 @@ object HatDiagnostics {
             if (runId.isNotEmpty()) sb.append(" run=").append(runId)
             if (streamId.isNotEmpty()) sb.append(" stream=").append(streamId)
             if (generation > 0L) sb.append(" gen=").append(generation)
-            if (testRunId.isNotEmpty()) sb.append(" test=").append(testRunId)
-            if (testScenario.isNotEmpty()) sb.append('/').append(testScenario)
             val f = fields
             if (f != null) {
                 for ((k, v) in f) {
@@ -212,13 +206,6 @@ object HatDiagnostics {
     @Volatile private var runIdValue: String = ""
     @Volatile private var streamIdValue: String = ""
     private val generationValue = AtomicLong(0L)
-
-    // Automated-test harness context (see HatTestRunner). Additive only: it tags events so a test report can
-    // be correlated with the diagnostics of the stream session it was captured during. It never changes how
-    // events/counters/timings are recorded.
-    @Volatile private var testRunIdValue: String = ""
-    @Volatile private var testScenarioValue: String = ""
-
 
     private var statsThread: Thread? = null
     @Volatile private var statsRunning = false
@@ -300,59 +287,6 @@ object HatDiagnostics {
 
     fun streamId(): String = streamIdValue
 
-    /**
-     * Tags every subsequent event with the automated-test [testRunId] so a test report can be correlated with
-     * the stream session it was captured during. Does NOT open a new stream run and does not reset counters.
-     */
-    fun startTestRun(testRunId: String) {
-        guard("startTestRun") {
-            testRunIdValue = testRunId
-            testScenarioValue = ""
-        }
-    }
-
-    /** Clears the automated-test tagging. Counters, timings and the event ring are left untouched. */
-    fun endTestRun() {
-        guard("endTestRun") {
-            testRunIdValue = ""
-            testScenarioValue = ""
-        }
-    }
-
-    fun testRunId(): String = testRunIdValue
-
-    fun testScenario(): String = testScenarioValue
-
-    /** Marks the start of an automated-test scenario and emits a boundary event. */
-    fun startScenario(scenarioId: String, scenarioName: String = scenarioId) {
-        guard("startScenario") {
-            testScenarioValue = scenarioId
-            info(
-                "HAT_TEST_SCENARIO_START",
-                linkedMapOf(
-                    "testRunId" to testRunIdValue,
-                    "scenarioId" to scenarioId,
-                    "scenarioName" to scenarioName
-                )
-            )
-        }
-    }
-
-    /** Marks the end of an automated-test scenario and emits a boundary event with its outcome. */
-    fun endScenario(scenarioId: String, verdict: String, reason: String? = null) {
-        guard("endScenario") {
-            testScenarioValue = scenarioId
-            val fields = linkedMapOf<String, Any?>(
-                "testRunId" to testRunIdValue,
-                "scenarioId" to scenarioId,
-                "verdict" to verdict
-            )
-            if (!reason.isNullOrEmpty()) fields["reason"] = reason
-            info("HAT_TEST_SCENARIO_END", fields)
-            testScenarioValue = ""
-        }
-    }
-
     fun generation(): Long = generationValue.get()
 
     /**
@@ -407,9 +341,7 @@ object HatDiagnostics {
             streamId = streamIdValue,
             generation = generationValue.get(),
             fields = fields,
-            throwable = tr,
-            testRunId = testRunIdValue,
-            testScenario = testScenarioValue
+            throwable = tr
         )
         record(ev, cfg)
     }
@@ -694,8 +626,6 @@ object HatDiagnostics {
         sb.appendLine("runId=$runIdValue")
         sb.appendLine("streamId=$streamIdValue")
         sb.appendLine("generation=${generationValue.get()}")
-        if (testRunIdValue.isNotEmpty()) sb.appendLine("testRunId=$testRunIdValue")
-        if (testScenarioValue.isNotEmpty()) sb.appendLine("testScenario=$testScenarioValue")
         sb.appendLine("timestamp=${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())}")
         sb.appendLine("uptimeMs=${DiagnosticClock.elapsedRealtimeMs()}")
 
@@ -803,8 +733,6 @@ object HatDiagnostics {
         resetStats()
         runIdValue = ""
         streamIdValue = ""
-        testRunIdValue = ""
-        testScenarioValue = ""
         generationValue.set(0L)
     }
 
