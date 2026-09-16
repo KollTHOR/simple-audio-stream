@@ -41,6 +41,9 @@ class JitterEstimator(initialProfile: String = AudioConfig.PROFILE_MUSIC) {
         cleanPlaybackFramesCount = 0
     }
 
+    private fun isAutoProfile(profile: String): Boolean =
+        profile == AudioConfig.PROFILE_AUTO || profile.equals("BALANCED", ignoreCase = true)
+
     /**
      * Updates inter-arrival jitter upon arrival of an audio packet.
      */
@@ -71,7 +74,7 @@ class JitterEstimator(initialProfile: String = AudioConfig.PROFILE_MUSIC) {
                 estimatedJitterMs += (absD - estimatedJitterMs) / 16.0
 
                 // Dynamic floating watermark for Auto Mode (35ms - 400ms)
-                if (currentProfile == AudioConfig.PROFILE_AUTO) {
+                if (isAutoProfile(currentProfile)) {
                     val dynamicTargetMs = (estimatedJitterMs * 3.5).toFloat().coerceIn(35.0f, 400.0f)
                     if (dynamicTargetMs > targetWatermarkMs) {
                         targetWatermarkMs = targetWatermarkMs * 0.9f + dynamicTargetMs * 0.1f
@@ -95,7 +98,7 @@ class JitterEstimator(initialProfile: String = AudioConfig.PROFILE_MUSIC) {
         packetDurationMs: Float,
         slotCount: Int
     ) {
-        if (currentProfile == AudioConfig.PROFILE_AUTO) {
+        if (isAutoProfile(currentProfile)) {
             cleanPlaybackFramesCount++
             if (cleanPlaybackFramesCount >= 100) {
                 cleanPlaybackFramesCount = 0
@@ -118,7 +121,7 @@ class JitterEstimator(initialProfile: String = AudioConfig.PROFILE_MUSIC) {
         packetDurationMs: Float,
         slotCount: Int
     ) {
-        if (currentProfile == AudioConfig.PROFILE_AUTO) {
+        if (isAutoProfile(currentProfile)) {
             targetWatermarkMs = (targetWatermarkMs + 30.0f).coerceAtMost(400.0f)
             val nominalDurationMs = if (isCompressed) 20.0f else packetDurationMs
             targetWatermarkSlots = kotlin.math.ceil(targetWatermarkMs / nominalDurationMs).toInt().coerceIn(2, slotCount - 4)

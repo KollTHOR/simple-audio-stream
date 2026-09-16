@@ -128,7 +128,7 @@ class JitterBuffer(
             lastSampleRate = config.sampleRateHz
             packetDurationMs = config.packetDurationMs
             isCompressedStream = config.isCompressed
-            currentProfile = config.transportProfile.latencyTarget.name
+            currentProfile = config.transportProfile.latencyTarget.toAudioConfigProfile()
 
             val params = config.transportProfile.jitter
             slotCount = params.slotCount
@@ -143,14 +143,19 @@ class JitterBuffer(
             while (packetBuffer.availableCount > slotCount) {
                 dropOldestSlot()
             }
-            AppLogger.i("JitterBuffer", "Applied negotiated config: format=${config.sampleRateHz}Hz/${if (config.is24Bit) 24 else 16}b, codec=${config.codec.name}, profile=${config.transportProfile.latencyTarget.name}, slots=$slotCount")
+            AppLogger.i("JitterBuffer", "Applied negotiated config: format=${config.sampleRateHz}Hz/${if (config.is24Bit) 24 else 16}b, codec=${config.codec.name}, profile=$currentProfile, slots=$slotCount")
         }
     }
 
     fun setProfile(profile: String, isCompressed: Boolean = false) {
         lock.withLock {
-            if (currentProfile == profile && (isCompressed == isCompressedStream)) return
-            currentProfile = profile
+            val normProfile = when (profile.uppercase()) {
+                "BALANCED", AudioConfig.PROFILE_AUTO -> AudioConfig.PROFILE_AUTO
+                "RELIABLE", AudioConfig.PROFILE_MUSIC -> AudioConfig.PROFILE_MUSIC
+                else -> AudioConfig.PROFILE_LOW_LATENCY
+            }
+            if (currentProfile == normProfile && (isCompressed == isCompressedStream)) return
+            currentProfile = normProfile
             isCompressedStream = isCompressed
             if (isCompressed) {
                 slotCount = AudioConfig.LOW_LATENCY_JITTER_BUFFER_SLOTS
@@ -161,17 +166,17 @@ class JitterBuffer(
                 val targetMs = 40.0f
                 jitterEstimator.configure(targetSlots, targetMs)
             } else {
-                slotCount = AudioConfig.getJitterBufferSlots(profile)
+                slotCount = AudioConfig.getJitterBufferSlots(normProfile)
                 val nominalDuration = packetDurationMs
                 val nominalSlots = kotlin.math.ceil(200.0f / nominalDuration).toInt()
-                preRollThreshold = if (profile == AudioConfig.PROFILE_AUTO) {
+                preRollThreshold = if (normProfile == AudioConfig.PROFILE_AUTO) {
                     kotlin.math.ceil(50.0f / nominalDuration).toInt().coerceIn(2, slotCount / 4)
                 } else {
                     nominalSlots.coerceIn(4, slotCount / 4)
                 }
-                maxUnderrunFrames = AudioConfig.getMaxUnderrunFrames(profile)
-                waitTimeoutMs = AudioConfig.getReceiverWaitTimeoutMs(profile)
-                val targetMs = if (profile == AudioConfig.PROFILE_AUTO) 50.0f else 200.0f
+                maxUnderrunFrames = AudioConfig.getMaxUnderrunFrames(normProfile)
+                waitTimeoutMs = AudioConfig.getReceiverWaitTimeoutMs(normProfile)
+                val targetMs = if (normProfile == AudioConfig.PROFILE_AUTO) 50.0f else 200.0f
                 val targetSlots = kotlin.math.ceil(targetMs / nominalDuration).toInt().coerceIn(2, slotCount - 4)
                 jitterEstimator.configure(targetSlots, targetMs)
             }
@@ -181,7 +186,7 @@ class JitterBuffer(
             while (packetBuffer.availableCount > slotCount) {
                 dropOldestSlot()
             }
-            AppLogger.i("JitterBuffer", "Buffer profile updated: profile=$profile, compressed=$isCompressed, slots=$slotCount, preRoll=$preRollThreshold, timeout=${waitTimeoutMs}ms, packetDuration=${packetDurationMs}ms")
+            AppLogger.i("JitterBuffer", "Buffer profile updated: profile=$normProfile, compressed=$isCompressed, slots=$slotCount, preRoll=$preRollThreshold, timeout=${waitTimeoutMs}ms, packetDuration=${packetDurationMs}ms")
         }
     }
 
@@ -190,7 +195,7 @@ class JitterBuffer(
 
         lock.withLock {
             val nominalFramesPerPacket = calculateFramesForPayload(length)
-            val maxTolerableFrameDrift = slotCount * nominalFramesPerPacket
+            val maxTolerableFrameDrift = maxSlots * nominalFramesPerPacket
 
             val expSeq = sequenceTracker.expectedReadSeq
             val expTs = playbackScheduler.expectedReadTimestamp
@@ -465,10 +470,10 @@ class JitterBuffer(
 
                 jitterEstimator.onCleanPlayback(currentProfile, isCompressedStream, packetDurationMs, slotCount)
 
-                // Primary: Continuous fractional resampling
-                val effectiveLen = driftController.resamplePcmChunk(output, len, is24BitStream)
+                // Primary: Bit-perfect PCM audio (bypass fractional spline resampling across 5ms packet boundaries to prevent scratching)
+                val effectiveLen = len
 
-                // Fallback: Emergency zero-crossing adjustment only under extreme backlog/depletion
+                // Clock Drift Management: Smooth zero-crossing micro-adjustment under sustained deviation
                 driftController.checkAndApplyEmergencyDriftFallback(
                     output = output,
                     len = effectiveLen,

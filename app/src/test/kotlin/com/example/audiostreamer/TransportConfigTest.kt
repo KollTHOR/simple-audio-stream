@@ -1276,4 +1276,18 @@ class TransportConfigTest {
         assertTrue(updateResult is ConfigTransitionResult.Applied)
         assertEquals(4L, authority.currentGeneration)
     }
+
+    @Test
+    fun testLatencyTargetProfileKeySynchronization() {
+        assertEquals(AudioConfig.PROFILE_LOW_LATENCY, LatencyTarget.LOW_LATENCY.toAudioConfigProfile())
+        assertEquals(AudioConfig.PROFILE_AUTO, LatencyTarget.BALANCED.toAudioConfigProfile())
+        assertEquals(AudioConfig.PROFILE_MUSIC, LatencyTarget.RELIABLE.toAudioConfigProfile())
+
+        assertEquals(LatencyTarget.BALANCED, LatencyTarget.fromString("BALANCED"))
+        assertEquals(LatencyTarget.BALANCED, LatencyTarget.fromString(AudioConfig.PROFILE_AUTO))
+        assertEquals(LatencyTarget.LOW_LATENCY, LatencyTarget.fromString("LOW_LATENCY"))
+        assertEquals(LatencyTarget.LOW_LATENCY, LatencyTarget.fromString(AudioConfig.PROFILE_VIDEO))
+        assertEquals(LatencyTarget.RELIABLE, LatencyTarget.fromString("MUSIC"))
+        assertEquals(LatencyTarget.RELIABLE, LatencyTarget.fromString("RELIABLE"))
+    }
 }
