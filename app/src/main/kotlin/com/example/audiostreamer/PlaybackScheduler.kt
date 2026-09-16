@@ -91,11 +91,13 @@ class PlaybackScheduler(initialPreRoll: Int = 2) {
 
     /**
      * Records an underrun event and checks if sustained underrun requires entering buffering state.
+     * When [canConcealLoss] is true (e.g. Opus with codec PLC), loss is concealed up to [maxUnderrunFrames]
+     * without immediately entering the buffering state.
      * Returns true if buffering state was entered.
      */
-    fun onUnderrun(maxUnderrunFrames: Int, isCompressed: Boolean): Boolean {
+    fun onUnderrun(maxUnderrunFrames: Int, isCompressed: Boolean, canConcealLoss: Boolean = false): Boolean {
         consecutiveUnderruns++
-        val shouldBuffer = consecutiveUnderruns >= maxUnderrunFrames || isCompressed
+        val shouldBuffer = consecutiveUnderruns >= maxUnderrunFrames || (isCompressed && !canConcealLoss)
         if (consecutiveUnderruns >= maxUnderrunFrames) {
             isBuffering = true
         }

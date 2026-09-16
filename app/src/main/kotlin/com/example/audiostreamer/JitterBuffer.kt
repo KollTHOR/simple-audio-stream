@@ -53,6 +53,17 @@ class JitterBuffer(
     private val concealedPackets = java.util.concurrent.atomic.AtomicLong(0L)
     private val outOfOrderPackets = java.util.concurrent.atomic.AtomicLong(0L)
 
+    enum class ReadStatus {
+        PACKET,
+        PACKET_LOST,
+        BUFFERING
+    }
+
+    data class ReadResult(
+        val bytesRead: Int,
+        val status: ReadStatus
+    )
+
     private var currentProfile: String = initialProfile
     private var slotCount: Int = AudioConfig.getJitterBufferSlots(initialProfile)
     private var preRollThreshold: Int = AudioConfig.getPreRollPackets(initialProfile)
@@ -60,11 +71,21 @@ class JitterBuffer(
     private var waitTimeoutMs: Long = AudioConfig.getReceiverWaitTimeoutMs(initialProfile)
     private var lastPacketSize: Int = AudioConfig.PACKET_SIZE_16BIT
     private var isCompressedStream = false
+    private var isOpusStream = false
     private var is24BitStream = false
     private var packetDurationMs: Float = 5.0f
     private var lastSampleRate: Int = AudioConfig.SAMPLE_RATE_48000
 
+    var lastReadStatus: ReadStatus = ReadStatus.PACKET
+        private set
+
     private val internalFecDecoder by lazy { FecDecoder(this) }
+
+    fun setIsOpus(isOpus: Boolean) {
+        lock.withLock {
+            isOpusStream = isOpus
+        }
+    }
 
     fun set24Bit(is24: Boolean) {
         lock.withLock {
@@ -128,6 +149,7 @@ class JitterBuffer(
             lastSampleRate = config.sampleRateHz
             packetDurationMs = config.packetDurationMs
             isCompressedStream = config.isCompressed
+            isOpusStream = (config.codec == AudioCodec.OPUS)
             currentProfile = config.transportProfile.latencyTarget.toAudioConfigProfile()
 
             val params = config.transportProfile.jitter
@@ -147,16 +169,17 @@ class JitterBuffer(
         }
     }
 
-    fun setProfile(profile: String, isCompressed: Boolean = false) {
+    fun setProfile(profile: String, isCompressed: Boolean = false, isOpus: Boolean = false) {
         lock.withLock {
             val normProfile = when (profile.uppercase()) {
                 "BALANCED", AudioConfig.PROFILE_AUTO -> AudioConfig.PROFILE_AUTO
                 "RELIABLE", AudioConfig.PROFILE_MUSIC -> AudioConfig.PROFILE_MUSIC
                 else -> AudioConfig.PROFILE_LOW_LATENCY
             }
-            if (currentProfile == normProfile && (isCompressed == isCompressedStream)) return
+            if (currentProfile == normProfile && (isCompressed == isCompressedStream) && (isOpus == isOpusStream)) return
             currentProfile = normProfile
             isCompressedStream = isCompressed
+            isOpusStream = isOpus
             if (isCompressed) {
                 slotCount = AudioConfig.LOW_LATENCY_JITTER_BUFFER_SLOTS
                 preRollThreshold = AudioConfig.LOW_LATENCY_PRE_ROLL_PACKETS
@@ -398,16 +421,18 @@ class JitterBuffer(
     }
 
     /**
-     * Reads a chunk into outputBuffer.
+     * Reads a chunk into outputBuffer and returns a [ReadResult] indicating whether a normal packet,
+     * a single/burst lost packet, or buffering silence was returned.
      * Waits on condition if momentary jitter delay occurs.
      * Uses smooth PLC without triggering silence cascades on minor delays.
      */
-    fun read(output: ByteArray): Int {
+    fun readPacket(output: ByteArray): ReadResult {
         lock.withLock {
             if (sequenceTracker.expectedReadSeq == -1) {
                 val fillLen = minOf(output.size, lastPacketSize)
                 output.fill(0, 0, fillLen)
-                return fillLen
+                lastReadStatus = ReadStatus.BUFFERING
+                return ReadResult(fillLen, ReadStatus.BUFFERING)
             }
 
             if (playbackScheduler.isBuffering) {
@@ -416,7 +441,8 @@ class JitterBuffer(
                 } else {
                     val fillLen = minOf(output.size, lastPacketSize)
                     output.fill(0, 0, fillLen)
-                    return fillLen
+                    lastReadStatus = ReadStatus.BUFFERING
+                    return ReadResult(fillLen, ReadStatus.BUFFERING)
                 }
             }
 
@@ -428,7 +454,8 @@ class JitterBuffer(
                 if (playbackScheduler.isTransmitterSilent) {
                     val fillLen = minOf(output.size, lastPacketSize)
                     output.fill(0, 0, fillLen)
-                    return fillLen
+                    lastReadStatus = ReadStatus.BUFFERING
+                    return ReadResult(fillLen, ReadStatus.BUFFERING)
                 }
 
                 var nanosLeft = TimeUnit.MILLISECONDS.toNanos(waitTimeoutMs)
@@ -442,7 +469,8 @@ class JitterBuffer(
                 } catch (ignored: InterruptedException) {
                     val fillLen = minOf(output.size, lastPacketSize)
                     output.fill(0, 0, fillLen)
-                    return fillLen
+                    lastReadStatus = ReadStatus.BUFFERING
+                    return ReadResult(fillLen, ReadStatus.BUFFERING)
                 }
             }
 
@@ -461,7 +489,8 @@ class JitterBuffer(
                 val isAdts = (len >= 7 && (output[0].toInt() and 0xFF) == 0xFF && (output[1].toInt() and 0xF0) == 0xF0)
                 if (isCompressedStream || isAdts) {
                     plc.clearConcealed()
-                    return len
+                    lastReadStatus = ReadStatus.PACKET
+                    return ReadResult(len, ReadStatus.PACKET)
                 }
 
                 if (plc.wasConcealed) {
@@ -484,7 +513,8 @@ class JitterBuffer(
 
                 plc.cacheLastSamples(output, effectiveLen, is24BitStream)
 
-                return effectiveLen
+                lastReadStatus = ReadStatus.PACKET
+                return ReadResult(effectiveLen, ReadStatus.PACKET)
             } else {
                 // Underrun
                 driftController.onUnderrun()
@@ -495,19 +525,32 @@ class JitterBuffer(
 
                 jitterEstimator.onUnderrun(currentProfile, isCompressedStream, packetDurationMs, slotCount)
 
-                val enteredBuffering = playbackScheduler.onUnderrun(maxUnderrunFrames, isCompressedStream)
+                val canConceal = !isCompressedStream || isOpusStream
+                val enteredBuffering = playbackScheduler.onUnderrun(maxUnderrunFrames, isCompressedStream, canConcealLoss = canConceal)
                 if (enteredBuffering) {
                     plc.markConcealed()
                     plc.clearCachedSamples()
                     output.fill(0, 0, len)
-                    return len
+                    lastReadStatus = ReadStatus.BUFFERING
+                    return ReadResult(len, ReadStatus.BUFFERING)
                 }
 
                 concealedPackets.incrementAndGet()
-                plc.synthesizeLossConcealment(output, len, is24BitStream)
-                return len
+                if (!isCompressedStream) {
+                    plc.synthesizeLossConcealment(output, len, is24BitStream)
+                }
+                lastReadStatus = ReadStatus.PACKET_LOST
+                return ReadResult(len, ReadStatus.PACKET_LOST)
             }
         }
+    }
+
+    /**
+     * Reads a chunk into outputBuffer.
+     * Preserves backward compatibility with existing callers.
+     */
+    fun read(output: ByteArray): Int {
+        return readPacket(output).bytesRead
     }
 
     fun reset() {
@@ -520,6 +563,8 @@ class JitterBuffer(
             packetBuffer.clear()
             fecHistory.clear()
             isCompressedStream = false
+            isOpusStream = false
+            lastReadStatus = ReadStatus.PACKET
             notEmptyCondition.signalAll()
         }
     }
