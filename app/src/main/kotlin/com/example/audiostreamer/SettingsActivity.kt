@@ -1,5 +1,7 @@
 package com.example.audiostreamer
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -12,9 +14,11 @@ import android.provider.Settings
 import android.util.Log
 import android.view.View
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
@@ -22,10 +26,17 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import com.example.audiostreamer.diagnostics.DiagnosticsViewModel
+import com.example.audiostreamer.diagnostics.LatencyGraphView
+import com.example.audiostreamer.diagnostics.ReceiverDiagnosticsState
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.button.MaterialButtonToggleGroup
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.card.MaterialCardView
+import com.google.android.material.switchmaterial.SwitchMaterial
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -35,6 +46,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
 
 class SettingsActivity : AppCompatActivity() {
 
@@ -45,51 +57,22 @@ class SettingsActivity : AppCompatActivity() {
             "https://api.github.com/repos/KollTHOR/simple-audio-stream/releases?per_page=10"
         private const val GITHUB_API_LATEST_RELEASE =
             "https://api.github.com/repos/KollTHOR/simple-audio-stream/releases/latest"
+
+        // Deep-link intent extra keys
+        const val EXTRA_CATEGORY = "extra_category"
+        const val CATEGORY_AUDIO = "audio"
+        const val CATEGORY_DIAGNOSTICS = "diagnostics"
+        const val CATEGORY_UPDATES = "updates"
+        const val CATEGORY_ABOUT = "about"
     }
 
-    private lateinit var btnBack: ImageView
-    private lateinit var tvAppVersion: TextView
-    private lateinit var btnGithubRepo: MaterialButton
-    private lateinit var tvUpdateStatus: TextView
-    private lateinit var pbDownload: ProgressBar
-    private lateinit var btnCheckUpdate: MaterialButton
-    private lateinit var toggleProfileGroup: MaterialButtonToggleGroup
-    private lateinit var btnProfileAuto: MaterialButton
-    private lateinit var btnProfileVideo: MaterialButton
-    private lateinit var btnProfileMusic: MaterialButton
-    private lateinit var tvProfileDescription: TextView
-    private lateinit var cardSampleRate: com.google.android.material.card.MaterialCardView
-    private lateinit var toggleRateGroup: MaterialButtonToggleGroup
-    private lateinit var btnRateAuto: MaterialButton
-    private lateinit var btnRate44k: MaterialButton
-    private lateinit var btnRate48k: MaterialButton
-    private lateinit var btnRate96k: MaterialButton
-    private lateinit var btnRate192k: MaterialButton
-    private lateinit var tvRateDescription: TextView
-    private lateinit var cardBitDepth: com.google.android.material.card.MaterialCardView
-    private lateinit var toggleBitGroup: MaterialButtonToggleGroup
-    private lateinit var btnBitAuto: MaterialButton
-    private lateinit var btnBit16: MaterialButton
-    private lateinit var btnBit24: MaterialButton
-    private lateinit var tvBitDescription: TextView
-    private lateinit var cardAudioStats: com.google.android.material.card.MaterialCardView
-    private lateinit var tvSourceCapability: TextView
-    private lateinit var tvReceiverCapability: TextView
-    private lateinit var tvDetectedMediaApp: TextView
-    private lateinit var tvDetectedMediaFormat: TextView
-    private lateinit var tvDetectedStreamStatus: TextView
-    private lateinit var btnRefreshAudioStats: ImageView
-    private lateinit var btnAppInfo: MaterialButton
-    private lateinit var btnAccessibilitySettings: MaterialButton
-
-    // Full HAT Test (automated diagnostic harness)
-    private lateinit var tvHatTestState: TextView
-    private lateinit var tvHatTestProgress: TextView
-    private lateinit var pbHatTest: ProgressBar
-    private lateinit var btnRunFullHatTest: MaterialButton
-    private lateinit var btnCancelHatTest: MaterialButton
-    private lateinit var btnShareHatTest: MaterialButton
-    private lateinit var btnHatTestContinue: MaterialButton
+    enum class Category {
+        MENU,
+        AUDIO,
+        DIAGNOSTICS,
+        UPDATES,
+        ABOUT
+    }
 
     enum class UpdateState {
         CHECK,
@@ -97,6 +80,99 @@ class SettingsActivity : AppCompatActivity() {
         INSTALL
     }
 
+    // Top Header
+    private lateinit var btnBack: ImageView
+    private lateinit var tvSettingsTitle: TextView
+    private lateinit var tvSettingsSubtitle: TextView
+
+    // Top-Level Menu
+    private lateinit var layoutCategoryMenu: LinearLayout
+    private lateinit var cardMenuAudio: MaterialCardView
+    private lateinit var cardMenuDiagnostics: MaterialCardView
+    private lateinit var cardMenuUpdates: MaterialCardView
+    private lateinit var cardMenuAbout: MaterialCardView
+    private lateinit var tvMenuAudioBadge: TextView
+    private lateinit var tvMenuDiagBadge: TextView
+    private lateinit var tvMenuUpdatesBadge: TextView
+
+    // Category Layouts
+    private lateinit var layoutCategoryAudio: LinearLayout
+    private lateinit var layoutCategoryDiagnostics: LinearLayout
+    private lateinit var layoutCategoryUpdates: LinearLayout
+    private lateinit var layoutCategoryAbout: LinearLayout
+
+    // Audio Category Views
+    private lateinit var toggleProfileGroup: MaterialButtonToggleGroup
+    private lateinit var btnProfileAuto: MaterialButton
+    private lateinit var btnProfileVideo: MaterialButton
+    private lateinit var btnProfileMusic: MaterialButton
+    private lateinit var tvProfileDescription: TextView
+    private lateinit var cardSampleRate: MaterialCardView
+    private lateinit var toggleRateGroup: MaterialButtonToggleGroup
+    private lateinit var btnRateAuto: MaterialButton
+    private lateinit var btnRate44k: MaterialButton
+    private lateinit var btnRate48k: MaterialButton
+    private lateinit var btnRate96k: MaterialButton
+    private lateinit var btnRate192k: MaterialButton
+    private lateinit var tvRateDescription: TextView
+    private lateinit var cardBitDepth: MaterialCardView
+    private lateinit var toggleBitGroup: MaterialButtonToggleGroup
+    private lateinit var btnBitAuto: MaterialButton
+    private lateinit var btnBit16: MaterialButton
+    private lateinit var btnBit24: MaterialButton
+    private lateinit var tvBitDescription: TextView
+    private lateinit var switchSyncDeviceVolume: SwitchMaterial
+    private lateinit var btnAppInfo: MaterialButton
+    private lateinit var btnAccessibilitySettings: MaterialButton
+    private lateinit var cardAudioStats: MaterialCardView
+    private lateinit var tvSourceCapability: TextView
+    private lateinit var tvReceiverCapability: TextView
+    private lateinit var tvDetectedMediaApp: TextView
+    private lateinit var tvDetectedMediaFormat: TextView
+    private lateinit var tvDetectedStreamStatus: TextView
+    private lateinit var btnRefreshAudioStats: ImageView
+
+    // Diagnostics Category Views
+    private lateinit var graphPlayoutLatency: LatencyGraphView
+    private lateinit var tvDiagReceiverStatus: TextView
+    private lateinit var tvDiagLatencyVal: TextView
+    private lateinit var tvDiagJitterVal: TextView
+    private lateinit var tvDiagWatermarkVal: TextView
+    private lateinit var tvDiagMinAvgMax: TextView
+    private lateinit var tvDiagTimelineBreakdown: TextView
+    private lateinit var tvDiagBufferDepth: TextView
+    private lateinit var pbDiagBufferHealth: ProgressBar
+    private lateinit var tvDiagClockDrift: TextView
+    private lateinit var tvDiagUnderruns: TextView
+    private lateinit var tvDiagTrackWrites: TextView
+    private lateinit var tvDiagPktsReceived: TextView
+    private lateinit var tvDiagPktsLost: TextView
+    private lateinit var tvDiagPktsLate: TextView
+    private lateinit var tvDiagPktsDup: TextView
+    private lateinit var tvDiagPktsOoo: TextView
+    private lateinit var tvDiagFecRecovered: TextView
+    private lateinit var tvDiagSnapshotPreview: TextView
+    private lateinit var btnViewLogs: MaterialButton
+    private lateinit var btnCopyLogs: MaterialButton
+    private lateinit var btnShareLogs: MaterialButton
+
+    // Updates Category Views
+    private lateinit var tvAppVersion: TextView
+    private lateinit var tvUpdateStatus: TextView
+    private lateinit var pbDownload: ProgressBar
+    private lateinit var btnCheckUpdate: MaterialButton
+
+    // About Category Views
+    private lateinit var tvAboutVersion: TextView
+    private lateinit var btnGithubRepo: MaterialButton
+    private lateinit var btnAboutAppInfo: MaterialButton
+    private lateinit var btnAboutAccessibility: MaterialButton
+
+    // Diagnostics ViewModel
+    private lateinit var diagnosticsViewModel: DiagnosticsViewModel
+
+    // State
+    private var currentCategory = Category.MENU
     private var updateState = UpdateState.CHECK
     private var latestReleaseTag: String? = null
     private var latestApkUrl: String? = null
@@ -130,12 +206,51 @@ class SettingsActivity : AppCompatActivity() {
             insets
         }
 
+        diagnosticsViewModel = ViewModelProvider(this)[DiagnosticsViewModel::class.java]
+
+        bindViews()
+        setupTopHeaderAndNavigation()
+        setupAudioCategory()
+        setupDiagnosticsCategory()
+        setupUpdatesCategory()
+        setupAboutCategory()
+
+        // Handle initial category from Intent extra (e.g. from MainActivity receiver shortcut)
+        val targetCategoryStr = intent.getStringExtra(EXTRA_CATEGORY)
+        val initialCategory = when (targetCategoryStr?.lowercase(Locale.ROOT)) {
+            CATEGORY_AUDIO -> Category.AUDIO
+            CATEGORY_DIAGNOSTICS -> Category.DIAGNOSTICS
+            CATEGORY_UPDATES -> Category.UPDATES
+            CATEGORY_ABOUT -> Category.ABOUT
+            else -> Category.MENU
+        }
+        showCategory(initialCategory)
+
+        observeDiagnostics()
+    }
+
+    private fun bindViews() {
         btnBack = findViewById(R.id.btn_back)
-        tvAppVersion = findViewById(R.id.tv_app_version)
-        btnGithubRepo = findViewById(R.id.btn_github_repo)
-        tvUpdateStatus = findViewById(R.id.tv_update_status)
-        pbDownload = findViewById(R.id.pb_download)
-        btnCheckUpdate = findViewById(R.id.btn_check_update)
+        tvSettingsTitle = findViewById(R.id.tv_settings_title)
+        tvSettingsSubtitle = findViewById(R.id.tv_settings_subtitle)
+
+        // Menu
+        layoutCategoryMenu = findViewById(R.id.layout_category_menu)
+        cardMenuAudio = findViewById(R.id.card_menu_audio)
+        cardMenuDiagnostics = findViewById(R.id.card_menu_diagnostics)
+        cardMenuUpdates = findViewById(R.id.card_menu_updates)
+        cardMenuAbout = findViewById(R.id.card_menu_about)
+        tvMenuAudioBadge = findViewById(R.id.tv_menu_audio_badge)
+        tvMenuDiagBadge = findViewById(R.id.tv_menu_diag_badge)
+        tvMenuUpdatesBadge = findViewById(R.id.tv_menu_updates_badge)
+
+        // Category Containers
+        layoutCategoryAudio = findViewById(R.id.layout_category_audio)
+        layoutCategoryDiagnostics = findViewById(R.id.layout_category_diagnostics)
+        layoutCategoryUpdates = findViewById(R.id.layout_category_updates)
+        layoutCategoryAbout = findViewById(R.id.layout_category_about)
+
+        // Audio Views
         toggleProfileGroup = findViewById(R.id.toggle_profile_group)
         btnProfileAuto = findViewById(R.id.btn_profile_auto)
         btnProfileVideo = findViewById(R.id.btn_profile_video)
@@ -155,7 +270,9 @@ class SettingsActivity : AppCompatActivity() {
         btnBit16 = findViewById(R.id.btn_bit_16)
         btnBit24 = findViewById(R.id.btn_bit_24)
         tvBitDescription = findViewById(R.id.tv_bit_description)
-
+        switchSyncDeviceVolume = findViewById(R.id.switch_sync_device_volume)
+        btnAppInfo = findViewById(R.id.btn_app_info)
+        btnAccessibilitySettings = findViewById(R.id.btn_accessibility_settings)
         cardAudioStats = findViewById(R.id.card_audio_stats)
         tvSourceCapability = findViewById(R.id.tv_source_capability)
         tvReceiverCapability = findViewById(R.id.tv_receiver_capability)
@@ -164,10 +281,138 @@ class SettingsActivity : AppCompatActivity() {
         tvDetectedStreamStatus = findViewById(R.id.tv_detected_stream_status)
         btnRefreshAudioStats = findViewById(R.id.btn_refresh_audio_stats)
 
-        btnRefreshAudioStats.setOnClickListener {
-            updateAudioStatsUi()
+        // Diagnostics Views
+        graphPlayoutLatency = findViewById(R.id.graph_playout_latency)
+        tvDiagReceiverStatus = findViewById(R.id.tv_diag_receiver_status)
+        tvDiagLatencyVal = findViewById(R.id.tv_diag_latency_val)
+        tvDiagJitterVal = findViewById(R.id.tv_diag_jitter_val)
+        tvDiagWatermarkVal = findViewById(R.id.tv_diag_watermark_val)
+        tvDiagMinAvgMax = findViewById(R.id.tv_diag_min_avg_max)
+        tvDiagTimelineBreakdown = findViewById(R.id.tv_diag_timeline_breakdown)
+        tvDiagBufferDepth = findViewById(R.id.tv_diag_buffer_depth)
+        pbDiagBufferHealth = findViewById(R.id.pb_diag_buffer_health)
+        tvDiagClockDrift = findViewById(R.id.tv_diag_clock_drift)
+        tvDiagUnderruns = findViewById(R.id.tv_diag_underruns)
+        tvDiagTrackWrites = findViewById(R.id.tv_diag_track_writes)
+        tvDiagPktsReceived = findViewById(R.id.tv_diag_pkts_received)
+        tvDiagPktsLost = findViewById(R.id.tv_diag_pkts_lost)
+        tvDiagPktsLate = findViewById(R.id.tv_diag_pkts_late)
+        tvDiagPktsDup = findViewById(R.id.tv_diag_pkts_dup)
+        tvDiagPktsOoo = findViewById(R.id.tv_diag_pkts_ooo)
+        tvDiagFecRecovered = findViewById(R.id.tv_diag_fec_recovered)
+        tvDiagSnapshotPreview = findViewById(R.id.tv_diag_snapshot_preview)
+        btnViewLogs = findViewById(R.id.btn_view_logs)
+        btnCopyLogs = findViewById(R.id.btn_copy_logs)
+        btnShareLogs = findViewById(R.id.btn_share_logs)
+
+        // Updates Views
+        tvAppVersion = findViewById(R.id.tv_app_version)
+        tvUpdateStatus = findViewById(R.id.tv_update_status)
+        pbDownload = findViewById(R.id.pb_download)
+        btnCheckUpdate = findViewById(R.id.btn_check_update)
+
+        // About Views
+        tvAboutVersion = findViewById(R.id.tv_about_version)
+        btnGithubRepo = findViewById(R.id.btn_github_repo)
+        btnAboutAppInfo = findViewById(R.id.btn_about_app_info)
+        btnAboutAccessibility = findViewById(R.id.btn_about_accessibility)
+    }
+
+    private fun setupTopHeaderAndNavigation() {
+        btnBack.setOnClickListener {
+            if (currentCategory != Category.MENU) {
+                showCategory(Category.MENU)
+            } else {
+                finish()
+            }
         }
 
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (currentCategory != Category.MENU) {
+                    showCategory(Category.MENU)
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                }
+            }
+        })
+
+        cardMenuAudio.setOnClickListener { showCategory(Category.AUDIO) }
+        cardMenuDiagnostics.setOnClickListener { showCategory(Category.DIAGNOSTICS) }
+        cardMenuUpdates.setOnClickListener { showCategory(Category.UPDATES) }
+        cardMenuAbout.setOnClickListener { showCategory(Category.ABOUT) }
+    }
+
+    fun showCategory(category: Category) {
+        currentCategory = category
+
+        layoutCategoryMenu.visibility = if (category == Category.MENU) View.VISIBLE else View.GONE
+        layoutCategoryAudio.visibility = if (category == Category.AUDIO) View.VISIBLE else View.GONE
+        layoutCategoryDiagnostics.visibility = if (category == Category.DIAGNOSTICS) View.VISIBLE else View.GONE
+        layoutCategoryUpdates.visibility = if (category == Category.UPDATES) View.VISIBLE else View.GONE
+        layoutCategoryAbout.visibility = if (category == Category.ABOUT) View.VISIBLE else View.GONE
+
+        when (category) {
+            Category.MENU -> {
+                tvSettingsTitle.text = "Settings"
+                tvSettingsSubtitle.text = "Simple Audio Stream"
+                updateCategoryMenuBadges()
+                diagnosticsViewModel.stopSampling()
+            }
+            Category.AUDIO -> {
+                tvSettingsTitle.text = "Audio Settings"
+                tvSettingsSubtitle.text = "Streaming Profiles & Preferences"
+                diagnosticsViewModel.stopSampling()
+            }
+            Category.DIAGNOSTICS -> {
+                tvSettingsTitle.text = "Diagnostics"
+                tvSettingsSubtitle.text = "Estimated Playout & Pipeline Status"
+                updateAudioStatsUi()
+                diagnosticsViewModel.startSampling()
+            }
+            Category.UPDATES -> {
+                tvSettingsTitle.text = "App Updates"
+                tvSettingsSubtitle.text = "GitHub Releases & APK Updater"
+                diagnosticsViewModel.stopSampling()
+            }
+            Category.ABOUT -> {
+                tvSettingsTitle.text = "About"
+                tvSettingsSubtitle.text = "App Overview & Setup"
+                updateAccessibilityButton()
+                diagnosticsViewModel.stopSampling()
+            }
+        }
+    }
+
+    private fun updateCategoryMenuBadges() {
+        val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+        val profile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_AUTO) ?: AudioConfig.PROFILE_AUTO
+        val profileDesc = when (profile) {
+            AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> "Low Latency (Opus 48k)"
+            AudioConfig.PROFILE_MUSIC -> "Music Mode (Lossless PCM)"
+            else -> "Auto Adaptive (24-bit/48k)"
+        }
+        tvMenuAudioBadge.text = profileDesc
+
+        val isRx = AudioSinkService.isRunning.get()
+        if (isRx) {
+            val snap = diagnosticsViewModel.currentSnapshot()
+            val lat = snap.estimatedPlayoutLatencyMs
+            tvMenuDiagBadge.text = if (lat > 0f) String.format(Locale.US, "Active • %.1f ms", lat) else "Receiver Active"
+            tvMenuDiagBadge.setTextColor(ContextCompat.getColor(this, R.color.status_green))
+        } else {
+            tvMenuDiagBadge.text = "Receiver Idle"
+            tvMenuDiagBadge.setTextColor(ContextCompat.getColor(this, R.color.text_hint))
+        }
+
+        tvMenuUpdatesBadge.text = "v${BuildConfig.VERSION_NAME}"
+    }
+
+    // =========================================================================
+    // AUDIO SETTINGS
+    // =========================================================================
+    private fun setupAudioCategory() {
         val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
         val currentProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_AUTO) ?: AudioConfig.PROFILE_AUTO
         when (currentProfile) {
@@ -191,7 +436,6 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         val rawRate = prefs.getString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_AUTO) ?: AudioConfig.SAMPLE_RATE_AUTO
-        // Sanitize legacy 96k/192k settings to native 48 kHz
         val currentRate = if (rawRate == AudioConfig.SAMPLE_RATE_96K || rawRate == AudioConfig.SAMPLE_RATE_192K) {
             prefs.edit().putString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_48K).apply()
             AudioConfig.SAMPLE_RATE_48K
@@ -239,25 +483,11 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
 
-        val switchSyncDeviceVolume = findViewById<com.google.android.material.switchmaterial.SwitchMaterial>(R.id.switch_sync_device_volume)
         val initialSyncVol = prefs.getBoolean(AudioConfig.PREF_KEY_SYNC_DEVICE_VOLUME, true)
-        switchSyncDeviceVolume?.isChecked = initialSyncVol
-        switchSyncDeviceVolume?.setOnCheckedChangeListener { _, isChecked ->
+        switchSyncDeviceVolume.isChecked = initialSyncVol
+        switchSyncDeviceVolume.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean(AudioConfig.PREF_KEY_SYNC_DEVICE_VOLUME, isChecked).apply()
         }
-
-        btnBack.setOnClickListener { finish() }
-
-        val currentVersion = BuildConfig.VERSION_NAME
-        tvAppVersion.text = "Version $currentVersion (Build ${BuildConfig.VERSION_CODE})"
-
-        btnGithubRepo.setOnClickListener {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_REPO_URL))
-            startActivity(intent)
-        }
-
-        btnAppInfo = findViewById(R.id.btn_app_info)
-        btnAccessibilitySettings = findViewById(R.id.btn_accessibility_settings)
 
         btnAppInfo.setOnClickListener {
             val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
@@ -276,106 +506,8 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
 
-        val btnCopyLogs = findViewById<com.google.android.material.button.MaterialButton>(R.id.btn_copy_logs)
-        val btnShareLogs = findViewById<com.google.android.material.button.MaterialButton>(R.id.btn_share_logs)
-        val btnViewLogs = findViewById<com.google.android.material.button.MaterialButton>(R.id.btn_view_logs)
-
-        btnCopyLogs?.setOnClickListener {
-            AppLogger.copyToClipboard(this)
-        }
-        btnShareLogs?.setOnClickListener {
-            AppLogger.shareLogs(this)
-        }
-        btnViewLogs?.setOnClickListener {
-            AppLogger.showLogViewerDialog(this)
-        }
-
-        tvHatTestState = findViewById(R.id.tv_hat_test_state)
-        tvHatTestProgress = findViewById(R.id.tv_hat_test_progress)
-        pbHatTest = findViewById(R.id.pb_hat_test)
-        btnRunFullHatTest = findViewById(R.id.btn_run_full_hat_test)
-        btnCancelHatTest = findViewById(R.id.btn_cancel_hat_test)
-        btnShareHatTest = findViewById(R.id.btn_share_hat_test)
-        btnHatTestContinue = findViewById(R.id.btn_hat_test_continue)
-
-        btnRunFullHatTest.setOnClickListener { confirmAndRunFullHatTest() }
-        btnCancelHatTest.setOnClickListener { HatTestController.cancel() }
-        btnHatTestContinue.setOnClickListener { HatTestController.continueManual() }
-        btnShareHatTest.setOnClickListener { shareHatTestReport() }
-        btnShareHatTest.visibility = View.GONE
-        btnHatTestContinue.visibility = View.GONE
-
-        // Single source of truth for the test state: the controller owns the run, this screen renders it.
-        lifecycleScope.launch {
-            HatTestController.progress.collect { renderHatTestProgress(it) }
-        }
-
-        btnCheckUpdate.text = "Check for Updates"
-        updateState = UpdateState.CHECK
-
-        btnCheckUpdate.setOnClickListener {
-            when (updateState) {
-                UpdateState.CHECK -> checkForUpdates()
-                UpdateState.DOWNLOAD -> {
-                    val url = latestApkUrl
-                    val tag = latestReleaseTag
-                    if (url != null && tag != null) {
-                        downloadAndPromptInstall(url, tag)
-                    } else {
-                        checkForUpdates()
-                    }
-                }
-                UpdateState.INSTALL -> {
-                    val file = downloadedApkFile
-                    if (file != null && file.exists() && file.length() > 500_000) {
-                        checkPermissionAndInstall(file)
-                    } else {
-                        checkForUpdates()
-                    }
-                }
-            }
-        }
-    }
-
-    override fun onResume() {
-        super.onResume()
-        checkInstallPermissionOnResume()
-        updateAccessibilityButton()
-        updateAudioStatsUi()
-    }
-
-    private fun updateAccessibilityButton() {
-        val isServiceActive = VolumeKeyInterceptorService.isRunning.get()
-        if (isServiceActive) {
-            btnAccessibilitySettings.text = "Step 2: Accessibility (Active)"
-            val colorGreen = ContextCompat.getColor(this, R.color.status_green)
-            btnAccessibilitySettings.setTextColor(colorGreen)
-            btnAccessibilitySettings.strokeColor = ColorStateList.valueOf(colorGreen)
-            btnAppInfo.text = "Step 1: App Info (Completed)"
-            btnAppInfo.setTextColor(colorGreen)
-            btnAppInfo.strokeColor = ColorStateList.valueOf(colorGreen)
-        } else {
-            btnAccessibilitySettings.text = "Step 2: Enable in Accessibility Settings"
-            val colorPrimary = ContextCompat.getColor(this, R.color.primary)
-            btnAccessibilitySettings.setTextColor(colorPrimary)
-            btnAccessibilitySettings.strokeColor = ColorStateList.valueOf(colorPrimary)
-            btnAppInfo.text = "Step 1: Open App Info (Allow Restricted Settings)"
-            val colorText = ContextCompat.getColor(this, R.color.text_primary)
-            val colorStroke = ContextCompat.getColor(this, R.color.card_stroke)
-            btnAppInfo.setTextColor(colorText)
-            btnAppInfo.strokeColor = ColorStateList.valueOf(colorStroke)
-        }
-    }
-
-    private fun checkInstallPermissionOnResume() {
-        if (isWaitingForInstallPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            if (packageManager.canRequestPackageInstalls()) {
-                isWaitingForInstallPermission = false
-                val file = downloadedApkFile
-                if (file != null && file.exists() && file.length() > 500_000) {
-                    installApk(file)
-                }
-            }
+        btnRefreshAudioStats.setOnClickListener {
+            updateAudioStatsUi()
         }
     }
 
@@ -407,55 +539,11 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
-    private fun updateAudioStatsUi() {
-        val txCaps = AudioCapabilities.getLocalCaptureCapabilitiesMask()
-        tvSourceCapability.text = "Android HAL: ${AudioCapabilities.describeCapabilities(txCaps)}"
-
-        val tel = StreamState.telemetry.value
-        val rxCapsFromPref = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE).getInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, 0)
-        val rxDesc = when {
-            tel.receiverCapabilityDesc != "Unknown" && tel.receiverCapabilityDesc.isNotBlank() -> tel.receiverCapabilityDesc
-            rxCapsFromPref != 0 -> AudioCapabilities.describeCapabilities(rxCapsFromPref)
-            else -> "Pending receiver discovery"
-        }
-        tvReceiverCapability.text = rxDesc
-
-        val detected = AudioPlaybackDetector.getActiveMediaFormat(this)
-        val appText = if (detected.isPlaying) {
-            "${detected.appName} (Playing)"
-        } else if (detected.appName != "None") {
-            "${detected.appName} (Paused/Standby)"
-        } else {
-            "No Active Media"
-        }
-        tvDetectedMediaApp.text = appText
-        val greenColor = ContextCompat.getColor(this, R.color.status_green)
-        val hintColor = ContextCompat.getColor(this, R.color.text_hint)
-        tvDetectedMediaApp.setTextColor(if (detected.isPlaying) greenColor else hintColor)
-
-        val rateKHz = detected.sampleRate / 1000.0
-        val bitStr = if (detected.is24Bit) "24-bit" else "16-bit"
-        tvDetectedMediaFormat.text = "$rateKHz kHz • $bitStr"
-
-        val isTxRunning = AudioCaptureService.isRunning.get()
-        if (isTxRunning && tel.isActive && tel.isTransmitter) {
-            tvDetectedStreamStatus.text = tel.negotiatedFormatDesc
-            tvDetectedStreamStatus.setTextColor(greenColor)
-        } else if (isTxRunning) {
-            tvDetectedStreamStatus.text = "Transmitter starting..."
-            tvDetectedStreamStatus.setTextColor(ContextCompat.getColor(this, R.color.status_blue))
-        } else {
-            tvDetectedStreamStatus.text = "Idle (Not transmitting)"
-            tvDetectedStreamStatus.setTextColor(hintColor)
-        }
-    }
-
     private fun updateRateUi(rate: String) {
         val colorPrimary = ContextCompat.getColor(this, R.color.primary)
         val colorCard = ContextCompat.getColor(this, R.color.card_bg)
         val colorTextSecondary = ContextCompat.getColor(this, R.color.text_secondary)
 
-        // Disable 96k and 192k on Android - hardware mix bus runs at 48k/44.1k
         btnRate96k.isEnabled = false
         btnRate96k.alpha = 0.35f
         btnRate96k.text = "96.0k (N/A)"
@@ -515,103 +603,46 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // Full HAT Test (Settings → Diagnostics)
-    // ---------------------------------------------------------------------------------------------
+    private fun updateAudioStatsUi() {
+        val txCaps = AudioCapabilities.getLocalCaptureCapabilitiesMask()
+        tvSourceCapability.text = "Android HAL: ${AudioCapabilities.describeCapabilities(txCaps)}"
 
-    private fun confirmAndRunFullHatTest() {
-        if (HatTestController.isRunning()) {
-            Toast.makeText(this, "A Full HAT Test is already running", Toast.LENGTH_SHORT).show()
-            return
+        val tel = StreamState.telemetry.value
+        val rxCapsFromPref = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE).getInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, 0)
+        val rxDesc = when {
+            tel.receiverCapabilityDesc != "Unknown" && tel.receiverCapabilityDesc.isNotBlank() -> tel.receiverCapabilityDesc
+            rxCapsFromPref != 0 -> AudioCapabilities.describeCapabilities(rxCapsFromPref)
+            else -> "Pending receiver discovery"
         }
-        MaterialAlertDialogBuilder(this)
-            .setTitle("Run Full HAT Test?")
-            .setMessage(
-                "Runs the automated diagnostic scenarios against the currently connected HAT stream. " +
-                    "The stream profile changes several times and a complete run takes several minutes. " +
-                    "The report is written to Downloads/HAT/. You can cancel at any time."
-            )
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Run") { _, _ ->
-                if (!HatTestController.start(this)) {
-                    Toast.makeText(this, "A Full HAT Test is already running", Toast.LENGTH_SHORT).show()
-                }
-            }
-            .show()
-    }
+        tvReceiverCapability.text = rxDesc
 
-    private fun renderHatTestProgress(progress: HatTestProgress) {
-        val stateText = when (progress.state) {
-            HatTestState.IDLE -> "Idle"
-            HatTestState.PREPARING -> if (progress.receiverParticipating) "Preparing" else "Waiting for receiver..."
-            HatTestState.RUNNING -> "Running"
-            HatTestState.COMPLETING -> "Completing"
-            HatTestState.EXPORTING -> "Exporting"
-            HatTestState.COMPLETED -> "Completed"
-            HatTestState.FAILED -> "Failed"
-            HatTestState.CANCELLED -> "Cancelled"
-            HatTestState.NOT_EXECUTED -> "Not Executed"
+        val detected = AudioPlaybackDetector.getActiveMediaFormat(this)
+        val appText = if (detected.isPlaying) {
+            "${detected.appName} (Playing)"
+        } else if (detected.appName != "None") {
+            "${detected.appName} (Paused/Standby)"
+        } else {
+            "No Active Media"
         }
-        val rawVerdict = progress.report?.summary?.verdict
-        // Block displaying PASS until receiver participation is verified
-        val verdict = when {
-            rawVerdict == null -> ""
-            rawVerdict == "PASS" && !progress.receiverParticipating -> " (INCOMPLETE)"
-            else -> " ($rawVerdict)"
-        }
-        tvHatTestState.text = "State: $stateText$verdict"
-        pbHatTest.progress = (progress.overallProgress * 100f).toInt().coerceIn(0, 100)
+        tvDetectedMediaApp.text = appText
+        val greenColor = ContextCompat.getColor(this, R.color.status_green)
+        val hintColor = ContextCompat.getColor(this, R.color.text_hint)
+        tvDetectedMediaApp.setTextColor(if (detected.isPlaying) greenColor else hintColor)
 
-        tvHatTestProgress.text = buildString {
-            if (progress.testSessionId != null) {
-                append("Session: ${progress.testSessionId}\n")
-            }
-            if (progress.txDevice != null || progress.rxDevice != null) {
-                val tx = progress.txDevice ?: "Transmitter"
-                val rx = progress.rxDevice ?: if (progress.receiverParticipating) "Receiver" else "Waiting for receiver..."
-                append("TX: $tx • RX: $rx\n")
-            }
-            if (progress.currentGeneration > 0L) {
-                append("Generation: ${progress.currentGeneration}\n")
-            }
-            if (progress.scenarioCount > 0 && progress.scenarioIndex > 0) {
-                append("Scenario ${progress.scenarioIndex}/${progress.scenarioCount}")
-                progress.scenarioName?.let { append(": $it") }
-                append(" (${(progress.scenarioProgress * 100f).toInt()}%)\n")
-            }
-            append("Elapsed: ${progress.elapsedMs / 1000}s • Overall: ${(progress.overallProgress * 100f).toInt()}%")
-            progress.message?.takeIf { it.isNotBlank() }?.let { append("\n$it") }
-            if (progress.exportedFiles.isNotEmpty()) {
-                append("\nExported: ${progress.exportedFiles.joinToString(", ")}")
-            }
-            if (progress.state == HatTestState.FAILED || progress.state == HatTestState.NOT_EXECUTED) {
-                progress.error?.takeIf { it.isNotBlank() }?.let { append("\nReason: $it") }
-            }
-        }
+        val rateKHz = detected.sampleRate / 1000.0
+        val bitStr = if (detected.is24Bit) "24-bit" else "16-bit"
+        tvDetectedMediaFormat.text = "$rateKHz kHz • $bitStr"
 
-        btnRunFullHatTest.isEnabled = !progress.isBusy
-        btnCancelHatTest.isEnabled = progress.isBusy
-        btnHatTestContinue.visibility = if (progress.awaitingManualContinue) View.VISIBLE else View.GONE
-        btnShareHatTest.visibility = if (progress.exportedUris.isNotEmpty()) View.VISIBLE else View.GONE
-    }
-
-    private fun shareHatTestReport() {
-        val uris = HatTestController.progress.value.exportedUris
-            .mapNotNull { runCatching { Uri.parse(it) }.getOrNull() }
-        if (uris.isEmpty()) {
-            Toast.makeText(this, "No exported HAT test report yet", Toast.LENGTH_SHORT).show()
-            return
-        }
-        try {
-            val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-                type = "text/*"
-                putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            startActivity(Intent.createChooser(intent, "Share HAT test report"))
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to share HAT test report", e)
-            Toast.makeText(this, "Could not share report: ${e.message}", Toast.LENGTH_LONG).show()
+        val isTxRunning = AudioCaptureService.isRunning.get()
+        if (isTxRunning && tel.isActive && tel.isTransmitter) {
+            tvDetectedStreamStatus.text = tel.negotiatedFormatDesc
+            tvDetectedStreamStatus.setTextColor(greenColor)
+        } else if (isTxRunning) {
+            tvDetectedStreamStatus.text = "Transmitter starting..."
+            tvDetectedStreamStatus.setTextColor(ContextCompat.getColor(this, R.color.status_blue))
+        } else {
+            tvDetectedStreamStatus.text = "Idle (Not transmitting)"
+            tvDetectedStreamStatus.setTextColor(hintColor)
         }
     }
 
@@ -622,6 +653,147 @@ class SettingsActivity : AppCompatActivity() {
             }
             startService(restartIntent)
             Log.i(TAG, "Sent ACTION_RESTART_CAPTURE to apply setting change live")
+        }
+    }
+
+    // =========================================================================
+    // DIAGNOSTICS & RECEIVER LATENCY (TASK 3 & 4)
+    // =========================================================================
+    private fun setupDiagnosticsCategory() {
+        btnViewLogs.setOnClickListener {
+            AppLogger.showLogViewerDialog(this)
+        }
+
+        btnCopyLogs.setOnClickListener {
+            copyDiagnosticsToClipboard()
+        }
+
+        btnShareLogs.setOnClickListener {
+            AppLogger.shareLogs(this)
+        }
+    }
+
+    private fun observeDiagnostics() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                diagnosticsViewModel.state.collect { state ->
+                    updateDiagnosticsUi(state)
+                }
+            }
+        }
+    }
+
+    private fun updateDiagnosticsUi(state: ReceiverDiagnosticsState) {
+        val isRx = state.isReceiving
+        val greenColor = ContextCompat.getColor(this, R.color.status_green)
+        val hintColor = ContextCompat.getColor(this, R.color.text_hint)
+
+        if (isRx) {
+            tvDiagReceiverStatus.text = "Receiver Active • ${state.sampleRate / 1000}kHz (${state.profileName})"
+            tvDiagReceiverStatus.setTextColor(greenColor)
+        } else {
+            tvDiagReceiverStatus.text = "Receiver Idle"
+            tvDiagReceiverStatus.setTextColor(hintColor)
+        }
+
+        val latencyMs = state.estimatedPlayoutLatencyMs
+        tvDiagLatencyVal.text = if (isRx && latencyMs > 0f) String.format(Locale.US, "%.1f ms", latencyMs) else "-- ms"
+        tvDiagJitterVal.text = if (isRx) String.format(Locale.US, "%.2f ms", state.jitterMs) else "-- ms"
+        tvDiagWatermarkVal.text = if (isRx) String.format(Locale.US, "%.0f ms", state.targetWatermarkMs) else "-- ms"
+
+        // Update Latency Graph (TASK 3)
+        val samples = diagnosticsViewModel.latencyHistory.getSnapshot()
+        graphPlayoutLatency.updateData(
+            samples = samples,
+            currentMs = latencyMs,
+            targetMs = state.targetWatermarkMs,
+            idle = !isRx
+        )
+
+        // Rolling Min / Avg / Max
+        if (isRx && diagnosticsViewModel.latencyHistory.size > 0) {
+            val min = diagnosticsViewModel.latencyHistory.getMin()
+            val avg = diagnosticsViewModel.latencyHistory.getAverage()
+            val max = diagnosticsViewModel.latencyHistory.getMax()
+            tvDiagMinAvgMax.text = String.format(Locale.US, "Min: %.1fms • Avg: %.1fms • Max: %.1fms", min, avg, max)
+        } else {
+            tvDiagMinAvgMax.text = "Min: -- • Avg: -- • Max: --"
+        }
+
+        // Estimated Playout breakdown
+        if (isRx && latencyMs > 0f) {
+            tvDiagTimelineBreakdown.text = String.format(
+                Locale.US,
+                "Jitter Buffer: %.1fms | AudioTrack Queue: %.1fms",
+                state.jitterBufferMs,
+                state.audioTrackBufferMs
+            )
+        } else {
+            tvDiagTimelineBreakdown.text = "Jitter Buffer: -- | AudioTrack Queue: --"
+        }
+
+        // Jitter buffer & clock health
+        val slots = state.bufferAvailableSlots
+        val totalSlots = state.bufferTotalSlots
+        val fillPct = state.bufferFillPercent
+        tvDiagBufferDepth.text = if (isRx) "$slots / $totalSlots slots ($fillPct%)" else "0 / 0 slots (0%)"
+        pbDiagBufferHealth.progress = if (isRx) fillPct.coerceIn(0, 100) else 0
+
+        tvDiagClockDrift.text = String.format(Locale.US, "%.4fx", state.driftCorrectionRatio)
+        tvDiagUnderruns.text = "${state.underruns}"
+        tvDiagUnderruns.setTextColor(if (state.underruns > 0) ContextCompat.getColor(this, R.color.status_red) else greenColor)
+        tvDiagTrackWrites.text = "${state.audioTrackWrites} writes / ${state.framesWritten} frames"
+
+        // Packet transport & recovery
+        tvDiagPktsReceived.text = "${state.packetsReceived}"
+        tvDiagPktsLost.text = "${state.packetsLost}"
+        tvDiagPktsLate.text = "${state.packetsLate}"
+        tvDiagPktsDup.text = "${state.packetsDuplicate}"
+        tvDiagPktsOoo.text = "${state.packetsOutOfOrder}"
+        tvDiagFecRecovered.text = "${state.fecRecovered}"
+
+        // Realtime diagnostic snapshot preview
+        val snapText = diagnosticsViewModel.getDiagnosticSnapshotText()
+        tvDiagSnapshotPreview.text = if (snapText.isNotBlank()) snapText else "Waiting for stream metrics..."
+    }
+
+    private fun copyDiagnosticsToClipboard() {
+        val snapshot = diagnosticsViewModel.getDiagnosticSnapshotText()
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = ClipData.newPlainText("HAT Runtime Diagnostics", snapshot)
+        clipboard.setPrimaryClip(clip)
+        Toast.makeText(this, "Diagnostics copied to clipboard", Toast.LENGTH_SHORT).show()
+    }
+
+    // =========================================================================
+    // APP UPDATES
+    // =========================================================================
+    private fun setupUpdatesCategory() {
+        tvAppVersion.text = "Installed: Version ${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})"
+        btnCheckUpdate.text = "Check for Updates"
+        updateState = UpdateState.CHECK
+
+        btnCheckUpdate.setOnClickListener {
+            when (updateState) {
+                UpdateState.CHECK -> checkForUpdates()
+                UpdateState.DOWNLOAD -> {
+                    val url = latestApkUrl
+                    val tag = latestReleaseTag
+                    if (url != null && tag != null) {
+                        downloadAndPromptInstall(url, tag)
+                    } else {
+                        checkForUpdates()
+                    }
+                }
+                UpdateState.INSTALL -> {
+                    val file = downloadedApkFile
+                    if (file != null && file.exists() && file.length() > 500_000) {
+                        checkPermissionAndInstall(file)
+                    } else {
+                        checkForUpdates()
+                    }
+                }
+            }
         }
     }
 
@@ -655,7 +827,6 @@ class SettingsActivity : AppCompatActivity() {
                 var tagName: String? = null
                 var apkDownloadUrl: String? = null
 
-                // Attempt fetching releases list to identify the highest semantic release with an APK
                 try {
                     val releasesUrl = URL(GITHUB_API_RELEASES)
                     val conn = (releasesUrl.openConnection() as HttpURLConnection).apply {
@@ -707,7 +878,6 @@ class SettingsActivity : AppCompatActivity() {
                     Log.w(TAG, "Releases list query failed, falling back to latest: ${e.message}")
                 }
 
-                // Fallback to /releases/latest if list did not yield an APK
                 if (tagName == null || apkDownloadUrl == null) {
                     val latestConn = (URL(GITHUB_API_LATEST_RELEASE).openConnection() as HttpURLConnection).apply {
                         connectTimeout = 8000
@@ -755,7 +925,6 @@ class SettingsActivity : AppCompatActivity() {
                         val versionedApk = File(targetDir, "simple-audio-stream-$finalTag.apk")
 
                         if (isNewerVersion(finalTag, BuildConfig.VERSION_NAME)) {
-                            // Clean any stale cached APKs from earlier versions or external storage
                             try {
                                 listOfNotNull(cacheDir, externalCacheDir).forEach { dir ->
                                     dir.listFiles { _, name ->
@@ -781,7 +950,6 @@ class SettingsActivity : AppCompatActivity() {
                             tvUpdateStatus.text = "You are on the latest version ($finalTag)."
                             btnCheckUpdate.text = "Check for Updates"
 
-                            // Clean up old cached update APKs to free storage
                             try {
                                 listOfNotNull(cacheDir, externalCacheDir).forEach { dir ->
                                     dir.listFiles { _, name ->
@@ -829,7 +997,6 @@ class SettingsActivity : AppCompatActivity() {
                 var redirectCount = 0
                 var conn: HttpURLConnection
 
-                // Follow HTTP redirects (GitHub asset downloads redirect to AWS S3)
                 while (true) {
                     val url = URL(currentUrl)
                     conn = url.openConnection() as HttpURLConnection
@@ -941,5 +1108,99 @@ class SettingsActivity : AppCompatActivity() {
             Log.e(TAG, "Failed to launch installer", e)
             Toast.makeText(this, "Failed to launch installer: ${e.message}", Toast.LENGTH_LONG).show()
         }
+    }
+
+    // =========================================================================
+    // ABOUT & SETUP
+    // =========================================================================
+    private fun setupAboutCategory() {
+        tvAboutVersion.text = "Version ${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})"
+
+        btnGithubRepo.setOnClickListener {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_REPO_URL))
+            startActivity(intent)
+        }
+
+        btnAboutAppInfo.setOnClickListener {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", packageName, null)
+            }
+            startActivity(intent)
+            Toast.makeText(this, "Tap the 3 dots at top-right -> Allow restricted settings", Toast.LENGTH_LONG).show()
+        }
+
+        btnAboutAccessibility.setOnClickListener {
+            if (VolumeKeyInterceptorService.isRunning.get()) {
+                Toast.makeText(this, "Background volume key interception is active", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "Turn on Audio Streamer in Accessibility settings", Toast.LENGTH_LONG).show()
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+        }
+    }
+
+    private fun updateAccessibilityButton() {
+        val isServiceActive = VolumeKeyInterceptorService.isRunning.get()
+        if (isServiceActive) {
+            btnAccessibilitySettings.text = "Step 2: Accessibility (Active)"
+            btnAboutAccessibility.text = "Accessibility (Active)"
+            val colorGreen = ContextCompat.getColor(this, R.color.status_green)
+            btnAccessibilitySettings.setTextColor(colorGreen)
+            btnAccessibilitySettings.strokeColor = ColorStateList.valueOf(colorGreen)
+            btnAboutAccessibility.setTextColor(colorGreen)
+            btnAboutAccessibility.strokeColor = ColorStateList.valueOf(colorGreen)
+
+            btnAppInfo.text = "Step 1: App Info (Completed)"
+            btnAboutAppInfo.text = "App Info (Configured)"
+            btnAppInfo.setTextColor(colorGreen)
+            btnAppInfo.strokeColor = ColorStateList.valueOf(colorGreen)
+            btnAboutAppInfo.setTextColor(colorGreen)
+            btnAboutAppInfo.strokeColor = ColorStateList.valueOf(colorGreen)
+        } else {
+            btnAccessibilitySettings.text = "Step 2: Enable in Accessibility Settings"
+            btnAboutAccessibility.text = "Open Accessibility Settings"
+            val colorPrimary = ContextCompat.getColor(this, R.color.primary)
+            btnAccessibilitySettings.setTextColor(colorPrimary)
+            btnAccessibilitySettings.strokeColor = ColorStateList.valueOf(colorPrimary)
+            btnAboutAccessibility.setTextColor(colorPrimary)
+            btnAboutAccessibility.strokeColor = ColorStateList.valueOf(colorPrimary)
+
+            btnAppInfo.text = "Step 1: Open App Info (Allow Restricted Settings)"
+            btnAboutAppInfo.text = "Open App Info"
+            val colorText = ContextCompat.getColor(this, R.color.text_primary)
+            val colorStroke = ContextCompat.getColor(this, R.color.card_stroke)
+            btnAppInfo.setTextColor(colorText)
+            btnAppInfo.strokeColor = ColorStateList.valueOf(colorStroke)
+            btnAboutAppInfo.setTextColor(colorText)
+            btnAboutAppInfo.strokeColor = ColorStateList.valueOf(colorStroke)
+        }
+    }
+
+    private fun checkInstallPermissionOnResume() {
+        if (isWaitingForInstallPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (packageManager.canRequestPackageInstalls()) {
+                isWaitingForInstallPermission = false
+                val file = downloadedApkFile
+                if (file != null && file.exists() && file.length() > 500_000) {
+                    installApk(file)
+                }
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        checkInstallPermissionOnResume()
+        updateAccessibilityButton()
+        updateCategoryMenuBadges()
+        if (currentCategory == Category.DIAGNOSTICS) {
+            updateAudioStatsUi()
+            diagnosticsViewModel.startSampling()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        diagnosticsViewModel.stopSampling()
     }
 }

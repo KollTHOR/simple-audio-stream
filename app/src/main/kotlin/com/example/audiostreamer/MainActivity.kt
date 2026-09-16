@@ -450,6 +450,13 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        layoutPipelineDetails.setOnClickListener {
+            val intent = Intent(this, SettingsActivity::class.java).apply {
+                putExtra(SettingsActivity.EXTRA_CATEGORY, SettingsActivity.CATEGORY_DIAGNOSTICS)
+            }
+            startActivity(intent)
+        }
+
         findViewById<com.google.android.material.button.MaterialButton>(R.id.btn_main_view_logs)?.setOnClickListener {
             AppLogger.showLogViewerDialog(this)
         }

@@ -25,7 +25,6 @@ A high-performance, low-latency, single-module Android application written in Ko
 - **Integrated Diagnostics & Testing**:
   - **In-App Updater**: Directly checks GitHub releases and updates the APK from Settings.
   - **Runtime Diagnostics (`HatDiagnostics`)**: Central event ring buffer, periodic telemetry snapshots, and jitter metrics.
-  - **Full HAT Test Harness (Phase 3.2)**: Automated end-to-end synchronized diagnostic test validating receiver participation, packet flow, AudioTrack writes, and profile transition latencies.
 
 ---
 
@@ -45,7 +44,7 @@ A high-performance, low-latency, single-module Android application written in Ko
         ├── AndroidManifest.xml                 # Permissions, foreground services, package queries
         ├── kotlin/com/example/audiostreamer/
         │   ├── MainActivity.kt                 # Mode toggle (Transmitter vs Receiver), P2P UI
-        │   ├── SettingsActivity.kt             # Audio preferences, Full HAT Test UI, in-app updater
+        │   ├── SettingsActivity.kt             # Audio preferences, in-app updater
         │   ├── AudioConfig.kt                  # Audio pipeline constants & profile definitions
         │   ├── AudioCaptureService.kt          # MediaProjection capture, encoding & UDP streaming
         │   ├── AudioSinkService.kt             # UDP reception, JitterBuffer & AudioTrack playback
@@ -56,11 +55,12 @@ A high-performance, low-latency, single-module Android application written in Ko
         │   ├── AudioResampler.kt               # Linear interpolation audio resampler
         │   ├── WifiDirectManager.kt            # Autonomous P2P Wi-Fi Direct group manager
         │   ├── HatDiagnostics.kt               # Diagnostic snapshots, event ring buffer & timings
-        │   ├── HatTestControlProtocol.kt       # Out-of-band JSON test session protocol (Phase 3.2)
-        │   ├── HatTestSessionCoordinator.kt    # Test session coordinator & telemetry dispatcher
-        │   ├── HatTestRunner.kt                # E2E synchronized diagnostic test runner
-        │   ├── HatTestReport.kt                # Diagnostic test data models, JSON & log serializers
-        │   └── HatTestAndroid.kt               # Android environment adapter for test harness
+        │   └── diagnostics/                    # Runtime diagnostics subsystem
+        │       ├── ReceiverDiagnosticsState.kt # Playout latency and receiver health data models
+        │       ├── LatencyHistory.kt           # Zero-allocation 60-second rolling latency ring buffer
+        │       ├── LatencyGraphView.kt         # Custom realtime canvas graph for receiver playout latency
+        │       ├── ReceiverDiagnosticsRepository.kt # Observational diagnostics repository
+        │       └── DiagnosticsViewModel.kt     # Lifecycle-aware ViewModel driving diagnostics UI
         └── res/
             ├── layout/                         # UI layouts (activity_main, activity_settings)
             └── values/                         # Colors, strings, themes
@@ -104,60 +104,6 @@ Audio datagrams follow the custom binary HAT (`HT`) format:
 - Creates an autonomous Wi-Fi Direct group on the Receiver.
 - Transmitter connects directly to the Receiver's hotspot using auto-generated credentials.
 - Bypasses home Wi-Fi routers entirely for minimal latency and zero network congestion.
-
----
-
-## Automated End-to-End Diagnostic Testing (HAT Phase 3.2)
-
-The application includes an automated diagnostic test harness (**Full HAT Test**) designed to evaluate real end-to-end streaming health between transmitter and receiver devices.
-
-> [!IMPORTANT]
-> The Phase 3.2 test harness requires **verified two-way participation** between transmitter and receiver. A test run will **never** report `PASS` unless receiver telemetry is active. If the receiver is offline or disconnected, the test immediately aborts with `NOT_EXECUTED` (`RECEIVER_NOT_PARTICIPATING`).
-
-### How to Run a Proper Diagnostic Test
-
-#### Step 1: Install the Same Version on Both Devices
-Install the latest build on both the **Transmitter** and **Receiver** devices. Both ends must support the Phase 3.2 control protocol to exchange telemetry.
-
-#### Step 2: Establish the Normal Audio Stream
-1. Connect both devices to the same local network or establish a Wi-Fi Direct connection.
-2. On **Device B (Receiver)**: Switch to **Receiver** mode.
-3. On **Device A (Transmitter)**: Switch to **Transmitter** mode, enter the receiver's IP, grant audio capture permission, and start streaming.
-4. Verify that audio is playing out of Device B's speaker.
-
-#### Step 3: Start the Test from the Transmitter
-1. On **Device A (Transmitter)**, open **Settings** (gear icon).
-2. Scroll down to the **Full HAT Test (Automated Diagnostic)** card.
-3. Tap **Run Full HAT Test**, then confirm by tapping **Run**.
-
-#### Step 4: What Happens During the Test (~3.5 Minutes Total)
-1. **Handshake Phase (~1-2s)**:
-   - Transmitter broadcasts `TEST_SESSION_ANNOUNCE` with a unique session ID (`HAT-<timestamp>-<random>`).
-   - Receiver responds with `TEST_SESSION_JOINED` containing device metadata.
-   - UI updates to show connected devices: `TX: <Model> • RX: <Model>`.
-2. **Telemetry Streaming**:
-   - The receiver streams ~1s periodic diagnostic telemetry (`RX_TEST_STATS`) containing 25 diagnostic metrics over the control channel.
-3. **Sequential Scenarios**:
-   - **Scenario 1 — Baseline (30s)**: Measures stability with current profile unchanged.
-   - **Scenario 2 — Reliable (30s)**: Switches to `RELIABLE` (Music), verifies monotonic generation increment and receiver acknowledgement.
-   - **Scenario 3 — Balanced (30s)**: Switches to `BALANCED` (Auto), verifies generation increment and receiver acknowledgement.
-   - **Scenario 4 — Low Latency (30s)**: Switches to `LOW_LATENCY` (Video), verifies generation increment and receiver acknowledgement.
-   - **Scenario 5 — Profile Switch Stress (~80s)**: Rapidly cycles through `BALANCED` → `RELIABLE` → `BALANCED` → `LOW_LATENCY` → `BALANCED` (10s each), followed by a 30s final stability tail.
-4. **Strict Delta Metrics**:
-   - All scenario metrics are computed as strict deltas (`end - start`), preventing false measurements from cumulative counters.
-
-#### Step 5: Test Outcomes & Reports
-- **Verdicts**:
-  - `PASS`: Complete TX + RX telemetry received, all profile transitions acknowledged, packets and AudioTrack writes verified with zero fatal errors.
-  - `WARN`: Recoverable network packet loss, jitter spikes, or non-fatal single capture read errors (with capture continuing).
-  - `FAIL`: Fatal stream error, backwards generation, or unacknowledged profile transition.
-  - `INCOMPLETE`: Receiver telemetry disconnected during a scenario.
-  - `NOT_EXECUTED`: Receiver did not respond to session handshake or preconditions failed.
-- **Exported Reports**:
-  - Automatically exported to `Downloads/HAT/`:
-    - `HAT_test_<timestamp>.json`: Complete machine-readable telemetry (deltas, labeled transition latencies, snapshots).
-    - `HAT_test_<timestamp>.log`: Formatted human-readable report with scenario summary tables.
-  - Tap **Share Report** in Settings to export both files via Android's share sheet.
 
 ---
 

@@ -86,71 +86,6 @@ class AudioCaptureService : Service() {
                 false
             }
         }
-
-        fun sendTestControlMessage(message: HatTestControlMessage): Boolean {
-            val instance = currentInstance ?: return false
-            val socket = instance.udpSocket ?: return false
-            val clients = instance.clientRegistry.keys.toList()
-            val targetEndpoints = if (clients.isNotEmpty()) clients else {
-                val fallbackIp = instance.currentTargetIp
-                val fallbackPort = instance.currentTargetPort
-                if (fallbackIp.isNotBlank()) {
-                    val addrs = instance.parseTargetAddresses(fallbackIp)
-                    addrs.map { ClientEndpoint(it, fallbackPort) }
-                } else emptyList()
-            }
-            if (targetEndpoints.isEmpty()) return false
-
-            val bytes = message.toByteArray()
-            Thread({
-                try {
-                    val packet = DatagramPacket(bytes, bytes.size)
-                    synchronized(instance.socketSendLock) {
-                        for (client in targetEndpoints) {
-                            packet.address = client.address
-                            packet.port = client.port
-                            socket.send(packet)
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error sending test control message: ${message.type}", e)
-                }
-            }, "AudioCaptureTestControlSender").apply {
-                isDaemon = true
-                start()
-            }
-            return true
-        }
-
-        fun getTxMetrics(): HatTestTxMetrics {
-            val instance = currentInstance
-            val timings = try { HatDiagnostics.timingSnapshot() } catch (t: Throwable) { emptyList() }
-            val sendTiming = timings.find { it.name == "send" }
-            val encodeTiming = timings.find { it.name == "encode" }
-            val captureTiming = timings.find { it.name == "captureRead" }
-
-            val packetsGenerated = instance?.diagPacketsGenerated?.get() ?: HatDiagnostics.counter("tx_packets_generated")
-            val packetsSent = instance?.diagTxPackets?.get() ?: HatDiagnostics.counter("tx_packets")
-            val sendErrors = instance?.diagTxErrors?.get() ?: HatDiagnostics.counter("tx_send_errors")
-            val captureReads = instance?.diagCaptureReadCalls?.get() ?: HatDiagnostics.counter("capture_reads")
-            val captureErrors = instance?.diagCaptureReadErrors?.get() ?: HatDiagnostics.counter("capture_read_errors")
-            val framesCaptured = instance?.diagCaptureFrames?.get() ?: HatDiagnostics.counter("capture_frames")
-
-            return HatTestTxMetrics(
-                packetsGenerated = packetsGenerated,
-                packetsSent = packetsSent,
-                sendErrors = sendErrors,
-                captureReads = captureReads,
-                captureErrors = captureErrors,
-                framesCaptured = framesCaptured,
-                avgCaptureReadMs = captureTiming?.let { it.avgNs / 1_000_000.0 },
-                maxCaptureReadMs = captureTiming?.let { it.maxNs / 1_000_000.0 },
-                avgEncodeMs = encodeTiming?.let { it.avgNs / 1_000_000.0 },
-                maxEncodeMs = encodeTiming?.let { it.maxNs / 1_000_000.0 },
-                avgSendMs = sendTiming?.let { it.avgNs / 1_000_000.0 },
-                maxSendMs = sendTiming?.let { it.maxNs / 1_000_000.0 }
-            )
-        }
     }
 
     private var mediaProjection: MediaProjection? = null
@@ -852,13 +787,6 @@ class AudioCaptureService : Service() {
                         clientRegistry[endpoint] = SystemClock.elapsedRealtime()
                     }
 
-                    if (recvPacket.length >= 2 && recvBuf[0] == '{'.code.toByte()) {
-                        val testMsg = HatTestControlMessage.parse(recvBuf, 0, recvPacket.length)
-                        if (testMsg != null) {
-                            HatTestSessionCoordinator.onControlMessageReceived(testMsg, recvPacket.address, recvPacket.port)
-                            continue
-                        }
-                    }
                     val header = HatPacket.parseHeader(recvBuf, 0, recvPacket.length)
                     if (header != null) {
                         val endpoint = ClientEndpoint(recvPacket.address, recvPacket.port)
