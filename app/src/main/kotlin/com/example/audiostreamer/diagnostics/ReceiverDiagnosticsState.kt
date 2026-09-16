@@ -73,6 +73,18 @@ data class ReceiverDiagnosticsState(
     /** Target watermark latency computed by RFC 3550 jitter estimator in ms. */
     val targetWatermarkMs: Float = 0f,
 
+    /** Raw network-analysis-driven target delay (AdaptivePlayoutController.desiredTargetMs). */
+    val desiredTargetMs: Float = 0f,
+
+    /** Slew-limited effective target used for actual playout control (may lag desiredTargetMs). */
+    val effectiveTargetMs: Float = 0f,
+
+    /** P10 arrival-margin: positive = packets arriving early (healthy), negative = arriving late (risk). */
+    val arrivalMarginP10Ms: Float = 0f,
+
+    /** Reason for the last adaptive target transition (NONE / NETWORK_RISK / HEALTHY_RECOVERY / EMERGENCY). */
+    val targetTransitionReason: String = "NONE",
+
     // --- Jitter & Buffer Subsystem State ---
     /** RFC 3550 statistical inter-arrival jitter in ms. */
     val jitterMs: Double = 0.0,

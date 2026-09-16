@@ -42,6 +42,11 @@ class JitterBuffer(
     private val jitterEstimator = JitterEstimator(initialProfile)
     private val playbackScheduler = PlaybackScheduler(AudioConfig.getPreRollPackets(initialProfile))
     private val driftController = DriftController(AudioConfig.getPreRollPackets(initialProfile).toFloat())
+    private val adaptiveController = AdaptivePlayoutController(
+        initialProfile = initialProfile,
+        initialTargetMs = if (initialProfile == AudioConfig.PROFILE_AUTO) 50.0f else 40.0f,
+        initialPacketDurationMs = 5.0f
+    )
     private val plc = PacketLossConcealment()
     private val fecHistory = FecHistoryBuffer(32)
 
@@ -159,6 +164,7 @@ class JitterBuffer(
             waitTimeoutMs = params.waitTimeoutMs
 
             jitterEstimator.configure(params.targetWatermarkSlots, params.targetWatermarkMs)
+            adaptiveController.configure(currentProfile, params.targetWatermarkMs, packetDurationMs)
             playbackScheduler.onStreamReset(playbackScheduler.expectedReadTimestamp, preRollThreshold)
             driftController.reset(preRollThreshold.toFloat())
 
@@ -188,6 +194,7 @@ class JitterBuffer(
                 val targetSlots = AudioConfig.LOW_LATENCY_TARGET_WATERMARK_SLOTS
                 val targetMs = 40.0f
                 jitterEstimator.configure(targetSlots, targetMs)
+                adaptiveController.configure(normProfile, targetMs, packetDurationMs)
             } else {
                 slotCount = AudioConfig.getJitterBufferSlots(normProfile)
                 val nominalDuration = packetDurationMs
@@ -202,6 +209,7 @@ class JitterBuffer(
                 val targetMs = if (normProfile == AudioConfig.PROFILE_AUTO) 50.0f else 200.0f
                 val targetSlots = kotlin.math.ceil(targetMs / nominalDuration).toInt().coerceIn(2, slotCount - 4)
                 jitterEstimator.configure(targetSlots, targetMs)
+                adaptiveController.configure(normProfile, targetMs, packetDurationMs)
             }
             playbackScheduler.reset(preRollThreshold)
             driftController.reset(preRollThreshold.toFloat())
@@ -288,6 +296,22 @@ class JitterBuffer(
                 currentProfile = currentProfile,
                 slotCount = slotCount
             )
+
+            // Adaptive playout controller: slew effectiveTargetMs toward desiredTargetMs at a
+            // bounded rate. This prevents abrupt targetWatermarkSlots changes that would otherwise
+            // trigger false catch-up drops and emergency drift-fallback corrections.
+            val effectiveChanged = adaptiveController.onPacketArrived(
+                availableCount = packetBuffer.availableCount,
+                targetWatermarkSlots = jitterEstimator.targetWatermarkSlots,
+                packetDurationMs = packetDurationMs
+            )
+            if (effectiveChanged) {
+                jitterEstimator.applyEffectiveTarget(
+                    adaptiveController.effectiveTargetMs,
+                    packetDurationMs,
+                    slotCount
+                )
+            }
 
             val isLowLat = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY || currentProfile == AudioConfig.PROFILE_VIDEO)
             if (driftController.checkCatchUpDrop(isLowLat, jitterEstimator.targetWatermarkSlots)) {
@@ -458,7 +482,14 @@ class JitterBuffer(
                     return ReadResult(fillLen, ReadStatus.BUFFERING)
                 }
 
-                var nanosLeft = TimeUnit.MILLISECONDS.toNanos(waitTimeoutMs)
+                // Root-cause fix #3: scale wait timeout with effective target for AUTO profile
+                // so packets arriving within the target window are never prematurely declared underruns.
+                val dynamicWaitMs = if (!isCompressedStream && currentProfile == AudioConfig.PROFILE_AUTO) {
+                    maxOf(waitTimeoutMs, minOf(jitterEstimator.targetWatermarkMs.toLong(), 150L))
+                } else {
+                    waitTimeoutMs
+                }
+                var nanosLeft = TimeUnit.MILLISECONDS.toNanos(dynamicWaitMs)
                 try {
                     while (!hasPacket && nanosLeft > 0L) {
                         nanosLeft = notEmptyCondition.awaitNanos(nanosLeft)
@@ -498,6 +529,7 @@ class JitterBuffer(
                 }
 
                 jitterEstimator.onCleanPlayback(currentProfile, isCompressedStream, packetDurationMs, slotCount)
+                adaptiveController.onCleanPlayback()
 
                 // Primary: Bit-perfect PCM audio (bypass fractional spline resampling across 5ms packet boundaries to prevent scratching)
                 val effectiveLen = len
@@ -524,6 +556,7 @@ class JitterBuffer(
                 playbackScheduler.advanceExpectedReadTimestamp(nominalFrames)
 
                 jitterEstimator.onUnderrun(currentProfile, isCompressedStream, packetDurationMs, slotCount)
+                adaptiveController.onUnderrun()
 
                 val canConceal = !isCompressedStream || isOpusStream
                 val enteredBuffering = playbackScheduler.onUnderrun(maxUnderrunFrames, isCompressedStream, canConcealLoss = canConceal)
@@ -559,6 +592,7 @@ class JitterBuffer(
             playbackScheduler.reset(preRollThreshold)
             jitterEstimator.reset(currentProfile)
             driftController.reset(preRollThreshold.toFloat())
+            adaptiveController.reset(currentProfile, jitterEstimator.targetWatermarkMs, packetDurationMs)
             plc.reset()
             packetBuffer.clear()
             fecHistory.clear()
@@ -592,4 +626,14 @@ class JitterBuffer(
     fun getPreRollPackets(): Int = lock.withLock { preRollThreshold }
     fun getPacketDurationMs(): Float = lock.withLock { packetDurationMs }
     fun calculateFramesForCurrentPayload(length: Int): Int = lock.withLock { calculateFramesForPayload(length) }
+
+    // --- Adaptive playout controller diagnostics ---
+    /** Raw network-analysis-driven target (may be ahead of effectiveTargetMs). */
+    fun getDesiredTargetMs(): Float = lock.withLock { adaptiveController.desiredTargetMs }
+    /** Slew-limited effective target actually used for playout control. */
+    fun getEffectiveTargetMs(): Float = lock.withLock { adaptiveController.effectiveTargetMs }
+    /** P10 arrival-margin statistic: positive = healthy cushion, negative = risk. */
+    fun getArrivalMarginP10Ms(): Float = lock.withLock { adaptiveController.arrivalMarginP10 }
+    /** Human-readable last target transition reason. */
+    fun getTransitionReason(): String = lock.withLock { adaptiveController.lastTransitionReason.name }
 }

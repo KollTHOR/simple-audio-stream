@@ -1,13 +1,23 @@
 package com.example.audiostreamer
 
 /**
- * RFC 3550 Inter-Arrival Jitter Estimator and Floating Target Watermark Manager.
+ * RFC 3550 Inter-Arrival Jitter Estimator and Target Watermark Manager.
  *
  * Responsibilities:
  * - Measures transit time variance using packet audio timeline timestamps and local arrival clocks.
  * - Computes exponentially smoothed inter-arrival jitter metric (RFC 3550 standard algorithm).
- * - Adapts floating target buffer watermarks in Auto mode to balance latency vs underrun risk.
- * - Slowly relaxes buffer watermark during clean playback and increases cushion on underruns.
+ * - Tracks [desiredTargetMs]: the immediate, RFC-jitter-driven target (may change per packet).
+ * - Exposes [applyEffectiveTarget] so the [AdaptivePlayoutController] can write back the
+ *   slew-limited effective target into [targetWatermarkMs] / [targetWatermarkSlots].
+ *
+ * What changed vs. the previous version:
+ * - [onPacketArrived] no longer directly writes [targetWatermarkMs]/[targetWatermarkSlots];
+ *   it updates [desiredTargetMs] only. The [AdaptivePlayoutController] owns the effective target.
+ * - [onUnderrun] no longer jumps [targetWatermarkMs] by +30 ms instantly; the controller handles
+ *   that via [AdaptivePlayoutController.onUnderrun].
+ * - [onCleanPlayback] no longer directly decays [targetWatermarkMs]; the controller handles that.
+ * - The effective target is written back via [applyEffectiveTarget], keeping targetWatermarkSlots
+ *   as the single source of truth for slot-based playout control.
  */
 class JitterEstimator(initialProfile: String = AudioConfig.PROFILE_MUSIC) {
     var lastArrivalNanos: Long = 0L
@@ -23,11 +33,19 @@ class JitterEstimator(initialProfile: String = AudioConfig.PROFILE_MUSIC) {
     var targetWatermarkSlots: Int = AudioConfig.getTargetWatermarkSlots(initialProfile)
         private set
 
+    /**
+     * Immediate network-analysis-driven target in ms, updated per packet from RFC 3550 jitter.
+     * May differ from [targetWatermarkMs] (the slew-limited effective target).
+     */
+    var desiredTargetMs: Float = targetWatermarkMs
+        private set
+
     private var cleanPlaybackFramesCount: Int = 0
 
     fun configure(slots: Int, watermarkMs: Float) {
         targetWatermarkSlots = slots
         targetWatermarkMs = watermarkMs
+        desiredTargetMs = watermarkMs
         cleanPlaybackFramesCount = 0
     }
 
@@ -38,7 +56,20 @@ class JitterEstimator(initialProfile: String = AudioConfig.PROFILE_MUSIC) {
         estimatedJitterMs = 0.0
         targetWatermarkMs = if (initialProfile == AudioConfig.PROFILE_AUTO) 50.0f else 40.0f
         targetWatermarkSlots = AudioConfig.getTargetWatermarkSlots(initialProfile)
+        desiredTargetMs = targetWatermarkMs
         cleanPlaybackFramesCount = 0
+    }
+
+    /**
+     * Applies the slew-limited effective target from [AdaptivePlayoutController] back into
+     * [targetWatermarkMs] and [targetWatermarkSlots]. This is the only path that should update
+     * these fields during normal operation.
+     */
+    fun applyEffectiveTarget(effectiveMs: Float, packetDurationMs: Float, slotCount: Int) {
+        targetWatermarkMs = effectiveMs.coerceIn(25f, 400f)
+        val duration = if (packetDurationMs > 0f) packetDurationMs else 5.0f
+        targetWatermarkSlots = kotlin.math.ceil(targetWatermarkMs / duration)
+            .toInt().coerceIn(2, slotCount - 4)
     }
 
     private fun isAutoProfile(profile: String): Boolean =
@@ -46,6 +77,8 @@ class JitterEstimator(initialProfile: String = AudioConfig.PROFILE_MUSIC) {
 
     /**
      * Updates inter-arrival jitter upon arrival of an audio packet.
+     * Updates [desiredTargetMs] for Auto mode but does NOT touch [targetWatermarkMs] or
+     * [targetWatermarkSlots] — those are managed by [AdaptivePlayoutController].
      */
     fun onPacketArrived(
         nowNanos: Long,
@@ -73,14 +106,16 @@ class JitterEstimator(initialProfile: String = AudioConfig.PROFILE_MUSIC) {
                 // RFC 3550: J = J + (|D| - J) / 16.0
                 estimatedJitterMs += (absD - estimatedJitterMs) / 16.0
 
-                // Dynamic floating watermark for Auto Mode (35ms - 400ms)
+                // Update desiredTargetMs for Auto mode — this is the fast, unsmoothed signal
                 if (isAutoProfile(currentProfile)) {
-                    val dynamicTargetMs = (estimatedJitterMs * 3.5).toFloat().coerceIn(35.0f, 400.0f)
-                    if (dynamicTargetMs > targetWatermarkMs) {
-                        targetWatermarkMs = targetWatermarkMs * 0.9f + dynamicTargetMs * 0.1f
+                    val rawDesired = (estimatedJitterMs * 3.5).toFloat().coerceIn(35.0f, 400.0f)
+                    // Only increase desiredTargetMs (rising jitter needs faster response)
+                    if (rawDesired > desiredTargetMs) {
+                        desiredTargetMs = rawDesired
                     }
-                    val nominalSlots = kotlin.math.ceil(targetWatermarkMs / (if (isCompressed) 20.0f else packetDurationMs)).toInt().coerceIn(2, slotCount - 4)
-                    targetWatermarkSlots = nominalSlots
+                    // NOTE: targetWatermarkMs / targetWatermarkSlots are NOT updated here.
+                    // The AdaptivePlayoutController will call applyEffectiveTarget() with the
+                    // slew-limited result.
                 }
             }
         }
@@ -90,7 +125,9 @@ class JitterEstimator(initialProfile: String = AudioConfig.PROFILE_MUSIC) {
     }
 
     /**
-     * Called during sustained clean playback to gradually relax buffer watermark.
+     * Called during sustained clean playback to gradually relax desiredTargetMs.
+     * Does NOT touch [targetWatermarkMs]/[targetWatermarkSlots] — those are managed by
+     * [AdaptivePlayoutController].
      */
     fun onCleanPlayback(
         currentProfile: String,
@@ -102,30 +139,32 @@ class JitterEstimator(initialProfile: String = AudioConfig.PROFILE_MUSIC) {
             cleanPlaybackFramesCount++
             if (cleanPlaybackFramesCount >= 100) {
                 cleanPlaybackFramesCount = 0
-                val baselineTarget = (estimatedJitterMs * 3.5).toFloat().coerceIn(35.0f, 400.0f)
-                if (targetWatermarkMs > baselineTarget) {
-                    targetWatermarkMs = (targetWatermarkMs - 2.0f).coerceAtLeast(baselineTarget)
-                    val nominalDurationMs = if (isCompressed) 20.0f else packetDurationMs
-                    targetWatermarkSlots = kotlin.math.ceil(targetWatermarkMs / nominalDurationMs).toInt().coerceIn(2, slotCount - 4)
+                val baselineDesired = (estimatedJitterMs * 3.5).toFloat().coerceIn(35.0f, 400.0f)
+                if (desiredTargetMs > baselineDesired) {
+                    // Slowly decay desiredTargetMs toward the RFC-jitter baseline
+                    desiredTargetMs = (desiredTargetMs - 2.0f).coerceAtLeast(baselineDesired)
                 }
+                // NOTE: targetWatermarkMs/Slots NOT touched here — AdaptivePlayoutController owns them.
             }
         }
     }
 
     /**
-     * Called upon buffer underrun in Auto mode to increase the jitter cushion.
+     * Called upon buffer underrun.
+     * Resets the clean-playback counter; actual target increase is handled by
+     * [AdaptivePlayoutController.onUnderrun] to ensure it is slew-limited.
      */
     fun onUnderrun(
         currentProfile: String,
-        isCompressed: Boolean,
-        packetDurationMs: Float,
-        slotCount: Int
+        @Suppress("UNUSED_PARAMETER") isCompressed: Boolean,
+        @Suppress("UNUSED_PARAMETER") packetDurationMs: Float,
+        @Suppress("UNUSED_PARAMETER") slotCount: Int
     ) {
         if (isAutoProfile(currentProfile)) {
-            targetWatermarkMs = (targetWatermarkMs + 30.0f).coerceAtMost(400.0f)
-            val nominalDurationMs = if (isCompressed) 20.0f else packetDurationMs
-            targetWatermarkSlots = kotlin.math.ceil(targetWatermarkMs / nominalDurationMs).toInt().coerceIn(2, slotCount - 4)
             cleanPlaybackFramesCount = 0
+            // Bump desiredTargetMs to signal network risk — the AdaptivePlayoutController
+            // will also call onUnderrun() and handle the emergency increase.
+            desiredTargetMs = (desiredTargetMs + 30.0f).coerceAtMost(400.0f)
         }
     }
 }
