@@ -531,10 +531,13 @@ class JitterBuffer(
                 jitterEstimator.onCleanPlayback(currentProfile, isCompressedStream, packetDurationMs, slotCount)
                 adaptiveController.onCleanPlayback()
 
-                // Primary: Bit-perfect PCM audio (bypass fractional spline resampling across 5ms packet boundaries to prevent scratching)
-                val effectiveLen = len
+                // Primary drift correction: Catmull-Rom fractional resampling (±1000 ppm, imperceptible).
+                // Adjusts playback rate continuously using the PI controller's correctionRatio.
+                // Maintains phase accumulator and 3-frame boundary history across packet edges for C1 continuity.
+                val effectiveLen = driftController.resamplePcmChunk(output, len, is24BitStream)
 
-                // Clock Drift Management: Smooth zero-crossing micro-adjustment under sustained deviation
+                // Safety-valve fallback: coarse zero-crossing frame drop/dup only when drift is so extreme
+                // that ±1000 ppm fractional resampling cannot keep pace (rare, sustained network pathology).
                 driftController.checkAndApplyEmergencyDriftFallback(
                     output = output,
                     len = effectiveLen,

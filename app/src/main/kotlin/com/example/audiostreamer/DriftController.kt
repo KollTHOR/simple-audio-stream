@@ -72,7 +72,11 @@ class DriftController(initialFill: Float = 2.0f) {
      * Updates smoothed fill level and adjusts closed-loop PI drift correction ratio.
      */
     fun updateFill(availableCount: Int, targetWatermarkSlots: Int = 10) {
-        smoothBufferFill = smoothBufferFill * 0.998f + availableCount * 0.002f
+        // Low-latency (32-slot buffer, target ~2): keep slow alpha to reject burst jitter.
+        // PCM Music/Auto (256–512-slot buffer, target ~10–40): faster alpha so PI converges
+        // within ~1.25s instead of 2.5s — critical for multi-receiver clock divergence correction.
+        val alpha = if (targetWatermarkSlots <= 4) 0.002f else 0.004f
+        smoothBufferFill = smoothBufferFill * (1f - alpha) + availableCount * alpha
 
         val error = smoothBufferFill - targetWatermarkSlots
         val effectiveError = when {
@@ -275,8 +279,8 @@ class DriftController(initialFill: Float = 2.0f) {
         val driftDelta = smoothBufferFill - targetWatermarkSlots
         val isLowLat = (currentProfile == AudioConfig.PROFILE_LOW_LATENCY || currentProfile == AudioConfig.PROFILE_VIDEO || currentProfile.equals("LOW_LATENCY", ignoreCase = true))
         val isAuto = (currentProfile == AudioConfig.PROFILE_AUTO || currentProfile.equals("BALANCED", ignoreCase = true))
-        val driftThreshold = if (isLowLat) 12f else if (isAuto) 16f else 20f
-        val minInterval = if (isLowLat) 500 else if (isAuto) 600 else 800
+        val driftThreshold = 12f // Unified: ±12-slot deviation triggers emergency frame adjustment across all profiles.
+        val minInterval = if (isLowLat) 500 else 400 // PCM profiles: correct every 400 pkts (~2s) instead of 600–800.
 
         if (packetsSinceDriftAdjust >= minInterval && len >= 12) {
             if (driftDelta > driftThreshold) {
