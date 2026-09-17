@@ -299,6 +299,24 @@ class UpdateCenterTest {
         assertTrue("vOld should be less than vNew", VersionComparator.compareSemantic(vOld, vNew) < 0)
     }
 
+    @Test
+    fun versionComparator_dateTaggedNightlyVsSemanticNightly() {
+        val installed = BuildInfo(
+            versionName = "1.8.14-nightly.20260916+11a0789",
+            versionCode = 111L,
+            channel = ReleaseChannel.NIGHTLY,
+            gitCommitSha = "11a0789",
+            buildTimestamp = "20260916",
+            baseVersionName = "1.8.14"
+        )
+
+        // Date-formatted nightly tag without leading major.minor is recognized as NEWER based on build date
+        assertEquals(
+            UpdateCompatibility.NEWER,
+            VersionComparator.compare(null, "nightly-20260917-ec5fbe3", installed)
+        )
+    }
+
     // =========================================================================
     // 3. CHECKSUM VERIFIER
     // =========================================================================

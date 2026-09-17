@@ -43,7 +43,11 @@ jobs:
           SHORT_SHA=$(git rev-parse --short=7 HEAD)
           BUILD_DATE=$(date -u +%Y%m%d)
           
-          # Query base version from gradlew or defaults
+          BASE_VERSION=$(grep 'baseVersionName = ' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/')
+          BASE_CODE=$(grep 'baseVersionCode = ' app/build.gradle.kts | sed -E 's/.*= ([0-9]+).*/\1/')
+          if [ -z "$BASE_VERSION" ]; then BASE_VERSION="1.8.15"; fi
+          if [ -z "$BASE_CODE" ]; then BASE_CODE="112"; fi
+          
           NIGHTLY_TAG="nightly-${BUILD_DATE}-${SHORT_SHA}"
           APK_SRC="app/build/outputs/apk/release/app-release.apk"
           APK_NAME="simple-audio-stream-${NIGHTLY_TAG}.apk"
@@ -58,6 +62,8 @@ jobs:
           echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
           echo "commit_short=$SHORT_SHA" >> $GITHUB_OUTPUT
           echo "build_date=$BUILD_DATE" >> $GITHUB_OUTPUT
+          echo "base_version=$BASE_VERSION" >> $GITHUB_OUTPUT
+          echo "version_code=$BASE_CODE" >> $GITHUB_OUTPUT
           echo "checksum=$(cat $SHA_NAME)" >> $GITHUB_OUTPUT
 
       - name: Publish Nightly GitHub Prerelease
@@ -70,12 +76,14 @@ jobs:
             
             This is an automated development prerelease from the `nightly` branch.
             
+            - **Version:** `${{ steps.prepare_nightly.outputs.base_version }}-nightly.${{ steps.prepare_nightly.outputs.build_date }}+${{ steps.prepare_nightly.outputs.commit_short }}`
+            - **Build:** `${{ steps.prepare_nightly.outputs.version_code }}`
             - **Commit:** `${{ steps.prepare_nightly.outputs.commit_sha }}`
             - **Build Date:** `${{ steps.prepare_nightly.outputs.build_date }}`
             - **Channel:** `Nightly`
             - **SHA-256 Checksum:** `${{ steps.prepare_nightly.outputs.checksum }}`
             
-            <!-- metadata: channel=nightly commit=${{ steps.prepare_nightly.outputs.commit_sha }} -->
+            <!-- metadata: channel=nightly commit=${{ steps.prepare_nightly.outputs.commit_sha }} versionCode=${{ steps.prepare_nightly.outputs.version_code }} -->
           files: |
             ${{ steps.prepare_nightly.outputs.apk_name }}
             ${{ steps.prepare_nightly.outputs.sha_name }}
