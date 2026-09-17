@@ -152,13 +152,92 @@
                             android:textColor="@color/text_secondary"
                             android:layout_marginBottom="12dp" />
 
-                        <!-- Target Profiles Section (Transmitter Only) -->
+                        <!-- Receiver Mode: Auto-Tune / Tune-In Prompt Banner -->
+                        <com.google.android.material.card.MaterialCardView
+                            android:id="@+id/layout_tune_in_banner"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginBottom="12dp"
+                            app:cardCornerRadius="12dp"
+                            app:cardElevation="2dp"
+                            app:strokeColor="@color/primary"
+                            app:strokeWidth="1.5dp"
+                            app:cardBackgroundColor="@color/card_bg"
+                            android:visibility="gone">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="vertical"
+                                android:padding="12dp">
+
+                                <LinearLayout
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:orientation="horizontal"
+                                    android:gravity="center_vertical"
+                                    android:layout_marginBottom="6dp">
+
+                                    <ImageView
+                                        android:layout_width="20dp"
+                                        android:layout_height="20dp"
+                                        android:src="@drawable/ic_transmitter"
+                                        app:tint="@color/primary"
+                                        android:layout_marginEnd="8dp" />
+
+                                    <TextView
+                                        android:layout_width="0dp"
+                                        android:layout_height="wrap_content"
+                                        android:layout_weight="1"
+                                        android:text="Transmitter Broadcasting"
+                                        android:textSize="12sp"
+                                        android:textStyle="bold"
+                                        android:textColor="@color/primary" />
+
+                                    <TextView
+                                        android:id="@+id/btn_dismiss_tune_in"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:text="✕"
+                                        android:textSize="14sp"
+                                        android:textColor="@color/text_hint"
+                                        android:padding="4dp"
+                                        android:clickable="true"
+                                        android:focusable="true" />
+                                </LinearLayout>
+
+                                <TextView
+                                    android:id="@+id/tv_tune_in_message"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:text="A transmitter is broadcasting on your local network."
+                                    android:textSize="13sp"
+                                    android:textColor="@color/text_primary"
+                                    android:layout_marginBottom="10dp" />
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/btn_tune_in"
+                                    style="@style/Widget.MaterialComponents.Button.UnelevatedButton"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="36dp"
+                                    android:minHeight="0dp"
+                                    android:textSize="12sp"
+                                    android:textStyle="bold"
+                                    android:backgroundTint="@color/primary"
+                                    android:textColor="@color/white"
+                                    app:cornerRadius="8dp"
+                                    android:text="Tune In Now" />
+                            </LinearLayout>
+                        </com.google.android.material.card.MaterialCardView>
+
+                        <!-- Connected Devices Section (Visible when 1+ devices connected) -->
                         <LinearLayout
-                            android:id="@+id/layout_saved_profiles_section"
+                            android:id="@+id/layout_connected_devices_section"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:orientation="vertical"
-                            android:layout_marginBottom="10dp">
+                            android:layout_marginBottom="12dp"
+                            android:visibility="gone">
 
                             <LinearLayout
                                 android:layout_width="match_parent"
@@ -168,60 +247,41 @@
                                 android:layout_marginBottom="6dp">
 
                                 <TextView
-                                    android:id="@+id/tv_saved_profiles_title"
+                                    android:id="@+id/tv_connected_devices_title"
                                     android:layout_width="0dp"
                                     android:layout_height="wrap_content"
                                     android:layout_weight="1"
-                                    android:text="TARGET PROFILES"
+                                    android:text="CONNECTED DEVICES"
                                     android:textSize="11sp"
                                     android:textStyle="bold"
-                                    android:textColor="@color/text_hint"
+                                    android:textColor="@color/status_green"
                                     android:letterSpacing="0.05" />
 
-                                <com.google.android.material.button.MaterialButton
-                                    android:id="@+id/btn_add_profile"
-                                    style="@style/Widget.MaterialComponents.Button.TextButton"
+                                <TextView
+                                    android:id="@+id/tv_connected_count_badge"
                                     android:layout_width="wrap_content"
                                     android:layout_height="wrap_content"
-                                    android:minHeight="0dp"
-                                    android:minWidth="0dp"
-                                    android:paddingLeft="6dp"
-                                    android:paddingRight="6dp"
-                                    android:paddingTop="2dp"
-                                    android:paddingBottom="2dp"
+                                    android:text="1 active"
                                     android:textSize="11sp"
-                                    android:textColor="@color/primary"
-                                    android:text="+ Add Profile" />
+                                    android:textColor="@color/status_green"
+                                    android:textStyle="bold" />
                             </LinearLayout>
 
-                            <!-- Dynamic Saved Profiles List Container -->
+                            <!-- Dynamic List Container for Connected Devices -->
                             <LinearLayout
-                                android:id="@+id/layout_saved_profiles_container"
+                                android:id="@+id/layout_connected_devices_container"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
                                 android:orientation="vertical" />
-
-                            <!-- Empty State for Profiles -->
-                            <TextView
-                                android:id="@+id/layout_saved_empty"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:text="No profiles saved. Tap '+ Add Profile' or select a nearby device below."
-                                android:textSize="12sp"
-                                android:textColor="@color/text_hint"
-                                android:background="@color/input_bg"
-                                android:padding="12dp"
-                                android:layout_marginBottom="4dp" />
                         </LinearLayout>
 
-                        <!-- Nearby Discovered Receivers (Horizontal Chips Row) -->
+                        <!-- Available Discovered Devices Section (Phone-style list) -->
                         <LinearLayout
                             android:id="@+id/layout_discovery_section"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:orientation="vertical"
-                            android:layout_marginBottom="10dp"
-                            android:visibility="gone">
+                            android:layout_marginBottom="12dp">
 
                             <LinearLayout
                                 android:layout_width="match_parent"
@@ -235,7 +295,7 @@
                                     android:layout_width="0dp"
                                     android:layout_height="wrap_content"
                                     android:layout_weight="1"
-                                    android:text="NEARBY RECEIVERS"
+                                    android:text="AVAILABLE DEVICES"
                                     android:textSize="11sp"
                                     android:textStyle="bold"
                                     android:textColor="@color/text_hint"
@@ -276,12 +336,86 @@
                                     android:text="Scan" />
                             </LinearLayout>
 
-                            <!-- Vertical List Container for Discovered Receivers -->
+                            <!-- Vertical List Container for Available Devices -->
                             <LinearLayout
                                 android:id="@+id/layout_discovered_devices_container"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
                                 android:orientation="vertical" />
+
+                            <!-- Empty State for Available Devices -->
+                            <TextView
+                                android:id="@+id/tv_available_empty"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:text="Searching for nearby devices..."
+                                android:textSize="12sp"
+                                android:textColor="@color/text_hint"
+                                android:background="@color/input_bg"
+                                android:padding="12dp"
+                                android:layout_marginBottom="4dp" />
+                        </LinearLayout>
+
+                        <!-- Target Profiles Section (Transmitter Only) -->
+                        <LinearLayout
+                            android:id="@+id/layout_saved_profiles_section"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:layout_marginBottom="10dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="horizontal"
+                                android:gravity="center_vertical"
+                                android:layout_marginBottom="6dp">
+
+                                <TextView
+                                    android:id="@+id/tv_saved_profiles_title"
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="SAVED PROFILES"
+                                    android:textSize="11sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_hint"
+                                    android:letterSpacing="0.05" />
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/btn_add_profile"
+                                    style="@style/Widget.MaterialComponents.Button.TextButton"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:minHeight="0dp"
+                                    android:minWidth="0dp"
+                                    android:paddingLeft="6dp"
+                                    android:paddingRight="6dp"
+                                    android:paddingTop="2dp"
+                                    android:paddingBottom="2dp"
+                                    android:textSize="11sp"
+                                    android:textColor="@color/primary"
+                                    android:text="+ Add Profile" />
+                            </LinearLayout>
+
+                            <!-- Dynamic Saved Profiles List Container -->
+                            <LinearLayout
+                                android:id="@+id/layout_saved_profiles_container"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="vertical" />
+
+                            <!-- Empty State for Profiles -->
+                            <TextView
+                                android:id="@+id/layout_saved_empty"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:text="No profiles saved. Tap '+ Add Profile' to bookmark a target."
+                                android:textSize="12sp"
+                                android:textColor="@color/text_hint"
+                                android:background="@color/input_bg"
+                                android:padding="12dp"
+                                android:layout_marginBottom="4dp" />
                         </LinearLayout>
 
                         <!-- Receiver Mode: Wi-Fi Direct Autonomous Group Card -->

@@ -70,12 +70,24 @@ class MainActivity : AppCompatActivity() {
     private lateinit var layoutSavedProfilesContainer: LinearLayout
     private lateinit var layoutSavedEmpty: TextView
 
+    // Modern Connection Manager & Available Devices
+    private lateinit var layoutTuneInBanner: MaterialCardView
+    private lateinit var tvTuneInMessage: TextView
+    private lateinit var btnTuneIn: MaterialButton
+    private lateinit var btnDismissTuneIn: TextView
+
+    private lateinit var layoutConnectedDevicesSection: LinearLayout
+    private lateinit var tvConnectedDevicesTitle: TextView
+    private lateinit var tvConnectedCountBadge: TextView
+    private lateinit var layoutConnectedDevicesContainer: LinearLayout
+
     private lateinit var layoutDiscoverySection: LinearLayout
     private lateinit var tvDiscoveryTitle: TextView
     private lateinit var pbDiscoveryScanning: ProgressBar
     private lateinit var tvDiscoveryScanningText: TextView
     private lateinit var btnScanReceivers: MaterialButton
     private lateinit var layoutDiscoveredDevicesContainer: LinearLayout
+    private lateinit var tvAvailableEmpty: TextView
 
     private lateinit var layoutReceiverP2p: LinearLayout
     private lateinit var switchReceiverP2p: SwitchMaterial
@@ -140,12 +152,55 @@ class MainActivity : AppCompatActivity() {
             isStarting = true
             isStopping = false
             DiscoveryManager.stopDiscovery()
+            if (ip.isNotEmpty()) {
+                DiscoveryManager.sendStreamInvite(ip, port, DiscoveryManager.getLocalDeviceName())
+            }
             ContextCompat.startForegroundService(this, serviceIntent)
             updateModeAndButtonUi()
         } else {
             isStarting = false
             Toast.makeText(this, "Screen capture permission denied", Toast.LENGTH_SHORT).show()
             updateModeAndButtonUi()
+        }
+    }
+
+    private val blePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val allGranted = grants.values.all { it }
+        if (allGranted) {
+            AppLogger.i("MainActivity", "Bluetooth permissions granted")
+            syncDiscoveryMode()
+        } else {
+            AppLogger.w("MainActivity", "Some Bluetooth permissions denied: $grants")
+        }
+    }
+
+    private fun checkAndRequestBlePermissions(): Boolean {
+        val permissions = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.BLUETOOTH_SCAN)
+            }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE) != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+            }
+        } else {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH) != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.BLUETOOTH)
+            }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            }
+        }
+        return if (permissions.isNotEmpty()) {
+            blePermissionLauncher.launch(permissions.toTypedArray())
+            false
+        } else {
+            true
         }
     }
 
@@ -290,12 +345,23 @@ class MainActivity : AppCompatActivity() {
         layoutSavedProfilesContainer = findViewById(R.id.layout_saved_profiles_container)
         layoutSavedEmpty = findViewById(R.id.layout_saved_empty)
 
+        layoutTuneInBanner = findViewById(R.id.layout_tune_in_banner)
+        tvTuneInMessage = findViewById(R.id.tv_tune_in_message)
+        btnTuneIn = findViewById(R.id.btn_tune_in)
+        btnDismissTuneIn = findViewById(R.id.btn_dismiss_tune_in)
+
+        layoutConnectedDevicesSection = findViewById(R.id.layout_connected_devices_section)
+        tvConnectedDevicesTitle = findViewById(R.id.tv_connected_devices_title)
+        tvConnectedCountBadge = findViewById(R.id.tv_connected_count_badge)
+        layoutConnectedDevicesContainer = findViewById(R.id.layout_connected_devices_container)
+
         layoutDiscoverySection = findViewById(R.id.layout_discovery_section)
         tvDiscoveryTitle = findViewById(R.id.tv_discovery_title)
         pbDiscoveryScanning = findViewById(R.id.pb_discovery_scanning)
         tvDiscoveryScanningText = findViewById(R.id.tv_discovery_scanning_text)
         btnScanReceivers = findViewById(R.id.btn_scan_receivers)
         layoutDiscoveredDevicesContainer = findViewById(R.id.layout_discovered_devices_container)
+        tvAvailableEmpty = findViewById(R.id.tv_available_empty)
 
         layoutReceiverP2p = findViewById(R.id.layout_receiver_p2p)
         switchReceiverP2p = findViewById(R.id.switch_receiver_p2p)
@@ -330,11 +396,29 @@ class MainActivity : AppCompatActivity() {
             showEditProfileDialog(null)
         }
 
+        btnDismissTuneIn.setOnClickListener {
+            layoutTuneInBanner.visibility = View.GONE
+        }
+
+        btnTuneIn.setOnClickListener {
+            val transmitter = DiscoveryManager.discoveredTransmitters.value.firstOrNull()
+            if (transmitter != null) {
+                etTargetIp.setText(transmitter.ip)
+                etPort.setText(transmitter.port.toString())
+                startReceiverWorkflow()
+                layoutTuneInBanner.visibility = View.GONE
+            }
+        }
+
         switchReceiverP2p.setOnCheckedChangeListener { _, isChecked ->
             if (isChecked) {
                 startReceiverP2pGroup()
             } else {
                 WifiDirectManager.removeGroup(this)
+                BleDiscoveryManager.stopAdvertising()
+                if (BleDiscoveryManager.hasPermissions(this)) {
+                    BleDiscoveryManager.startAdvertising(this, role = "receiver")
+                }
                 layoutReceiverP2pInfo.visibility = View.GONE
                 tvReceiverP2pStatus.text = "Autonomous Wi-Fi Direct stopped"
             }
@@ -345,7 +429,10 @@ class MainActivity : AppCompatActivity() {
             if (checkAndRequestP2pPermissions()) {
                 WifiDirectManager.discoverPeers(this)
             }
-            Toast.makeText(this, "Scanning for nearby receivers...", Toast.LENGTH_SHORT).show()
+            if (checkAndRequestBlePermissions()) {
+                BleDiscoveryManager.startScanning(this)
+            }
+            Toast.makeText(this, "Scanning for nearby devices...", Toast.LENGTH_SHORT).show()
         }
 
         val initialProfile = ConnectionProfileManager.activeProfileFlow.value
@@ -373,6 +460,16 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 launch {
+                    DiscoveryManager.discoveredTransmitters.collect {
+                        updateTuneInBanner()
+                    }
+                }
+                launch {
+                    BleDiscoveryManager.bleDevices.collect {
+                        updateDiscoveredDevicesUi()
+                    }
+                }
+                launch {
                     DiscoveryManager.isScanning.collect {
                         updateScanningIndicator()
                     }
@@ -384,6 +481,11 @@ class MainActivity : AppCompatActivity() {
                 }
                 launch {
                     WifiDirectManager.isScanningPeers.collect {
+                        updateScanningIndicator()
+                    }
+                }
+                launch {
+                    BleDiscoveryManager.isScanning.collect {
                         updateScanningIndicator()
                     }
                 }
@@ -542,15 +644,32 @@ class MainActivity : AppCompatActivity() {
         when (currentMode) {
             Mode.TRANSMITTER -> {
                 DiscoveryManager.stopReceiverResponder()
+                BleDiscoveryManager.stopAdvertising()
                 if (!AudioCaptureService.isRunning.get()) {
                     DiscoveryManager.startDiscovery(lifecycleScope)
                 } else {
                     DiscoveryManager.stopDiscovery()
                 }
+                if (BleDiscoveryManager.hasPermissions(this)) {
+                    BleDiscoveryManager.startScanning(this)
+                }
             }
             Mode.RECEIVER -> {
                 DiscoveryManager.stopDiscovery()
+                BleDiscoveryManager.stopScanning()
                 DiscoveryManager.startReceiverResponder(this, lifecycleScope)
+                if (BleDiscoveryManager.hasPermissions(this)) {
+                    val ssid = WifiDirectManager.networkSsid.value
+                    val pass = WifiDirectManager.networkPassphrase.value
+                    val ip = WifiDirectManager.groupOwnerIp.value
+                    BleDiscoveryManager.startAdvertising(
+                        context = this,
+                        role = "receiver",
+                        p2pSsid = ssid,
+                        p2pPassphrase = pass,
+                        p2pGoIp = ip
+                    )
+                }
             }
         }
     }
@@ -558,7 +677,7 @@ class MainActivity : AppCompatActivity() {
     private fun Int.dpToPx(): Int = (this * resources.displayMetrics.density).toInt()
 
     private fun updateScanningIndicator() {
-        val isScanning = DiscoveryManager.isScanning.value || WifiDirectManager.isScanningPeers.value
+        val isScanning = DiscoveryManager.isScanning.value || WifiDirectManager.isScanningPeers.value || BleDiscoveryManager.isScanning.value
         pbDiscoveryScanning.visibility = if (isScanning) View.VISIBLE else View.GONE
         tvDiscoveryScanningText.visibility = if (isScanning) View.VISIBLE else View.GONE
     }
@@ -583,6 +702,7 @@ class MainActivity : AppCompatActivity() {
     private fun getUnifiedDiscoveredDevices(): List<UnifiedDevice> {
         val localDevices = DiscoveryManager.discoveredDevices.value
         val p2pPeers = WifiDirectManager.discoveredPeers.value.toMutableList()
+        val blePeers = BleDiscoveryManager.bleDevices.value.toMutableList()
         val unified = mutableListOf<UnifiedDevice>()
 
         for (dev in localDevices) {
@@ -595,25 +715,40 @@ class MainActivity : AppCompatActivity() {
                     peer.deviceName.contains(dev.name, ignoreCase = true)
                 ))
             }
-
             val matchingPeer = if (matchingPeerIndex >= 0) p2pPeers.removeAt(matchingPeerIndex) else null
-            val isDirect = dev.isP2pActive || matchingPeer != null || !dev.p2pSsid.isNullOrEmpty()
+
+            // Find matching BLE peer by name or bluetooth address
+            val matchingBleIndex = blePeers.indexOfFirst { ble ->
+                (dev.p2pMac != null && ble.bluetoothAddress.equals(dev.p2pMac, ignoreCase = true)) ||
+                (ble.name.isNotEmpty() && (
+                    ble.name.equals(dev.name, ignoreCase = true) ||
+                    dev.name.contains(ble.name, ignoreCase = true) ||
+                    ble.name.contains(dev.name, ignoreCase = true)
+                ))
+            }
+            val matchingBle = if (matchingBleIndex >= 0) blePeers.removeAt(matchingBleIndex) else null
+
+            val p2pSsid = dev.p2pSsid ?: matchingBle?.p2pSsid
+            val p2pPassphrase = dev.p2pPassphrase ?: matchingBle?.p2pPassphrase
+            val p2pGoIp = dev.p2pGoIp ?: matchingBle?.p2pGoIp ?: if (dev.ip.startsWith("192.168.49.")) dev.ip else null
+            val isDirect = dev.isP2pActive || matchingPeer != null || !p2pSsid.isNullOrEmpty()
 
             val displayName = matchingPeer?.deviceName?.takeIf { it.isNotEmpty() }
+                ?: matchingBle?.name?.takeIf { it.isNotEmpty() && it != "Nearby receiver" }
                 ?: dev.name.takeIf { it != "Audio Receiver" && it.isNotEmpty() }
                 ?: "Audio Receiver"
 
             unified.add(
                 UnifiedDevice(
-                    id = dev.p2pMac ?: "ip_${dev.ip}",
+                    id = dev.p2pMac ?: matchingBle?.bluetoothAddress ?: "ip_${dev.ip}",
                     displayName = displayName,
                     modelName = dev.modelName ?: if (dev.name != displayName && dev.name != "Audio Receiver") dev.name else null,
                     lanIp = if (dev.ip.startsWith("192.168.49.")) null else dev.ip,
                     port = dev.port,
                     p2pPeer = matchingPeer,
-                    p2pSsid = dev.p2pSsid,
-                    p2pPassphrase = dev.p2pPassphrase,
-                    p2pGoIp = dev.p2pGoIp ?: if (dev.ip.startsWith("192.168.49.")) dev.ip else null,
+                    p2pSsid = p2pSsid,
+                    p2pPassphrase = p2pPassphrase,
+                    p2pGoIp = p2pGoIp,
                     isDirectAvailable = isDirect,
                     useDirect = !isDirect && dev.ip.startsWith("192.168.49."),
                     capabilitiesMask = dev.capabilitiesMask
@@ -624,6 +759,12 @@ class MainActivity : AppCompatActivity() {
         // Add any remaining P2P peers that were not matched with a UDP broadcast
         for (peer in p2pPeers) {
             val peerName = peer.deviceName.ifEmpty { "Wi-Fi Direct Receiver" }
+            val matchingBleIndex = blePeers.indexOfFirst { ble ->
+                peer.deviceAddress.equals(ble.bluetoothAddress, ignoreCase = true) ||
+                ble.name.equals(peerName, ignoreCase = true)
+            }
+            val matchingBle = if (matchingBleIndex >= 0) blePeers.removeAt(matchingBleIndex) else null
+
             unified.add(
                 UnifiedDevice(
                     id = "p2p_${peer.deviceAddress}",
@@ -632,9 +773,9 @@ class MainActivity : AppCompatActivity() {
                     lanIp = null,
                     port = AudioConfig.DEFAULT_PORT,
                     p2pPeer = peer,
-                    p2pSsid = null,
-                    p2pPassphrase = null,
-                    p2pGoIp = null,
+                    p2pSsid = matchingBle?.p2pSsid,
+                    p2pPassphrase = matchingBle?.p2pPassphrase,
+                    p2pGoIp = matchingBle?.p2pGoIp,
                     isDirectAvailable = true,
                     useDirect = true,
                     capabilitiesMask = 0
@@ -642,21 +783,142 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
+        // Add remaining BLE peers
+        for (ble in blePeers) {
+            if (ble.role == "receiver" && currentMode == Mode.TRANSMITTER) {
+                unified.add(
+                    UnifiedDevice(
+                        id = "ble_${ble.bluetoothAddress}",
+                        displayName = ble.name,
+                        modelName = "Nearby BLE",
+                        lanIp = null,
+                        port = AudioConfig.DEFAULT_PORT,
+                        p2pPeer = null,
+                        p2pSsid = ble.p2pSsid,
+                        p2pPassphrase = ble.p2pPassphrase,
+                        p2pGoIp = ble.p2pGoIp,
+                        isDirectAvailable = !ble.p2pSsid.isNullOrEmpty(),
+                        useDirect = true,
+                        capabilitiesMask = 0
+                    )
+                )
+            }
+        }
+
         return unified
+    }
+
+    private fun updateConnectedDevicesUi(t: Telemetry) {
+        layoutConnectedDevicesContainer.removeAllViews()
+
+        if (currentMode == Mode.TRANSMITTER) {
+            val receivers = t.connectedReceivers
+            if (receivers.isNotEmpty()) {
+                layoutConnectedDevicesSection.visibility = View.VISIBLE
+                tvConnectedDevicesTitle.text = "CONNECTED RECEIVERS"
+                tvConnectedCountBadge.text = "${receivers.size} active"
+
+                for (rec in receivers) {
+                    val itemView = layoutInflater.inflate(R.layout.item_connection_device, layoutConnectedDevicesContainer, false)
+                    val tvName = itemView.findViewById<TextView>(R.id.tv_device_name)
+                    val tvDetails = itemView.findViewById<TextView>(R.id.tv_device_details)
+                    val dot = itemView.findViewById<View>(R.id.view_active_dot)
+                    val btnDisconnect = itemView.findViewById<MaterialButton>(R.id.btn_device_disconnect)
+                    val btnConnect = itemView.findViewById<MaterialButton>(R.id.btn_device_connect)
+
+                    tvName.text = rec.name.ifEmpty { "Audio Receiver" }
+                    val latencyStr = if (rec.latencyMs > 0) " • ${rec.latencyMs}ms" else ""
+                    tvDetails.text = "${rec.ip}:${rec.port} • ${rec.transportType}$latencyStr"
+                    dot.visibility = View.VISIBLE
+                    btnConnect.visibility = View.GONE
+                    btnDisconnect.visibility = View.VISIBLE
+
+                    btnDisconnect.setOnClickListener {
+                        val removeIntent = Intent(this, AudioCaptureService::class.java).apply {
+                            action = AudioCaptureService.ACTION_REMOVE_CLIENT
+                            putExtra(AudioCaptureService.EXTRA_TARGET_IP, rec.ip)
+                        }
+                        startService(removeIntent)
+                        Toast.makeText(this, "Disconnected ${rec.name.ifEmpty { rec.ip }}", Toast.LENGTH_SHORT).show()
+                    }
+
+                    layoutConnectedDevicesContainer.addView(itemView)
+                }
+            } else {
+                layoutConnectedDevicesSection.visibility = View.GONE
+            }
+        } else {
+            // RECEIVER mode
+            val isSinkActive = AudioSinkService.isRunning.get()
+            val transmitter = t.connectedTransmitter
+            if (isSinkActive && transmitter != null) {
+                layoutConnectedDevicesSection.visibility = View.VISIBLE
+                tvConnectedDevicesTitle.text = "CONNECTED TRANSMITTER"
+                tvConnectedCountBadge.text = "1 active"
+
+                val itemView = layoutInflater.inflate(R.layout.item_connection_device, layoutConnectedDevicesContainer, false)
+                val tvName = itemView.findViewById<TextView>(R.id.tv_device_name)
+                val tvDetails = itemView.findViewById<TextView>(R.id.tv_device_details)
+                val dot = itemView.findViewById<View>(R.id.view_active_dot)
+                val btnDisconnect = itemView.findViewById<MaterialButton>(R.id.btn_device_disconnect)
+                val btnConnect = itemView.findViewById<MaterialButton>(R.id.btn_device_connect)
+
+                tvName.text = transmitter.name.ifEmpty { "Audio Transmitter" }
+                tvDetails.text = "${transmitter.ip}:${transmitter.port} • ${transmitter.transportType} • Playing"
+                dot.visibility = View.VISIBLE
+                btnConnect.visibility = View.GONE
+                btnDisconnect.visibility = View.VISIBLE
+
+                btnDisconnect.setOnClickListener {
+                    stopReceiverService()
+                    Toast.makeText(this, "Stopped receiver playback", Toast.LENGTH_SHORT).show()
+                }
+
+                layoutConnectedDevicesContainer.addView(itemView)
+            } else {
+                layoutConnectedDevicesSection.visibility = View.GONE
+            }
+        }
+        updateDiscoveredDevicesUi()
+    }
+
+    private fun updateTuneInBanner() {
+        if (currentMode == Mode.RECEIVER && !AudioSinkService.isRunning.get()) {
+            val transmitters = DiscoveryManager.discoveredTransmitters.value
+            val firstTx = transmitters.firstOrNull()
+            if (firstTx != null) {
+                tvTuneInMessage.text = "${firstTx.name} is broadcasting on ${firstTx.ip}. Tap below to tune in instantly."
+                layoutTuneInBanner.visibility = View.VISIBLE
+                return
+            }
+        }
+        layoutTuneInBanner.visibility = View.GONE
     }
 
     private fun updateDiscoveredDevicesUi() {
         layoutDiscoveredDevicesContainer.removeAllViews()
         val devices = getUnifiedDiscoveredDevices()
 
-        for (dev in devices) {
-            val itemView = layoutInflater.inflate(R.layout.item_discovered_device, layoutDiscoveredDevicesContainer, false)
-            val card = itemView.findViewById<MaterialCardView>(R.id.card_discovered_device)
-            val tvName = itemView.findViewById<TextView>(R.id.tv_discovered_name)
-            val tvDetails = itemView.findViewById<TextView>(R.id.tv_discovered_details)
-            val switchDirect = itemView.findViewById<SwitchMaterial>(R.id.switch_discovered_direct)
-            val btnSave = itemView.findViewById<MaterialButton>(R.id.btn_discovered_save)
-            val btnUse = itemView.findViewById<MaterialButton>(R.id.btn_discovered_use)
+        // Filter out currently connected devices
+        val connectedIps = if (currentMode == Mode.TRANSMITTER) {
+            StreamState.telemetry.value.connectedReceivers.map { it.ip }.toSet()
+        } else {
+            setOfNotNull(StreamState.telemetry.value.connectedTransmitter?.ip)
+        }
+
+        val availableDevices = devices.filter { dev ->
+            (dev.lanIp == null || dev.lanIp !in connectedIps) &&
+            (dev.p2pGoIp == null || dev.p2pGoIp !in connectedIps)
+        }
+
+        for (dev in availableDevices) {
+            val itemView = layoutInflater.inflate(R.layout.item_connection_device, layoutDiscoveredDevicesContainer, false)
+            val card = itemView.findViewById<MaterialCardView>(R.id.card_connection_device)
+            val tvName = itemView.findViewById<TextView>(R.id.tv_device_name)
+            val tvDetails = itemView.findViewById<TextView>(R.id.tv_device_details)
+            val dot = itemView.findViewById<View>(R.id.view_active_dot)
+            val btnDisconnect = itemView.findViewById<MaterialButton>(R.id.btn_device_disconnect)
+            val btnConnect = itemView.findViewById<MaterialButton>(R.id.btn_device_connect)
 
             tvName.text = if (!dev.modelName.isNullOrEmpty() && dev.modelName != dev.displayName) {
                 "${dev.displayName} (${dev.modelName})"
@@ -664,51 +926,66 @@ class MainActivity : AppCompatActivity() {
                 dev.displayName
             }
 
-            // Restore user's Direct switch preference for this device
-            val directPref = deviceDirectPreferences[dev.id] ?: (dev.lanIp == null && dev.isDirectAvailable)
-            dev.useDirect = directPref
-
-            switchDirect.visibility = if (dev.isDirectAvailable) View.VISIBLE else View.GONE
-            switchDirect.isEnabled = dev.lanIp != null // If no LAN IP, Direct is mandatory
-            switchDirect.isChecked = dev.useDirect
-
-            fun updateDetailsText() {
-                val modeDesc = if (switchDirect.isChecked) {
-                    "Wi-Fi Direct (High Priority Link)"
-                } else {
-                    "Local Wi-Fi (${dev.lanIp ?: "No LAN IP"})"
-                }
-                tvDetails.text = modeDesc
+            val transportDesc = when {
+                dev.useDirect || dev.lanIp == null -> "Wi-Fi Direct P2P"
+                else -> "Local Wi-Fi (${dev.lanIp})"
             }
-            updateDetailsText()
+            tvDetails.text = transportDesc
+            dot.visibility = View.GONE
+            btnDisconnect.visibility = View.GONE
+            btnConnect.visibility = View.VISIBLE
 
-            switchDirect.setOnCheckedChangeListener { _, isChecked ->
-                dev.useDirect = isChecked
-                deviceDirectPreferences[dev.id] = isChecked
-                updateDetailsText()
-            }
-
-            fun performUseDevice() {
-                if (switchDirect.isChecked) {
-                    connectToUnifiedDeviceDirect(dev)
-                } else {
-                    if (dev.lanIp != null) {
-                        etTargetIp.setText(dev.lanIp)
-                        etPort.setText(dev.port.toString())
-                        currentConnType = ConnectionType.LOCAL_WIFI
-                        ConnectionProfileManager.setActiveProfile(this@MainActivity, null)
-                        updateSavedProfilesUi()
-                        Toast.makeText(this@MainActivity, "Target set to ${dev.displayName} (${dev.lanIp})", Toast.LENGTH_SHORT).show()
+            fun performConnect() {
+                if (currentMode == Mode.TRANSMITTER) {
+                    val isRunning = AudioCaptureService.isRunning.get()
+                    if (dev.useDirect || dev.lanIp == null) {
+                        connectToUnifiedDeviceDirect(dev) { goIp ->
+                            if (isRunning) {
+                                DiscoveryManager.sendStreamInvite(goIp, dev.port, DiscoveryManager.getLocalDeviceName())
+                                val intent = Intent(this@MainActivity, AudioCaptureService::class.java).apply {
+                                    action = AudioCaptureService.ACTION_ADD_CLIENT
+                                    putExtra(AudioCaptureService.EXTRA_TARGET_IP, goIp)
+                                    putExtra(AudioCaptureService.EXTRA_TARGET_PORT, dev.port)
+                                }
+                                startService(intent)
+                                Toast.makeText(this@MainActivity, "Added ${dev.displayName} to stream", Toast.LENGTH_SHORT).show()
+                            } else {
+                                etTargetIp.setText(goIp)
+                                etPort.setText(dev.port.toString())
+                                DiscoveryManager.sendStreamInvite(goIp, dev.port, DiscoveryManager.getLocalDeviceName())
+                                startTransmitterWorkflow()
+                            }
+                        }
                     } else {
-                        Toast.makeText(this@MainActivity, "No LAN IP found, connecting via Wi-Fi Direct...", Toast.LENGTH_SHORT).show()
-                        connectToUnifiedDeviceDirect(dev)
+                        val ip = dev.lanIp
+                        if (isRunning) {
+                            DiscoveryManager.sendStreamInvite(ip, dev.port, DiscoveryManager.getLocalDeviceName())
+                            val intent = Intent(this@MainActivity, AudioCaptureService::class.java).apply {
+                                action = AudioCaptureService.ACTION_ADD_CLIENT
+                                putExtra(AudioCaptureService.EXTRA_TARGET_IP, ip)
+                                putExtra(AudioCaptureService.EXTRA_TARGET_PORT, dev.port)
+                            }
+                            startService(intent)
+                            Toast.makeText(this@MainActivity, "Added ${dev.displayName} to stream", Toast.LENGTH_SHORT).show()
+                        } else {
+                            etTargetIp.setText(ip)
+                            etPort.setText(dev.port.toString())
+                            DiscoveryManager.sendStreamInvite(ip, dev.port, DiscoveryManager.getLocalDeviceName())
+                            startTransmitterWorkflow()
+                        }
                     }
+                } else {
+                    // Receiver mode
+                    val targetIp = dev.lanIp ?: dev.p2pGoIp ?: "0.0.0.0"
+                    etTargetIp.setText(targetIp)
+                    etPort.setText(dev.port.toString())
+                    startReceiverWorkflow()
                 }
             }
 
             fun performSaveProfile() {
-                val isP2p = switchDirect.isChecked || dev.lanIp == null
-                val targetIp = if (isP2p) (dev.p2pGoIp ?: "192.168.49.1") else dev.lanIp!!
+                val isP2p = dev.useDirect || dev.lanIp == null
+                val targetIp = if (isP2p) (dev.p2pGoIp ?: "192.168.49.1") else dev.lanIp ?: "192.168.1.1"
                 val profile = ConnectionProfile(
                     id = if (isP2p) "p2p_${dev.id}" else "wifi_${dev.id}",
                     name = dev.displayName,
@@ -721,22 +998,31 @@ class MainActivity : AppCompatActivity() {
                     p2pPassphrase = dev.p2pPassphrase
                 )
                 ConnectionProfileManager.saveProfile(this@MainActivity, profile)
-                applyProfile(profile)
-                Toast.makeText(this@MainActivity, "Profile saved and selected: ${profile.name}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "Saved profile: ${profile.name}", Toast.LENGTH_SHORT).show()
             }
 
-            btnUse.setOnClickListener { performUseDevice() }
-            btnSave.setOnClickListener { performSaveProfile() }
-            card.setOnClickListener { performUseDevice() }
+            btnConnect.setOnClickListener { performConnect() }
+            card.setOnClickListener { performConnect() }
+            card.setOnLongClickListener {
+                performSaveProfile()
+                true
+            }
 
             layoutDiscoveredDevicesContainer.addView(itemView)
         }
 
-        val hasDevices = devices.isNotEmpty()
-        layoutDiscoverySection.visibility = if (currentMode == Mode.TRANSMITTER && hasDevices) View.VISIBLE else View.GONE
+        if (availableDevices.isEmpty()) {
+            tvAvailableEmpty.visibility = View.VISIBLE
+            layoutDiscoveredDevicesContainer.visibility = View.GONE
+        } else {
+            tvAvailableEmpty.visibility = View.GONE
+            layoutDiscoveredDevicesContainer.visibility = View.VISIBLE
+        }
+
+        layoutDiscoverySection.visibility = if (currentMode == Mode.TRANSMITTER) View.VISIBLE else View.GONE
     }
 
-    private fun connectToUnifiedDeviceDirect(dev: UnifiedDevice) {
+    private fun connectToUnifiedDeviceDirect(dev: UnifiedDevice, onConnected: ((String) -> Unit)? = null) {
         if (!checkAndRequestP2pPermissions()) return
         currentConnType = ConnectionType.WIFI_DIRECT
 
@@ -749,6 +1035,7 @@ class MainActivity : AppCompatActivity() {
                     etTargetIp.setText(goIp)
                     etPort.setText(dev.port.toString())
                     Toast.makeText(this@MainActivity, "Direct connected to ${dev.displayName} ($goIp)", Toast.LENGTH_SHORT).show()
+                    onConnected?.invoke(goIp)
                 }
             }
         } else if (dev.p2pPeer != null) {
@@ -759,6 +1046,7 @@ class MainActivity : AppCompatActivity() {
                     etTargetIp.setText(goIp)
                     etPort.setText(dev.port.toString())
                     Toast.makeText(this@MainActivity, "Direct connected to ${dev.displayName} ($goIp)", Toast.LENGTH_SHORT).show()
+                    onConnected?.invoke(goIp)
                 }
             }
         } else {
@@ -1052,6 +1340,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         updateModeAndButtonUi()
+        updateConnectedDevicesUi(t)
 
         if (currentMode == Mode.TRANSMITTER) {
             val curVol = t.remoteVolumePercent
@@ -1290,8 +1579,7 @@ class MainActivity : AppCompatActivity() {
 
                 tvModeGuide.text = "Capture & stream system audio to a receiver device"
                 layoutSavedProfilesSection.visibility = View.VISIBLE
-                val hasDiscovered = DiscoveryManager.discoveredDevices.value.isNotEmpty() || WifiDirectManager.discoveredPeers.value.isNotEmpty()
-                layoutDiscoverySection.visibility = if (hasDiscovered) View.VISIBLE else View.GONE
+                layoutDiscoverySection.visibility = View.VISIBLE
                 layoutReceiverP2p.visibility = View.GONE
                 layoutVolumeControl.visibility = View.VISIBLE
                 layoutAdvancedHeader.visibility = View.VISIBLE

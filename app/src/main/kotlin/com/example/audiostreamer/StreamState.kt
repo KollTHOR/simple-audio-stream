@@ -4,6 +4,18 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+data class ConnectedDevice(
+    val ip: String,
+    val port: Int = AudioConfig.DEFAULT_PORT,
+    val name: String = "Unknown",
+    val isDirectP2p: Boolean = false,
+    val latencyMs: Int = 0,
+    val packetsTransferred: Long = 0L,
+    val lastSeenMs: Long = System.currentTimeMillis()
+) {
+    val transportType: String get() = if (isDirectP2p) "Wi-Fi Direct" else "Local Wi-Fi"
+}
+
 data class Telemetry(
     val isActive: Boolean = false,
     val isTransmitter: Boolean = false,
@@ -27,7 +39,9 @@ data class Telemetry(
     val remoteVolumePercent: Int = 100,
     val sourceCapabilityDesc: String = "24-bit • 48.0 kHz Stereo",
     val receiverCapabilityDesc: String = "Unknown",
-    val negotiatedFormatDesc: String = "48.0 kHz • 24-bit Stereo PCM"
+    val negotiatedFormatDesc: String = "48.0 kHz • 24-bit Stereo PCM",
+    val connectedReceivers: List<ConnectedDevice> = emptyList(),
+    val connectedTransmitter: ConnectedDevice? = null
 )
 
 object StreamState {

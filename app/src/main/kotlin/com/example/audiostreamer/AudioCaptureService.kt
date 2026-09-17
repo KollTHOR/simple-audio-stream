@@ -43,6 +43,9 @@ import java.net.SocketException
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicInteger
 
 class AudioCaptureService : Service() {
@@ -57,6 +60,8 @@ class AudioCaptureService : Service() {
         const val ACTION_STOP = "com.example.audiostreamer.ACTION_STOP_CAPTURE"
         const val ACTION_SET_VOLUME = "com.example.audiostreamer.ACTION_SET_VOLUME"
         const val ACTION_STEP_VOLUME = "com.example.audiostreamer.ACTION_STEP_VOLUME"
+        const val ACTION_ADD_CLIENT = "com.example.audiostreamer.ACTION_ADD_CLIENT"
+        const val ACTION_REMOVE_CLIENT = "com.example.audiostreamer.ACTION_REMOVE_CLIENT"
 
         const val EXTRA_RESULT_CODE = "EXTRA_RESULT_CODE"
         const val EXTRA_RESULT_DATA = "EXTRA_RESULT_DATA"
@@ -207,8 +212,93 @@ class AudioCaptureService : Service() {
                 Log.i(TAG, "Received ACTION_RESTART_CAPTURE. Live reinitializing capture pipeline.")
                 restartStreaming()
             }
+            ACTION_ADD_CLIENT -> {
+                val ip = intent.getStringExtra(EXTRA_TARGET_IP)
+                val port = intent.getIntExtra(EXTRA_TARGET_PORT, AudioConfig.DEFAULT_PORT)
+                if (!ip.isNullOrBlank()) {
+                    addClientDynamically(ip, port)
+                }
+                return START_NOT_STICKY
+            }
+            ACTION_REMOVE_CLIENT -> {
+                val ip = intent.getStringExtra(EXTRA_TARGET_IP)
+                if (!ip.isNullOrBlank()) {
+                    removeClientDynamically(ip)
+                }
+                return START_NOT_STICKY
+            }
         }
         return START_NOT_STICKY
+    }
+
+    private fun addClientDynamically(ip: String, port: Int) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val addr = InetAddress.getByName(ip)
+                val ep = ClientEndpoint(addr, port)
+                clientRegistry[ep] = SystemClock.elapsedRealtime()
+                val knownCaps = DiscoveryManager.lastDiscoveredReceiverCapabilities
+                if (knownCaps != 0) {
+                    clientCapabilities[ep] = knownCaps
+                }
+                Log.i(TAG, "Dynamically added multi-unicast client: $ep")
+                val currentConfig = activeNegotiatedConfig
+                if (currentConfig != null) {
+                    sendStreamAnnouncement(currentConfig, remoteVolumePercent.get(), ep)
+                }
+                publishConnectedReceivers()
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to dynamically add client $ip:$port - ${e.message}")
+            }
+        }
+    }
+
+    private fun removeClientDynamically(ip: String) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val matching = clientRegistry.keys.filter { it.address.hostAddress == ip }
+                for (ep in matching) {
+                    try {
+                        val discBuf = ByteArray(AudioConfig.HEADER_SIZE)
+                        val header = HatPacket.Header(
+                            packetType = HatPacket.TYPE_DISCONNECT,
+                            payloadLength = 0
+                        )
+                        HatPacket.writeHeader(discBuf, 0, header)
+                        val discPkt = DatagramPacket(discBuf, discBuf.size, ep.address, ep.port)
+                        udpSocket?.send(discPkt)
+                    } catch (ignored: Exception) {}
+                    clientRegistry.remove(ep)
+                    clientCapabilities.remove(ep)
+                    clientDiag.remove(ep)
+                    configuredEndpoints.remove(ep)
+                    Log.i(TAG, "Dynamically removed client: $ep")
+                }
+                publishConnectedReceivers()
+                if (clientRegistry.isEmpty()) {
+                    pauseSystemMediaPlayback()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to remove client $ip - ${e.message}")
+            }
+        }
+    }
+
+    private fun publishConnectedReceivers() {
+        val list = clientRegistry.keys.map { ep ->
+            val hostIp = ep.address.hostAddress ?: ""
+            val friendlyName = DiscoveryManager.getDeviceNameForIp(hostIp) ?: hostIp
+            val stats = clientDiag[ep]
+            val isP2p = hostIp.startsWith("192.168.49.")
+            ConnectedDevice(
+                ip = hostIp,
+                port = ep.port,
+                name = friendlyName,
+                isDirectP2p = isP2p,
+                packetsTransferred = stats?.packets?.get() ?: 0L
+            )
+        }
+        StreamState.update { it.copy(connectedReceivers = list, activeReceiversCount = list.size) }
     }
 
     private fun updateRemoteVolume(newVolume: Int) {
@@ -1904,7 +1994,8 @@ class AudioCaptureService : Service() {
                     packetsPerSec = 0,
                     bytesPerSec = 0,
                     statusDetail = "Stopped",
-                    activeReceiversCount = 1
+                    activeReceiversCount = 0,
+                    connectedReceivers = emptyList()
                 )
             }
 
