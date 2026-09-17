@@ -1,0 +1,85 @@
+name: Release Nightly
+
+on:
+  push:
+    branches:
+      - nightly
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release-nightly:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Grant Execute Permissions for gradlew
+        run: chmod +x gradlew
+
+      - name: Build Nightly Release APK
+        run: ./gradlew assembleRelease -Pchannel=nightly
+        env:
+          RELEASE_KEYSTORE_PATH: ${{ secrets.RELEASE_KEYSTORE_PATH }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+
+      - name: Prepare Nightly Assets
+        id: prepare_nightly
+        run: |
+          COMMIT_SHA=$(git rev-parse HEAD)
+          SHORT_SHA=$(git rev-parse --short=7 HEAD)
+          BUILD_DATE=$(date -u +%Y%m%d)
+          
+          # Query base version from gradlew or defaults
+          NIGHTLY_TAG="nightly-${BUILD_DATE}-${SHORT_SHA}"
+          APK_SRC="app/build/outputs/apk/release/app-release.apk"
+          APK_NAME="simple-audio-stream-${NIGHTLY_TAG}.apk"
+          SHA_NAME="${APK_NAME}.sha256"
+          
+          cp "$APK_SRC" "$APK_NAME"
+          sha256sum "$APK_NAME" | awk '{print $1}' > "$SHA_NAME"
+          
+          echo "tag=$NIGHTLY_TAG" >> $GITHUB_OUTPUT
+          echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
+          echo "sha_name=$SHA_NAME" >> $GITHUB_OUTPUT
+          echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          echo "commit_short=$SHORT_SHA" >> $GITHUB_OUTPUT
+          echo "build_date=$BUILD_DATE" >> $GITHUB_OUTPUT
+          echo "checksum=$(cat $SHA_NAME)" >> $GITHUB_OUTPUT
+
+      - name: Publish Nightly GitHub Prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.prepare_nightly.outputs.tag }}
+          name: "Nightly Build: ${{ steps.prepare_nightly.outputs.tag }}"
+          body: |
+            ### Automated Nightly Build: `${{ steps.prepare_nightly.outputs.tag }}`
+            
+            This is an automated development prerelease from the `nightly` branch.
+            
+            - **Commit:** `${{ steps.prepare_nightly.outputs.commit_sha }}`
+            - **Build Date:** `${{ steps.prepare_nightly.outputs.build_date }}`
+            - **Channel:** `Nightly`
+            - **SHA-256 Checksum:** `${{ steps.prepare_nightly.outputs.checksum }}`
+            
+            <!-- metadata: channel=nightly commit=${{ steps.prepare_nightly.outputs.commit_sha }} -->
+          files: |
+            ${{ steps.prepare_nightly.outputs.apk_name }}
+            ${{ steps.prepare_nightly.outputs.sha_name }}
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
