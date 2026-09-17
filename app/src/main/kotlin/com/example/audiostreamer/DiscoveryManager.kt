@@ -158,7 +158,7 @@ object DiscoveryManager {
                                     }
 
                                     val senderIp = packet.address.hostAddress
-                                    if (senderIp != null) {
+                                    if (senderIp != null && !NetworkUtils.getAllLocalIpAddresses().contains(senderIp)) {
                                         addDiscoveredDevice(
                                             DiscoveredDevice(
                                                 name = devName,

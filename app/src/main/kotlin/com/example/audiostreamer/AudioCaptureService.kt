@@ -887,7 +887,7 @@ class AudioCaptureService : Service() {
                                 val incomingVol = byteVal.coerceIn(0, 100)
                                 Log.i(TAG, "Received reverse volume sync: $incomingVol% from $endpoint")
                                 remoteVolumePercent.set(incomingVol)
-                                StreamState.update { it.copy() }
+                                StreamState.update { it.copy(remoteVolumePercent = incomingVol) }
                                 val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                                 notificationManager.notify(NOTIFICATION_ID, buildNotification("Streaming @ Receiver Vol: $incomingVol%"))
                             }
@@ -934,6 +934,7 @@ class AudioCaptureService : Service() {
                                             )
                                         )
                                         sendStreamAnnouncement(currentConfig, remoteVolumePercent.get(), endpoint)
+                                        publishConnectedReceivers()
                                     }
                                 } else {
                                     if (byteVal != 0) {
@@ -946,6 +947,7 @@ class AudioCaptureService : Service() {
                                     }
                                     if (isNew && currentConfig != null) {
                                         sendStreamAnnouncement(currentConfig, remoteVolumePercent.get(), endpoint)
+                                        publishConnectedReceivers()
                                     }
                                 }
                             }
@@ -954,6 +956,7 @@ class AudioCaptureService : Service() {
                                 clientRegistry.remove(endpoint)
                                 clientCapabilities.remove(endpoint)
                                 clientDiag.remove(endpoint)
+                                publishConnectedReceivers()
                                 HatDiagnostics.info(
                                     "RECEIVER_LEAVE",
                                     mapOf(
@@ -1298,6 +1301,7 @@ class AudioCaptureService : Service() {
                 negotiatedFormatDesc = initialNegotiatedFormat
             )
         }
+        publishConnectedReceivers()
 
         Log.i(TAG, "Starting producer for generation ${config.generation} at $captureSampleRate Hz (Profile: $initialProfileDisplayName, Payload: $activePayloadSize bytes, FEC: $isFecEnabled)")
 

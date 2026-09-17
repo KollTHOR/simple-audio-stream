@@ -700,12 +700,19 @@ class MainActivity : AppCompatActivity() {
     private val deviceDirectPreferences = mutableMapOf<String, Boolean>()
 
     private fun getUnifiedDiscoveredDevices(): List<UnifiedDevice> {
+        BleDiscoveryManager.pruneStaleDevices()
         val localDevices = DiscoveryManager.discoveredDevices.value
         val p2pPeers = WifiDirectManager.discoveredPeers.value.toMutableList()
         val blePeers = BleDiscoveryManager.bleDevices.value.toMutableList()
+        val localIps = NetworkUtils.getAllLocalIpAddresses().toSet()
         val unified = mutableListOf<UnifiedDevice>()
 
         for (dev in localDevices) {
+            // Exclude self/local interfaces from being shown as available receiver
+            if (dev.ip in localIps || (dev.p2pGoIp != null && dev.p2pGoIp in localIps)) {
+                continue
+            }
+
             // Find matching P2P peer by deviceAddress / p2pMac or by name match
             val matchingPeerIndex = p2pPeers.indexOfFirst { peer ->
                 (dev.p2pMac != null && peer.deviceAddress.equals(dev.p2pMac, ignoreCase = true)) ||
@@ -756,48 +763,28 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        // Add any remaining P2P peers that were not matched with a UDP broadcast
-        for (peer in p2pPeers) {
-            val peerName = peer.deviceName.ifEmpty { "Wi-Fi Direct Receiver" }
-            val matchingBleIndex = blePeers.indexOfFirst { ble ->
-                peer.deviceAddress.equals(ble.bluetoothAddress, ignoreCase = true) ||
-                ble.name.equals(peerName, ignoreCase = true)
-            }
-            val matchingBle = if (matchingBleIndex >= 0) blePeers.removeAt(matchingBleIndex) else null
-
-            unified.add(
-                UnifiedDevice(
-                    id = "p2p_${peer.deviceAddress}",
-                    displayName = peerName,
-                    modelName = null,
-                    lanIp = null,
-                    port = AudioConfig.DEFAULT_PORT,
-                    p2pPeer = peer,
-                    p2pSsid = matchingBle?.p2pSsid,
-                    p2pPassphrase = matchingBle?.p2pPassphrase,
-                    p2pGoIp = matchingBle?.p2pGoIp,
-                    isDirectAvailable = true,
-                    useDirect = true,
-                    capabilitiesMask = 0
-                )
-            )
-        }
-
-        // Add remaining BLE peers
+        // Add remaining verified BLE peers (filtered by HAT service UUID)
+        // Any raw, unmatched P2P peers (printers, smart TVs, PCs) are intentionally discarded.
         for (ble in blePeers) {
             if (ble.role == "receiver" && currentMode == Mode.TRANSMITTER) {
+                val matchingPeerIndex = p2pPeers.indexOfFirst { peer ->
+                    peer.deviceAddress.equals(ble.bluetoothAddress, ignoreCase = true) ||
+                    (peer.deviceName.isNotEmpty() && peer.deviceName.equals(ble.name, ignoreCase = true))
+                }
+                val matchingPeer = if (matchingPeerIndex >= 0) p2pPeers.removeAt(matchingPeerIndex) else null
+
                 unified.add(
                     UnifiedDevice(
                         id = "ble_${ble.bluetoothAddress}",
-                        displayName = ble.name,
+                        displayName = matchingPeer?.deviceName?.takeIf { it.isNotEmpty() } ?: ble.name,
                         modelName = "Nearby BLE",
                         lanIp = null,
                         port = AudioConfig.DEFAULT_PORT,
-                        p2pPeer = null,
+                        p2pPeer = matchingPeer,
                         p2pSsid = ble.p2pSsid,
                         p2pPassphrase = ble.p2pPassphrase,
                         p2pGoIp = ble.p2pGoIp,
-                        isDirectAvailable = !ble.p2pSsid.isNullOrEmpty(),
+                        isDirectAvailable = matchingPeer != null || !ble.p2pSsid.isNullOrEmpty(),
                         useDirect = true,
                         capabilitiesMask = 0
                     )
