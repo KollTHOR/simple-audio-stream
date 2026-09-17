@@ -39,6 +39,16 @@ object VersionComparator {
     fun compareSemantic(v1: String, v2: String): Int {
         val parts1 = parseNumericParts(v1)
         val parts2 = parseNumericParts(v2)
+
+        // If one of the versions is a date-formatted nightly tag (e.g. "nightly-20260917-abc")
+        // with no semantic version numbers, compare by build dates directly
+        val date1 = extractDateOrTimestamp(v1)
+        val date2 = extractDateOrTimestamp(v2)
+        if (date1.isNotEmpty() && date2.isNotEmpty() && (parts1.isEmpty() || parts2.isEmpty())) {
+            val dateCmp = date1.compareTo(date2)
+            if (dateCmp != 0) return dateCmp
+        }
+
         val maxLen = maxOf(parts1.size, parts2.size)
 
         for (i in 0 until maxLen) {
