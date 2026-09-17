@@ -947,7 +947,14 @@ class AudioSinkService : Service() {
                                     fecRecoveredTotal = fecRecoveredTotal,
                                     sourceCapabilityDesc = sourceCap,
                                     receiverCapabilityDesc = currentRxCapDesc,
-                                    negotiatedFormatDesc = negotiatedDesc
+                                    negotiatedFormatDesc = negotiatedDesc,
+                                    connectedTransmitter = ConnectedDevice(
+                                        ip = lastSenderHost,
+                                        port = packet.port,
+                                        name = DiscoveryManager.getDeviceNameForIp(lastSenderHost) ?: lastSenderHost,
+                                        isDirectP2p = lastSenderHost.startsWith("192.168.49."),
+                                        packetsTransferred = totalPackets
+                                    )
                                 )
                             }
 
@@ -1836,7 +1843,8 @@ class AudioSinkService : Service() {
                 packetsPerSec = 0,
                 bytesPerSec = 0,
                 statusDetail = "Stopped",
-                fecRecoveredTotal = 0L
+                fecRecoveredTotal = 0L,
+                connectedTransmitter = null
             )
         }
 
