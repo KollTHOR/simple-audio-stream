@@ -124,4 +124,40 @@ class ConnectionManagerTest {
         assertEquals(1, updated.connectedReceivers.size)
         assertEquals("Room 2", updated.connectedReceivers[0].name)
     }
+
+    @Test
+    fun testReverseVolumeSyncTelemetryUpdate() {
+        StreamState.reset()
+        assertEquals(100, StreamState.telemetry.value.remoteVolumePercent)
+
+        // Simulate incoming reverse volume sync from receiver
+        val incomingVol = 65
+        StreamState.update { it.copy(remoteVolumePercent = incomingVol) }
+
+        assertEquals(65, StreamState.telemetry.value.remoteVolumePercent)
+    }
+
+    @Test
+    fun testDeviceFilteringRules() {
+        // Discovered devices: 1 verified HAT receiver on LAN, 1 self-loopback IP, 1 verified BLE receiver
+        val selfIp = "192.168.1.50"
+        val receiverIp = "192.168.1.100"
+        val localIps = setOf(selfIp, "127.0.0.1")
+
+        val localDevices = listOf(
+            DiscoveredDevice(name = "Living Room", ip = receiverIp, port = 50005, capabilitiesMask = 0x01),
+            DiscoveredDevice(name = "Self Transmitter", ip = selfIp, port = 50005, capabilitiesMask = 0x01)
+        )
+
+        // Filter out self IPs
+        val filteredLocal = localDevices.filter { it.ip !in localIps }
+        assertEquals(1, filteredLocal.size)
+        assertEquals(receiverIp, filteredLocal[0].ip)
+
+        // Connected devices filtering
+        val connectedIps = setOf(receiverIp)
+        val available = filteredLocal.filter { it.ip !in connectedIps }
+        assertTrue(available.isEmpty())
+    }
 }
+

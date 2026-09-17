@@ -25,6 +25,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
 import java.util.UUID
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 data class BleDiscoveredDevice(
     val name: String,
@@ -57,6 +63,7 @@ object BleDiscoveryManager {
 
     private var advertiseCallback: AdvertiseCallback? = null
     private var scanCallback: ScanCallback? = null
+    private var pruneJob: Job? = null
 
     fun hasPermissions(context: Context): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -210,6 +217,13 @@ object BleDiscoveryManager {
         try {
             scanner?.startScan(listOf(filter), settings, scanCallback)
             _isScanning.value = true
+            pruneJob?.cancel()
+            pruneJob = CoroutineScope(Dispatchers.Default).launch {
+                while (isActive) {
+                    delay(5000L)
+                    pruneStaleDevices()
+                }
+            }
             Log.i(TAG, "BLE Scanning started for HAT devices")
         } catch (e: Exception) {
             Log.e(TAG, "Exception starting BLE scan: ${e.message}")
@@ -220,6 +234,8 @@ object BleDiscoveryManager {
     @SuppressLint("MissingPermission")
     fun stopScanning() {
         if (!_isScanning.value && scanCallback == null) return
+        pruneJob?.cancel()
+        pruneJob = null
         try {
             scanCallback?.let { scanner?.stopScan(it) }
         } catch (ignored: Exception) {}
