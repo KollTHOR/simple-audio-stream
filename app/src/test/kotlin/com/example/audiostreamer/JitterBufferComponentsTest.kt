@@ -236,8 +236,9 @@ class JitterBufferComponentsTest {
 
         // Update with available count 20
         controller.updateFill(20)
-        // 10 * 0.998 + 20 * 0.002 = 9.98 + 0.04 = 10.02
-        assertEquals(10.02f, controller.smoothBufferFill, 0.01f)
+        // Default targetWatermarkSlots = 10 (> 4), so adaptive alpha = 0.004
+        // 10 * 0.996 + 20 * 0.004 = 9.96 + 0.08 = 10.04
+        assertEquals(10.04f, controller.smoothBufferFill, 0.01f)
     }
 
     @Test
