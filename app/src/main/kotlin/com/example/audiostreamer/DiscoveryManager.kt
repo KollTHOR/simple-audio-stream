@@ -34,7 +34,9 @@ data class DiscoveredDevice(
     val modelName: String? = null,
     val isStreaming: Boolean = false,
     val role: String = "receiver",
-    val lastSeenMs: Long = SystemClock.elapsedRealtime()
+    val lastSeenMs: Long = SystemClock.elapsedRealtime(),
+    val nodeId: String? = null,
+    val nodeCapabilities: com.example.audiostreamer.node.NodeCapabilities? = null
 )
 
 object DiscoveryManager {
@@ -111,7 +113,7 @@ object DiscoveryManager {
                 sendProbe(socket)
                 sendTransmitterAnnouncement(socket, isStreaming = AudioCaptureService.isRunning.get())
 
-                val buffer = ByteArray(512)
+                val buffer = ByteArray(2048)
                 val packet = DatagramPacket(buffer, buffer.size)
                 var lastProbeTime = SystemClock.elapsedRealtime()
 
@@ -143,6 +145,8 @@ object DiscoveryManager {
                                     var p2pGoIp: String? = null
                                     var p2pMac: String? = null
                                     var modelName: String? = null
+                                    var rxNodeId: String? = null
+                                    var rxCapsNode: com.example.audiostreamer.node.NodeCapabilities? = null
 
                                     if (rawPayload.startsWith("{") && rawPayload.endsWith("}")) {
                                         try {
@@ -154,6 +158,10 @@ object DiscoveryManager {
                                             p2pGoIp = json.optString("goIp").takeIf { it.isNotEmpty() }
                                             p2pMac = json.optString("p2pMac").takeIf { it.isNotEmpty() }
                                             modelName = json.optString("model").takeIf { it.isNotEmpty() }
+                                            rxNodeId = json.optString("nodeId").takeIf { it.isNotEmpty() }
+                                            if (json.has("caps")) {
+                                                rxCapsNode = com.example.audiostreamer.node.NodeCapabilities.fromJson(json.getJSONObject("caps"))
+                                            }
                                         } catch (ignored: Exception) {}
                                     }
 
@@ -171,7 +179,9 @@ object DiscoveryManager {
                                                 p2pGoIp = p2pGoIp,
                                                 p2pMac = p2pMac,
                                                 modelName = modelName,
-                                                role = "receiver"
+                                                role = "receiver",
+                                                nodeId = rxNodeId,
+                                                nodeCapabilities = rxCapsNode
                                             )
                                         )
                                     }
@@ -264,7 +274,7 @@ object DiscoveryManager {
                 // Broadcast initial announcement across all active interfaces
                 sendAnnouncement(socket)
 
-                val buffer = ByteArray(512)
+                val buffer = ByteArray(2048)
                 val packet = DatagramPacket(buffer, buffer.size)
                 var lastAnnounceTime = SystemClock.elapsedRealtime()
 
@@ -411,6 +421,8 @@ object DiscoveryManager {
         var txName = rawPayload
         var txPort = AudioConfig.DEFAULT_PORT
         var isStreaming = false
+        var txNodeId: String? = null
+        var txCapsNode: com.example.audiostreamer.node.NodeCapabilities? = null
 
         if (rawPayload.startsWith("{") && rawPayload.endsWith("}")) {
             try {
@@ -418,6 +430,10 @@ object DiscoveryManager {
                 txName = json.optString("name", txName)
                 txPort = json.optInt("port", txPort)
                 isStreaming = json.optBoolean("streaming", false)
+                txNodeId = json.optString("nodeId").takeIf { it.isNotEmpty() }
+                if (json.has("caps")) {
+                    txCapsNode = com.example.audiostreamer.node.NodeCapabilities.fromJson(json.getJSONObject("caps"))
+                }
             } catch (ignored: Exception) {}
         }
 
@@ -429,7 +445,9 @@ object DiscoveryManager {
                 port = txPort,
                 isStreaming = isStreaming,
                 role = "transmitter",
-                lastSeenMs = SystemClock.elapsedRealtime()
+                lastSeenMs = SystemClock.elapsedRealtime(),
+                nodeId = txNodeId,
+                nodeCapabilities = txCapsNode
             )
         )
     }
@@ -448,9 +466,13 @@ object DiscoveryManager {
             try {
                 socket = DatagramSocket()
                 val localName = transmitterName ?: getLocalDeviceName()
+                val localNode = com.example.audiostreamer.node.LocalNodeManager.getLocalNode()
                 val json = JSONObject().apply {
                     put("name", localName)
                     put("port", targetPort)
+                    put("nodeId", localNode.id)
+                    put("pv", localNode.capabilities.protocolVersion)
+                    put("caps", localNode.capabilities.toJson())
                 }
                 val payloadBytes = json.toString().toByteArray(Charsets.UTF_8)
                 val buffer = ByteArray(HatPacket.HEADER_SIZE + payloadBytes.size)
@@ -486,11 +508,15 @@ object DiscoveryManager {
         val p2pPass = WifiDirectManager.networkPassphrase.value
         val p2pGoIp = WifiDirectManager.groupOwnerIp.value ?: WifiDirectManager.DEFAULT_GO_IP
         val p2pMac = WifiDirectManager.thisDeviceAddress
+        val localNode = com.example.audiostreamer.node.LocalNodeManager.getLocalNode()
 
         val json = JSONObject().apply {
             put("name", effectiveName)
             put("model", modelName)
             put("role", "receiver")
+            put("nodeId", localNode.id)
+            put("pv", localNode.capabilities.protocolVersion)
+            put("caps", localNode.capabilities.toJson())
             if (p2pMac != null) put("p2pMac", p2pMac)
             if (isP2p && !p2pSsid.isNullOrEmpty()) {
                 put("p2p", true)
@@ -501,7 +527,7 @@ object DiscoveryManager {
         }
 
         val payloadString = json.toString()
-        val nameBytes = payloadString.toByteArray(Charsets.UTF_8).take(220).toByteArray()
+        val nameBytes = payloadString.toByteArray(Charsets.UTF_8)
         val announceBuf = ByteArray(HatPacket.HEADER_SIZE + nameBytes.size)
         HatPacket.writeHeader(
             buffer = announceBuf,
@@ -543,11 +569,15 @@ object DiscoveryManager {
     fun sendTransmitterAnnouncement(socket: DatagramSocket, isStreaming: Boolean) {
         try {
             val modelName = getLocalDeviceName()
+            val localNode = com.example.audiostreamer.node.LocalNodeManager.getLocalNode()
             val json = JSONObject().apply {
                 put("name", modelName)
                 put("port", AudioConfig.DEFAULT_PORT)
                 put("role", "transmitter")
                 put("streaming", isStreaming)
+                put("nodeId", localNode.id)
+                put("pv", localNode.capabilities.protocolVersion)
+                put("caps", localNode.capabilities.toJson())
             }
             val payloadBytes = json.toString().toByteArray(Charsets.UTF_8)
             val buffer = ByteArray(HatPacket.HEADER_SIZE + payloadBytes.size)

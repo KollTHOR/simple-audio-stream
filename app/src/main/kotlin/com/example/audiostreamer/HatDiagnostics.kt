@@ -68,7 +68,12 @@ object HatDiagnostics {
         val audioOutputDevice: String? = null,
         val audioSampleRate: Int? = null,
         val audioChannelConfig: String? = null,
-        val networkTransport: String? = null
+        val networkTransport: String? = null,
+        val nodeId: String? = null,
+        val nodeName: String? = null,
+        val nodeRole: String? = null,
+        val nodeState: String? = null,
+        val nodeCapabilitiesSummary: String? = null
     )
 
     /** Fixed-size rolling aggregate for one measured operation. */
@@ -105,6 +110,107 @@ object HatDiagnostics {
                 if (value <= current) return
                 if (maxNs.compareAndSet(current, value)) return
             }
+        }
+
+        fun count(): Long = count.get()
+        fun totalNs(): Long = totalNs.get()
+        fun meanNs(): Double {
+            val c = count.get()
+            return if (c > 0L) totalNs.get().toDouble() / c.toDouble() else 0.0
+        }
+        fun minNs(): Long {
+            val v = minNs.get()
+            return if (v == Long.MAX_VALUE) 0L else v
+        }
+        fun maxNs(): Long {
+            val v = maxNs.get()
+            return if (v == Long.MIN_VALUE) 0L else v
+        }
+
+        fun percentileNs(p: Double): Long {
+            val c = count.get()
+            if (c == 0L) return 0L
+            val n = minOf(c.toInt(), SAMPLE_RING_SIZE)
+            val copy = LongArray(n)
+            var copied = 0
+            for (i in 0 until n) {
+                val s = samples[i]
+                if (s >= 0L) copy[copied++] = s
+            }
+            if (copied == 0) return 0L
+            java.util.Arrays.sort(copy, 0, copied)
+            val rank = kotlin.math.ceil((p / 100.0) * copied).toInt().coerceIn(1, copied)
+            return copy[rank - 1]
+        }
+
+        fun formatSummary(): String {
+            val c = count.get()
+            if (c == 0L) return "$name: count=0"
+            val meanMs = meanNs() / 1_000_000.0
+            val p50Ms = percentileNs(50.0) / 1_000_000.0
+            val p95Ms = percentileNs(95.0) / 1_000_000.0
+            val p99Ms = percentileNs(99.0) / 1_000_000.0
+            val maxMs = maxNs() / 1_000_000.0
+            return String.format(
+                java.util.Locale.US,
+                "%s: n=%d mean=%.2fms p50=%.2fms p95=%.2fms p99=%.2fms max=%.2fms",
+                name, c, meanMs, p50Ms, p95Ms, p99Ms, maxMs
+            )
+        }
+
+        fun fields(): Map<String, Any> {
+            val map = LinkedHashMap<String, Any>()
+            val c = count.get()
+            map["count"] = c
+            if (c > 0L) {
+                map["meanMs"] = meanNs() / 1_000_000.0
+                map["p50Ms"] = percentileNs(50.0) / 1_000_000.0
+                map["p95Ms"] = percentileNs(95.0) / 1_000_000.0
+                map["p99Ms"] = percentileNs(99.0) / 1_000_000.0
+                map["maxMs"] = maxNs() / 1_000_000.0
+            }
+            return map
+        }
+
+        fun formatFields(): String {
+            val c = count.get()
+            if (c == 0L) return "count=0"
+            val sb = StringBuilder()
+            sb.append("count=").append(c)
+            sb.append(String.format(java.util.Locale.US, ", mean=%.2fms", meanNs() / 1_000_000.0))
+            sb.append(String.format(java.util.Locale.US, ", p50=%.2fms", percentileNs(50.0) / 1_000_000.0))
+            sb.append(String.format(java.util.Locale.US, ", p95=%.2fms", percentileNs(95.0) / 1_000_000.0))
+            sb.append(String.format(java.util.Locale.US, ", p99=%.2fms", percentileNs(99.0) / 1_000_000.0))
+            sb.append(String.format(java.util.Locale.US, ", max=%.2fms", maxNs() / 1_000_000.0))
+            val n = minOf(c.toInt(), SAMPLE_RING_SIZE)
+            val copy = LongArray(n)
+            var copied = 0
+            for (i in 0 until n) {
+                val s = samples[i]
+                if (s >= 0L) copy[copied++] = s
+            }
+            if (copied > 0) {
+                java.util.Arrays.sort(copy, 0, copied)
+                val p999Rank = kotlin.math.ceil(0.999 * copied).toInt().coerceIn(1, copied)
+                sb.append(String.format(java.util.Locale.US, ", p99.9=%.2fms", copy[p999Rank - 1] / 1_000_000.0))
+                val sampleIdx = sampleIndex.get()
+                val windowSize = minOf(copied, 100)
+                var windowMax = 0L
+                for (w in 0 until windowSize) {
+                    val idx = (sampleIdx - 1 - w) and SAMPLE_RING_MASK
+                    if (samples[idx] > windowMax) windowMax = samples[idx]
+                }
+                sb.append(String.format(java.util.Locale.US, ", max_100w=%.2fms", windowMax / 1_000_000.0))
+                val over50ms = copy.count { it > 50_000_000L }
+                val over100ms = copy.count { it > 100_000_000L }
+                sb.append(", over50ms=").append(over50ms)
+                sb.append(", over100ms=").append(over100ms)
+                if (copied >= 10) {
+                    val top3 = copy.takeLast(3).map { String.format(java.util.Locale.US, "%.1fms", it / 1_000_000.0) }
+                    sb.append(", top3=").append(top3)
+                }
+            }
+            return sb.toString()
         }
 
         data class Snapshot(
@@ -185,7 +291,7 @@ object HatDiagnostics {
 
     /** Ordered sections that make up the diagnostic snapshot. Providers are optional per section. */
     private val SNAPSHOT_SECTIONS = listOf(
-        "CONFIG", "GENERATION", "TX", "RX", "CAPTURE", "JITTER", "PLAYBACK", "RECEIVERS"
+        "NODE", "CAPABILITIES", "TRANSPORTS", "LAN_DISCOVERY", "WIFI_DIRECT_DISCOVERY", "WIFI_AWARE_DISCOVERY", "BLE_PRESENCE", "NFC_BOOTSTRAP", "DISCOVERY_REGISTRY", "LINKS", "STREAMS", "CONFIG", "GENERATION", "TX", "RX", "CAPTURE", "JITTER", "PLAYBACK", "RECEIVERS"
     )
 
     @Volatile
@@ -203,6 +309,154 @@ object HatDiagnostics {
     private val generationCreatedAtMs = ConcurrentHashMap<Long, Long>()
 
     @Volatile private var metadata: Metadata = Metadata()
+    @Volatile private var lastNegotiatedCapabilitiesValue: com.example.audiostreamer.node.NegotiatedNodeCapabilities? = null
+
+    fun setLastNegotiatedCapabilities(negotiation: com.example.audiostreamer.node.NegotiatedNodeCapabilities) {
+        lastNegotiatedCapabilitiesValue = negotiation
+    }
+
+    fun getLastNegotiatedCapabilities(): com.example.audiostreamer.node.NegotiatedNodeCapabilities? =
+        lastNegotiatedCapabilitiesValue
+
+    init {
+        registerDefaultSections()
+    }
+
+    fun registerDefaultSections() {
+        registerSection("NODE") {
+            try {
+                val node = com.example.audiostreamer.node.LocalNodeManager.getLocalNode()
+                linkedMapOf(
+                    "nodeId" to node.id,
+                    "nodeName" to node.name,
+                    "state" to node.state.name,
+                    "activeRole" to node.activeRole.name,
+                    "canSend" to node.canSend(),
+                    "canReceive" to node.canReceive(),
+                    "codecs" to node.capabilities.supportedCodecs.joinToString { it.name },
+                    "sampleRates" to node.capabilities.supportedSampleRates.sorted().joinToString { "$it Hz" },
+                    "transports" to node.capabilities.supportedTransports.joinToString { it.name }
+                )
+            } catch (e: Exception) {
+                emptyMap()
+            }
+        }
+        registerSection("CAPABILITIES") {
+            try {
+                val node = com.example.audiostreamer.node.LocalNodeManager.getLocalNode()
+                val map = linkedMapOf<String, Any?>()
+                map["localInputs"] = node.capabilities.supportedAudioInputs.joinToString { it.name }
+                map["localOutputs"] = node.capabilities.supportedAudioOutputs.joinToString { it.name }
+                map["canCaptureMicrophone"] = node.capabilities.canCaptureMicrophone
+                map["canOutputToSpeaker"] = node.capabilities.canOutputToSpeaker
+                val neg = lastNegotiatedCapabilitiesValue
+                if (neg != null) {
+                    map["negotiatedRemoteId"] = neg.remoteNodeId
+                    map["isCompatible"] = neg.isCompatible
+                    map["negotiatedSummary"] = neg.summary()
+                    map["selectedCodec"] = neg.selectedCodec?.name ?: "None"
+                    map["selectedRate"] = neg.selectedSampleRate ?: 0
+                    map["selectedPcm"] = neg.selectedPcmFormat?.bits ?: 16
+                    map["selectedTransport"] = neg.selectedTransport?.name ?: "None"
+                    map["canStreamOutbound"] = neg.canStreamOutbound
+                    map["canStreamInbound"] = neg.canStreamInbound
+                    map["details"] = neg.details
+                } else {
+                    map["negotiatedStatus"] = "No active negotiation session"
+                }
+                map
+            } catch (e: Exception) {
+                emptyMap()
+            }
+        }
+        registerSection("TRANSPORTS") {
+            try {
+                com.example.audiostreamer.node.transport.HatTransportRegistry.getDiagnosticsSnapshot()
+            } catch (e: Exception) {
+                emptyMap()
+            }
+        }
+        registerSection("LAN_DISCOVERY") {
+            try {
+                com.example.audiostreamer.node.discovery.LanDiscoveryProvider.getDiagnosticsSnapshot()
+            } catch (e: Exception) {
+                emptyMap()
+            }
+        }
+        registerSection("WIFI_DIRECT_DISCOVERY") {
+            try {
+                com.example.audiostreamer.node.discovery.WifiDirectDiscoveryProvider.getDiagnosticsSnapshot()
+            } catch (e: Exception) {
+                emptyMap()
+            }
+        }
+        registerSection("WIFI_AWARE_DISCOVERY") {
+            try {
+                com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.getDiagnosticsSnapshot()
+            } catch (e: Exception) {
+                emptyMap()
+            }
+        }
+        registerSection("BLE_PRESENCE") {
+            try {
+                com.example.audiostreamer.node.discovery.HatBlePresenceProvider.getDiagnosticsSnapshot()
+            } catch (e: Exception) {
+                emptyMap()
+            }
+        }
+        registerSection("NFC_BOOTSTRAP") {
+            try {
+                com.example.audiostreamer.node.discovery.HatNfcBootstrapProvider.getDiagnosticsSnapshot()
+            } catch (e: Exception) {
+                emptyMap()
+            }
+        }
+        registerSection("DISCOVERY_REGISTRY") {
+            try {
+                com.example.audiostreamer.node.discovery.HatDiscoveryRegistry.getDiagnosticsSnapshot()
+            } catch (e: Exception) {
+                emptyMap()
+            }
+        }
+        registerSection("LINKS") {
+            try {
+                val links = com.example.audiostreamer.node.HatLinkManager.activeLinks.value
+                val map = linkedMapOf<String, Any?>()
+                map["count"] = links.size
+                links.forEachIndexed { idx, link ->
+                    val neg = link.negotiatedCapabilities?.summary() ?: "none"
+                    val tState = link.transport?.state?.name ?: link.state.name
+                    val tType = link.hatTransportType.name
+                    map["link_$idx"] = "${link.id}: ${link.localNode.name} <---> ${link.remoteNode.name} ($tType, $tState, addr=${link.metadata.remoteAddress}:${link.metadata.remotePort}, txPkts=${link.metadata.packetsSent}, rxPkts=${link.metadata.packetsReceived}, neg=$neg)"
+                }
+                map.putAll(com.example.audiostreamer.node.HatLinkManager.getDiagnosticsSnapshot())
+                map
+            } catch (e: Exception) {
+                emptyMap()
+            }
+        }
+        registerSection("STREAMS") {
+            try {
+                val streams = com.example.audiostreamer.node.HatLinkManager.activeStreams.value
+                val map = linkedMapOf<String, Any?>()
+                map["count"] = streams.size
+                streams.forEachIndexed { idx, s ->
+                    map["stream_$idx"] = "${s.id}: link=${s.linkId}, ${s.sourceNode.name} -> ${s.destinationNode.name}, type=${s.streamType}, dir=${s.direction}, codec=${s.codec.name}, gen=${s.generation}, state=${s.state}"
+                }
+                map.putAll(com.example.audiostreamer.node.HatSessionManager.getDiagnosticsSnapshot())
+                map
+            } catch (e: Exception) {
+                emptyMap()
+            }
+        }
+        registerSection("FAN_OUT") {
+            try {
+                com.example.audiostreamer.node.HatMultiStreamManager.getDiagnosticsSnapshot()
+            } catch (e: Exception) {
+                emptyMap()
+            }
+        }
+    }
     @Volatile private var runIdValue: String = ""
     @Volatile private var streamIdValue: String = ""
     private val generationValue = AtomicLong(0L)
@@ -630,6 +884,14 @@ object HatDiagnostics {
         sb.appendLine("uptimeMs=${DiagnosticClock.elapsedRealtimeMs()}")
 
         val md = metadata
+        val localNode = try { com.example.audiostreamer.node.LocalNodeManager.getLocalNode() } catch (e: Exception) { null }
+        sb.appendLine("[NODE]")
+        sb.appendLine("nodeId=${fmt(md.nodeId ?: localNode?.id)}")
+        sb.appendLine("nodeName=${fmt(md.nodeName ?: localNode?.name)}")
+        sb.appendLine("nodeRole=${fmt(md.nodeRole ?: localNode?.activeRole?.name)}")
+        sb.appendLine("nodeState=${fmt(md.nodeState ?: localNode?.state?.name)}")
+        sb.appendLine("capabilities=${fmt(md.nodeCapabilitiesSummary ?: localNode?.capabilities?.describe())}")
+
         sb.appendLine("[APP]")
         sb.appendLine("appVersion=${fmt(md.appVersion)}")
         sb.appendLine("gitRevision=${fmt(md.gitRevision)}")
@@ -730,6 +992,7 @@ object HatDiagnostics {
         stopPeriodicStats()
         periodicTasks.clear()
         sections.clear()
+        registerDefaultSections()
         resetStats()
         runIdValue = ""
         streamIdValue = ""

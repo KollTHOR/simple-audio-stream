@@ -21,7 +21,8 @@ data class ConnectionProfile(
     val p2pPassphrase: String? = null,
     val capabilitiesMask: Int = 0,
     val isFavorite: Boolean = false,
-    val lastConnectedTimeMs: Long = System.currentTimeMillis()
+    val lastConnectedTimeMs: Long = System.currentTimeMillis(),
+    val nodeId: String? = null
 ) {
     fun toJson(): JSONObject {
         return JSONObject().apply {
@@ -37,6 +38,7 @@ data class ConnectionProfile(
             put("capabilitiesMask", capabilitiesMask)
             put("isFavorite", isFavorite)
             put("lastConnectedTimeMs", lastConnectedTimeMs)
+            put("nodeId", nodeId ?: "")
         }
     }
 
@@ -60,7 +62,8 @@ data class ConnectionProfile(
                 p2pPassphrase = json.optString("p2pPassphrase").takeIf { it.isNotEmpty() },
                 capabilitiesMask = json.optInt("capabilitiesMask", 0),
                 isFavorite = json.optBoolean("isFavorite", false),
-                lastConnectedTimeMs = json.optLong("lastConnectedTimeMs", System.currentTimeMillis())
+                lastConnectedTimeMs = json.optLong("lastConnectedTimeMs", System.currentTimeMillis()),
+                nodeId = json.optString("nodeId").takeIf { it.isNotEmpty() }
             )
         }
     }

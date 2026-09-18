@@ -824,7 +824,16 @@
                                 android:textSize="12sp"
                                 android:textStyle="bold"
                                 android:textColor="@color/text_primary"
-                                android:layout_marginBottom="6dp" />
+                                android:layout_marginBottom="4dp" />
+
+                            <TextView
+                                android:id="@+id/tv_pipeline_node_info"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:text="Node: Ready • Links: 0 active"
+                                android:textSize="11sp"
+                                android:textColor="@color/text_secondary"
+                                android:layout_marginBottom="8dp" />
 
                             <LinearLayout
                                 android:layout_width="match_parent"

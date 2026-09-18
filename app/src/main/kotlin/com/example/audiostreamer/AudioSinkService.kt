@@ -26,6 +26,12 @@ import android.os.Process
 import android.os.SystemClock
 import android.provider.Settings
 import com.example.audiostreamer.AppLogger as Log
+import com.example.audiostreamer.node.HatLinkManager
+import com.example.audiostreamer.node.LinkAdapters
+import com.example.audiostreamer.node.LocalNodeManager
+import com.example.audiostreamer.node.NodeCapabilityExchange
+import com.example.audiostreamer.node.NodeCapabilityNegotiator
+import com.example.audiostreamer.node.StreamRole
 import androidx.core.app.NotificationCompat
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -138,6 +144,7 @@ class AudioSinkService : Service() {
     private val trackLock = Any()
     private val decoderLock = Any()
     private var datagramSocket: DatagramSocket? = null
+    @Volatile private var activeTransport: com.example.audiostreamer.node.transport.HatIpTransport? = null
     private var receiverThread: Thread? = null
     private var playbackThread: Thread? = null
     private var heartbeatThread: Thread? = null
@@ -441,6 +448,22 @@ class AudioSinkService : Service() {
         }
         jitterBuffer.applyConfiguration(config)
 
+        val senderHost = lastSenderHost
+        val senderPort = lastSenderPort ?: AudioConfig.DEFAULT_PORT
+        if (senderHost != "Transmitter" && senderHost.isNotEmpty()) {
+            LinkAdapters.registerInboundStream(
+                remoteAddress = senderHost,
+                remotePort = senderPort,
+                generation = config.generation,
+                codec = config.codec,
+                format = AudioFormatConfig(
+                    sampleRate = AudioSampleRate.fromHz(config.sampleRateHz),
+                    bitDepth = AudioBitDepth.fromBits(config.bitDepthBits),
+                    channelLayout = AudioChannelLayout.STEREO
+                )
+            )
+        }
+
         val isIncomingOpus = config.codec == AudioCodec.OPUS
         val isIncomingAac = config.codec == AudioCodec.AAC
         currentIsAac = isIncomingAac
@@ -520,14 +543,17 @@ class AudioSinkService : Service() {
             registerLocalVolumeObserver()
             startDiagnosticsSession()
 
-            // Bind UDP socket
-            val socket = DatagramSocket(null).apply {
+            // Bind UDP socket via transport abstraction
+            val transport = com.example.audiostreamer.node.transport.HatTransportRegistry.selectBestAudioTransport()
+            transport.listen(port)
+            val socket = transport.socket ?: DatagramSocket(null).apply {
                 reuseAddress = true
                 broadcast = true
                 receiveBufferSize = AudioConfig.SOCKET_RECEIVE_BUFFER_BYTES // 1MB OS receive buffer
                 bind(InetSocketAddress(port))
             }
             datagramSocket = socket
+            activeTransport = transport
 
             val localRxCaps = AudioCapabilities.getLocalPlaybackCapabilitiesMask()
             val rxCapDesc = "Android HAL: ${AudioCapabilities.describeCapabilities(localRxCaps)}"
@@ -648,6 +674,29 @@ class AudioSinkService : Service() {
 
                             // Check for Stream Announcement / Control packet
                             if (header.packetType == HatPacket.TYPE_CONTROL) {
+                                val senderAddr = packet.address
+                                val senderHost = senderAddr?.hostAddress ?: lastSenderHost
+                                lastSenderHost = senderHost
+
+                                val payloadLen = header.payloadLength
+                                if (payloadLen > 0 && length >= HatPacket.HEADER_SIZE + payloadLen) {
+                                    val txExchange = NodeCapabilityExchange.parseOrNull(data, offset + HatPacket.HEADER_SIZE, payloadLen)
+                                    if (txExchange != null) {
+                                        val localNode = LocalNodeManager.getLocalNode()
+                                        val remoteNode = txExchange.toNodeInfo(role = StreamRole.SENDER)
+                                        val negotiated = NodeCapabilityNegotiator.negotiate(localNode, remoteNode)
+                                        HatDiagnostics.setLastNegotiatedCapabilities(negotiated)
+                                        StreamState.update { it.copy(lastNegotiatedCapabilities = negotiated) }
+                                        HatLinkManager.recordNegotiatedCapabilitiesForRemote(senderHost, negotiated)
+                                        HatLinkManager.recordNegotiatedCapabilitiesForRemote(remoteNode.id, negotiated)
+                                        HatDiagnostics.info("CAPABILITY_EXCHANGED", mapOf(
+                                            "remoteNodeId" to negotiated.remoteNodeId,
+                                            "isCompatible" to negotiated.isCompatible,
+                                            "summary" to negotiated.summary()
+                                        ))
+                                    }
+                                }
+
                                 val incomingGen = header.generation
                                 val announcedConfig = NegotiatedStreamConfig.fromHeader(header, fecEnabled = true, generation = incomingGen)
                                 if (announcedConfig != null && incomingGen > 0L) {
@@ -926,6 +975,36 @@ class AudioSinkService : Service() {
                             val currentRxCaps = AudioCapabilities.getLocalPlaybackCapabilitiesMask()
                             val currentRxCapDesc = "Android HAL: ${AudioCapabilities.describeCapabilities(currentRxCaps)}"
 
+                            if (lastSenderHost != "Transmitter" && lastSenderHost.isNotEmpty()) {
+                                val codec = if (currentIsOpus) AudioCodec.OPUS else if (currentIsAac) AudioCodec.AAC else AudioCodec.PCM
+                                val safeRate = try {
+                                    AudioSampleRate.fromHz(currentSampleRate)
+                                } catch (e: Exception) {
+                                    AudioSampleRate.RATE_48000
+                                }
+                                val format = AudioFormatConfig(
+                                    sampleRate = safeRate,
+                                    bitDepth = AudioBitDepth.fromBits(bitDepth),
+                                    channelLayout = AudioChannelLayout.STEREO
+                                )
+                                LinkAdapters.registerInboundStream(
+                                    remoteAddress = lastSenderHost,
+                                    remotePort = packet.port,
+                                    generation = configAuthority.currentGeneration,
+                                    codec = codec,
+                                    format = format
+                                )
+                                HatLinkManager.recordLinkActivity(
+                                    remoteAddress = lastSenderHost,
+                                    remotePort = packet.port,
+                                    packetsIncrement = pps.toLong(),
+                                    bytesIncrement = bps.toLong(),
+                                    isRx = true
+                                )
+                            }
+                            val links = HatLinkManager.activeLinks.value
+                            val streams = HatLinkManager.activeStreams.value
+
                             StreamState.update {
                                 it.copy(
                                     isActive = true,
@@ -953,8 +1032,11 @@ class AudioSinkService : Service() {
                                         port = packet.port,
                                         name = DiscoveryManager.getDeviceNameForIp(lastSenderHost) ?: lastSenderHost,
                                         isDirectP2p = lastSenderHost.startsWith("192.168.49."),
-                                        packetsTransferred = totalPackets
-                                    )
+                                        packetsTransferred = totalPackets,
+                                        nodeId = "${com.example.audiostreamer.node.NodeIdentity.ID_PREFIX}ep-${lastSenderHost.replace(".", "-")}"
+                                    ),
+                                    activeLinks = links,
+                                    activeStreams = streams
                                 )
                             }
 
@@ -1254,16 +1336,19 @@ class AudioSinkService : Service() {
 
             // 3. Receiver Keep-Alive Heartbeat Thread (every 2.5s)
             heartbeatThread = Thread({
-                val heartbeatBuf = ByteArray(HatPacket.HEADER_SIZE)
+                val localNode = LocalNodeManager.getLocalNode()
+                val exchangePayload = NodeCapabilityExchange.fromNode(localNode).toByteArray()
+                val heartbeatBuf = ByteArray(HatPacket.HEADER_SIZE + exchangePayload.size)
                 HatPacket.writeHeader(
                     buffer = heartbeatBuf,
                     offset = 0,
                     header = HatPacket.Header(
                         packetType = HatPacket.TYPE_RECEIVER_HEARTBEAT,
-                        volumeOrCaps = AudioCapabilities.getLocalPlaybackCapabilitiesMask().toByte(),
-                        payloadLength = 0
+                        volumeOrCaps = localNode.capabilities.toCapabilitiesMask().toByte(),
+                        payloadLength = exchangePayload.size
                     )
                 )
+                System.arraycopy(exchangePayload, 0, heartbeatBuf, HatPacket.HEADER_SIZE, exchangePayload.size)
 
                 val packet = DatagramPacket(heartbeatBuf, heartbeatBuf.size)
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
@@ -1304,6 +1389,12 @@ class AudioSinkService : Service() {
 
     /** Opens the diagnostics run session for the receiver role and starts periodic RX/JITTER/PLAYBACK stats. */
     private fun startDiagnosticsSession() {
+        val localNode = com.example.audiostreamer.node.LocalNodeManager.getLocalNode()
+        com.example.audiostreamer.node.LocalNodeManager.updateState(
+            com.example.audiostreamer.node.NodeState.ACTIVE_STREAMING,
+            com.example.audiostreamer.node.StreamRole.RECEIVER,
+            configAuthority.currentGeneration
+        )
         HatDiagnostics.setMetadata(
             HatDiagnostics.Metadata(
                 appVersion = BuildConfig.VERSION_NAME,
@@ -1314,7 +1405,12 @@ class AudioSinkService : Service() {
                 audioOutputDevice = "AudioTrack (media)",
                 audioSampleRate = currentSampleRate,
                 audioChannelConfig = if (AudioConfig.CHANNELS == 2) "stereo" else AudioConfig.CHANNELS.toString(),
-                networkTransport = "UDP (unicast receive)"
+                networkTransport = "UDP (unicast receive)",
+                nodeId = localNode.id,
+                nodeName = localNode.name,
+                nodeRole = com.example.audiostreamer.node.StreamRole.RECEIVER.name,
+                nodeState = com.example.audiostreamer.node.NodeState.ACTIVE_STREAMING.name,
+                nodeCapabilitiesSummary = localNode.capabilities.describe()
             )
         )
         HatDiagnostics.startRun(
@@ -1734,6 +1830,11 @@ class AudioSinkService : Service() {
             mapOf("reason" to "sink_stopped")
         )
         stopDiagnosticsSession()
+        com.example.audiostreamer.node.LocalNodeManager.updateState(
+            com.example.audiostreamer.node.NodeState.AVAILABLE,
+            com.example.audiostreamer.node.StreamRole.IDLE
+        )
+        HatLinkManager.clear()
         unregisterLocalVolumeObserver()
 
         val hb = heartbeatThread
@@ -1771,11 +1872,13 @@ class AudioSinkService : Service() {
         }
 
         try {
+            activeTransport?.close()
             datagramSocket?.close()
         } catch (e: Exception) {
             Log.e(TAG, "Error closing UDP socket", e)
         }
         datagramSocket = null
+        activeTransport = null
 
         try {
             hb?.join(300)
@@ -1834,7 +1937,9 @@ class AudioSinkService : Service() {
                 bytesPerSec = 0,
                 statusDetail = "Stopped",
                 fecRecoveredTotal = 0L,
-                connectedTransmitter = null
+                connectedTransmitter = null,
+                activeLinks = emptyList(),
+                activeStreams = emptyList()
             )
         }
 
