@@ -11,7 +11,8 @@ data class ConnectedDevice(
     val isDirectP2p: Boolean = false,
     val latencyMs: Int = 0,
     val packetsTransferred: Long = 0L,
-    val lastSeenMs: Long = System.currentTimeMillis()
+    val lastSeenMs: Long = System.currentTimeMillis(),
+    val nodeId: String? = null
 ) {
     val transportType: String get() = if (isDirectP2p) "Wi-Fi Direct" else "Local Wi-Fi"
 }
@@ -41,7 +42,11 @@ data class Telemetry(
     val receiverCapabilityDesc: String = "Unknown",
     val negotiatedFormatDesc: String = "48.0 kHz • 24-bit Stereo PCM",
     val connectedReceivers: List<ConnectedDevice> = emptyList(),
-    val connectedTransmitter: ConnectedDevice? = null
+    val connectedTransmitter: ConnectedDevice? = null,
+    val localNode: com.example.audiostreamer.node.NodeInfo? = null,
+    val activeLinks: List<com.example.audiostreamer.node.HatLink> = emptyList(),
+    val activeStreams: List<com.example.audiostreamer.node.HatStream> = emptyList(),
+    val lastNegotiatedCapabilities: com.example.audiostreamer.node.NegotiatedNodeCapabilities? = null
 )
 
 object StreamState {

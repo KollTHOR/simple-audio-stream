@@ -48,6 +48,12 @@ import com.google.android.material.card.MaterialCardView
 import com.google.android.material.switchmaterial.SwitchMaterial
 import kotlinx.coroutines.launch
 import java.util.UUID
+import com.example.audiostreamer.node.LocalNodeManager
+import com.example.audiostreamer.node.NodeTransportType
+import com.example.audiostreamer.node.discovery.LanDiscoveryProvider
+import com.example.audiostreamer.node.discovery.WifiDirectDiscoveryProvider
+import com.example.audiostreamer.node.discovery.HatNfcBootstrapProvider
+import com.example.audiostreamer.node.discovery.HatDiscoveryRegistry
 
 class MainActivity : AppCompatActivity() {
 
@@ -125,6 +131,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var layoutPipelineDetails: LinearLayout
     private lateinit var tvPipelineProfile: TextView
     private lateinit var tvPipelineFormat: TextView
+    private lateinit var tvPipelineNodeInfo: TextView
     private lateinit var tvBufferHealthVal: TextView
     private lateinit var pbBufferHealth: ProgressBar
 
@@ -329,6 +336,7 @@ class MainActivity : AppCompatActivity() {
             insets
         }
 
+        com.example.audiostreamer.node.LocalNodeManager.init(this)
         ConnectionProfileManager.init(this)
         WifiDirectManager.init(this)
 
@@ -426,12 +434,23 @@ class MainActivity : AppCompatActivity() {
 
         btnScanReceivers.setOnClickListener {
             DiscoveryManager.triggerScan(lifecycleScope)
+            if (currentMode == Mode.TRANSMITTER && !AudioCaptureService.isRunning.get()) {
+                LanDiscoveryProvider.stopDiscovery()
+                LanDiscoveryProvider.startDiscovery(this)
+                if (checkAndRequestP2pPermissions()) {
+                    WifiDirectDiscoveryProvider.stopDiscovery()
+                    WifiDirectDiscoveryProvider.startDiscovery(this)
+                }
+            }
             if (checkAndRequestP2pPermissions()) {
                 WifiDirectManager.discoverPeers(this)
             }
             if (checkAndRequestBlePermissions()) {
                 BleDiscoveryManager.startScanning(this)
+                com.example.audiostreamer.node.discovery.HatBlePresenceProvider.startScanning(this)
             }
+            com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.startSubscribing(this)
+            HatDiscoveryRegistry.recomputeRegistry()
             Toast.makeText(this, "Scanning for nearby devices...", Toast.LENGTH_SHORT).show()
         }
 
@@ -460,6 +479,36 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 launch {
+                    LanDiscoveryProvider.discoveredEndpoints.collect {
+                        updateDiscoveredDevicesUi()
+                    }
+                }
+                launch {
+                    WifiDirectDiscoveryProvider.discoveredEndpoints.collect {
+                        updateDiscoveredDevicesUi()
+                    }
+                }
+                launch {
+                    HatDiscoveryRegistry.discoveredNodes.collect {
+                        updateDiscoveredDevicesUi()
+                    }
+                }
+                launch {
+                    com.example.audiostreamer.node.HatMultiStreamManager.activeDestinations.collect {
+                        updateConnectedDevicesUi(StreamState.telemetry.value)
+                    }
+                }
+                launch {
+                    com.example.audiostreamer.node.HatLinkManager.activeLinks.collect {
+                        updateConnectedDevicesUi(StreamState.telemetry.value)
+                    }
+                }
+                launch {
+                    LocalNodeManager.localNode.collect { node ->
+                        updateLocalNodeUi(node)
+                    }
+                }
+                launch {
                     DiscoveryManager.discoveredTransmitters.collect {
                         updateTuneInBanner()
                     }
@@ -471,6 +520,26 @@ class MainActivity : AppCompatActivity() {
                 }
                 launch {
                     DiscoveryManager.isScanning.collect {
+                        updateScanningIndicator()
+                    }
+                }
+                launch {
+                    LanDiscoveryProvider.isScanning.collect {
+                        updateScanningIndicator()
+                    }
+                }
+                launch {
+                    WifiDirectDiscoveryProvider.isScanning.collect {
+                        updateScanningIndicator()
+                    }
+                }
+                launch {
+                    com.example.audiostreamer.node.discovery.HatBlePresenceProvider.isScanning.collect {
+                        updateScanningIndicator()
+                    }
+                }
+                launch {
+                    com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.isSubscribing.collect {
                         updateScanningIndicator()
                     }
                 }
@@ -524,6 +593,7 @@ class MainActivity : AppCompatActivity() {
         layoutPipelineDetails = findViewById(R.id.layout_pipeline_details)
         tvPipelineProfile = findViewById(R.id.tv_pipeline_profile)
         tvPipelineFormat = findViewById(R.id.tv_pipeline_format)
+        tvPipelineNodeInfo = findViewById(R.id.tv_pipeline_node_info)
         tvBufferHealthVal = findViewById(R.id.tv_buffer_health_val)
         pbBufferHealth = findViewById(R.id.pb_buffer_health)
 
@@ -531,25 +601,37 @@ class MainActivity : AppCompatActivity() {
 
         layoutIpPill.setOnClickListener {
             refreshLocalIp()
+            val node = LocalNodeManager.getLocalNode()
             val allIps = NetworkUtils.getAllLocalIpAddresses()
-            if (allIps.size > 1) {
-                MaterialAlertDialogBuilder(this)
-                    .setTitle("Active Network Addresses")
-                    .setItems(allIps.toTypedArray()) { _, which ->
-                        val selectedIp = allIps[which]
-                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("IP Address", selectedIp))
-                        Toast.makeText(this, "IP copied: $selectedIp", Toast.LENGTH_SHORT).show()
-                    }
-                    .setPositiveButton("Close", null)
-                    .show()
+            val details = StringBuilder()
+            details.append("HAT Node: ${node.name}\n")
+            details.append("Node ID: ${node.id}\n")
+            details.append("State: ${node.state.name} (${node.activeRole.name})\n")
+            details.append("Transports: ${node.capabilities.supportedTransports.joinToString { it.name }}\n")
+            details.append("Codecs: ${node.capabilities.supportedCodecs.joinToString { it.name }}\n\n")
+            details.append("Network IP Addresses:\n")
+            if (allIps.isNotEmpty()) {
+                allIps.forEach { details.append(" • $it\n") }
             } else {
-                detectedLocalIp?.let { ip ->
-                    val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    clipboard.setPrimaryClip(ClipData.newPlainText("IP Address", ip))
-                    Toast.makeText(this, "IP copied: $ip", Toast.LENGTH_SHORT).show()
-                }
+                details.append(" • Offline / No active Wi-Fi\n")
             }
+
+            MaterialAlertDialogBuilder(this)
+                .setTitle("Local HAT Node")
+                .setMessage(details.toString().trimEnd())
+                .setPositiveButton("Copy Node ID") { _, _ ->
+                    val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Node ID", node.id))
+                    Toast.makeText(this, "Node ID copied: ${node.id}", Toast.LENGTH_SHORT).show()
+                }
+                .setNeutralButton("Copy IP") { _, _ ->
+                    val ipToCopy = detectedLocalIp ?: allIps.firstOrNull() ?: "127.0.0.1"
+                    val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("IP Address", ipToCopy))
+                    Toast.makeText(this, "IP copied: $ipToCopy", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("Close", null)
+                .show()
         }
 
         layoutPipelineDetails.setOnClickListener {
@@ -610,11 +692,34 @@ class MainActivity : AppCompatActivity() {
 
         observeTelemetry()
         updateModeAndButtonUi()
+
+        HatNfcBootstrapProvider.probeCapability(this)
+        intent?.let { handleNfcIntent(it) }
+        HatDiscoveryRegistry.startMonitoring(lifecycleScope)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleNfcIntent(intent)
+    }
+
+    private fun handleNfcIntent(intent: Intent) {
+        val result = HatNfcBootstrapProvider.processNfcIntent(intent, this)
+        if (result != null && result.success) {
+            Toast.makeText(
+                this,
+                "NFC tap: Bootstrapped ${result.remoteNode?.name} (${result.selectedTransport?.name ?: "Pending"})",
+                Toast.LENGTH_LONG
+            ).show()
+            updateDiscoveredDevicesUi()
+        }
     }
 
     override fun onResume() {
         super.onResume()
         refreshLocalIp()
+        HatNfcBootstrapProvider.enableNfcDispatch(this)
 
         val currentRemoteVol = AudioCaptureService.remoteVolumePercent.get()
         sliderRemoteVol.value = currentRemoteVol.toFloat()
@@ -633,10 +738,19 @@ class MainActivity : AppCompatActivity() {
         syncDiscoveryMode()
     }
 
+    override fun onPause() {
+        super.onPause()
+        HatNfcBootstrapProvider.disableNfcDispatch(this)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         DiscoveryManager.stopDiscovery()
         DiscoveryManager.stopReceiverResponder()
+        LanDiscoveryProvider.stopAll()
+        WifiDirectDiscoveryProvider.stopAll()
+        HatNfcBootstrapProvider.stopAll()
+        HatDiscoveryRegistry.stopAll()
         WifiDirectManager.cleanup(this)
     }
 
@@ -644,11 +758,19 @@ class MainActivity : AppCompatActivity() {
         when (currentMode) {
             Mode.TRANSMITTER -> {
                 DiscoveryManager.stopReceiverResponder()
+                LanDiscoveryProvider.stopAdvertisement()
+                WifiDirectDiscoveryProvider.stopAdvertisement()
                 BleDiscoveryManager.stopAdvertising()
                 if (!AudioCaptureService.isRunning.get()) {
                     DiscoveryManager.startDiscovery(lifecycleScope)
+                    LanDiscoveryProvider.startDiscovery(this)
+                    if (checkAndRequestP2pPermissions()) {
+                        WifiDirectDiscoveryProvider.startDiscovery(this)
+                    }
                 } else {
                     DiscoveryManager.stopDiscovery()
+                    LanDiscoveryProvider.stopDiscovery()
+                    WifiDirectDiscoveryProvider.stopDiscovery()
                 }
                 if (BleDiscoveryManager.hasPermissions(this)) {
                     BleDiscoveryManager.startScanning(this)
@@ -656,8 +778,14 @@ class MainActivity : AppCompatActivity() {
             }
             Mode.RECEIVER -> {
                 DiscoveryManager.stopDiscovery()
+                LanDiscoveryProvider.stopDiscovery()
+                WifiDirectDiscoveryProvider.stopDiscovery()
                 BleDiscoveryManager.stopScanning()
                 DiscoveryManager.startReceiverResponder(this, lifecycleScope)
+                LanDiscoveryProvider.advertiseNode(this, LocalNodeManager.getLocalNode(), AudioConfig.DEFAULT_PORT)
+                if (checkAndRequestP2pPermissions()) {
+                    WifiDirectDiscoveryProvider.advertiseNode(this, LocalNodeManager.getLocalNode(), AudioConfig.DEFAULT_PORT)
+                }
                 if (BleDiscoveryManager.hasPermissions(this)) {
                     val ssid = WifiDirectManager.networkSsid.value
                     val pass = WifiDirectManager.networkPassphrase.value
@@ -677,7 +805,13 @@ class MainActivity : AppCompatActivity() {
     private fun Int.dpToPx(): Int = (this * resources.displayMetrics.density).toInt()
 
     private fun updateScanningIndicator() {
-        val isScanning = DiscoveryManager.isScanning.value || WifiDirectManager.isScanningPeers.value || BleDiscoveryManager.isScanning.value
+        val isScanning = DiscoveryManager.isScanning.value ||
+            WifiDirectManager.isScanningPeers.value ||
+            BleDiscoveryManager.isScanning.value ||
+            LanDiscoveryProvider.isScanning.value ||
+            WifiDirectDiscoveryProvider.isScanning.value ||
+            com.example.audiostreamer.node.discovery.HatBlePresenceProvider.isScanning.value ||
+            com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.isSubscribing.value
         pbDiscoveryScanning.visibility = if (isScanning) View.VISIBLE else View.GONE
         tvDiscoveryScanningText.visibility = if (isScanning) View.VISIBLE else View.GONE
     }
@@ -694,7 +828,12 @@ class MainActivity : AppCompatActivity() {
         val p2pGoIp: String?,
         val isDirectAvailable: Boolean,
         var useDirect: Boolean = false,
-        val capabilitiesMask: Int = 0
+        val capabilitiesMask: Int = 0,
+        val nodeId: String? = null,
+        val discoverySources: List<String> = emptyList(),
+        val transportCandidates: List<String> = emptyList(),
+        val rssi: Int? = null,
+        val capabilitiesSummary: String? = null
     )
 
     private val deviceDirectPreferences = mutableMapOf<String, Boolean>()
@@ -747,7 +886,7 @@ class MainActivity : AppCompatActivity() {
 
             unified.add(
                 UnifiedDevice(
-                    id = dev.p2pMac ?: matchingBle?.bluetoothAddress ?: "ip_${dev.ip}",
+                    id = dev.nodeId ?: dev.p2pMac ?: matchingBle?.bluetoothAddress ?: "ip_${dev.ip}",
                     displayName = displayName,
                     modelName = dev.modelName ?: if (dev.name != displayName && dev.name != "Audio Receiver") dev.name else null,
                     lanIp = if (dev.ip.startsWith("192.168.49.")) null else dev.ip,
@@ -758,7 +897,8 @@ class MainActivity : AppCompatActivity() {
                     p2pGoIp = p2pGoIp,
                     isDirectAvailable = isDirect,
                     useDirect = !isDirect && dev.ip.startsWith("192.168.49."),
-                    capabilitiesMask = dev.capabilitiesMask
+                    capabilitiesMask = dev.capabilitiesMask,
+                    nodeId = dev.nodeId
                 )
             )
         }
@@ -786,7 +926,75 @@ class MainActivity : AppCompatActivity() {
                         p2pGoIp = ble.p2pGoIp,
                         isDirectAvailable = matchingPeer != null || !ble.p2pSsid.isNullOrEmpty(),
                         useDirect = true,
-                        capabilitiesMask = 0
+                        capabilitiesMask = 0,
+                        nodeId = null
+                    )
+                )
+            }
+        }
+
+        // Ingest deduplicated nodes from central HatDiscoveryRegistry
+        // (merges LAN NSD, Wi-Fi Direct, Wi-Fi Aware, BLE, and NFC Bootstrap)
+        val registryNodes = HatDiscoveryRegistry.recomputeRegistry()
+        for (regNode in registryNodes) {
+            val lanEp = regNode.getLanEndpoint()
+            val wdEp = regNode.getWifiDirectEndpoint()
+            val nfcEp = regNode.getNfcEndpoint()
+
+            val ip = lanEp?.address?.takeIf { it !in localIps }
+            val mac = wdEp?.address
+
+            val matchingPeerIndex = if (mac != null) {
+                p2pPeers.indexOfFirst { it.deviceAddress.equals(mac, ignoreCase = true) }
+            } else -1
+            val matchingPeer = if (matchingPeerIndex >= 0) p2pPeers.removeAt(matchingPeerIndex) else null
+
+            val isDirect = regNode.hasTransport(NodeTransportType.WIFI_DIRECT) || matchingPeer != null
+            val sourcesDesc = regNode.discoverySources.joinToString(", ") { it.name }
+            val sourcesList = regNode.discoverySources.map { it.name }
+            val candidateTransportsList = regNode.transportCandidates.map { it.name }
+            val capsSummary = regNode.nodeInfo.capabilities.describe()
+
+            val existingIndex = unified.indexOfFirst {
+                it.nodeId == regNode.id || (ip != null && it.lanIp == ip) || (mac != null && it.id.contains(mac))
+            }
+
+            if (existingIndex >= 0) {
+                val existing = unified[existingIndex]
+                unified[existingIndex] = existing.copy(
+                    nodeId = regNode.id,
+                    capabilitiesMask = if (existing.capabilitiesMask != 0) existing.capabilitiesMask else regNode.nodeInfo.capabilities.toCapabilitiesMask(),
+                    displayName = if (existing.displayName == "Audio Receiver" && regNode.name.isNotEmpty()) regNode.name else existing.displayName,
+                    modelName = existing.modelName ?: sourcesDesc,
+                    lanIp = existing.lanIp ?: ip,
+                    port = if (existing.port != AudioConfig.DEFAULT_PORT) existing.port else (lanEp?.port ?: nfcEp?.port ?: AudioConfig.DEFAULT_PORT),
+                    isDirectAvailable = existing.isDirectAvailable || isDirect,
+                    p2pPeer = existing.p2pPeer ?: matchingPeer,
+                    discoverySources = (existing.discoverySources + sourcesList).distinct(),
+                    transportCandidates = (existing.transportCandidates + candidateTransportsList).distinct(),
+                    rssi = existing.rssi ?: regNode.rssi,
+                    capabilitiesSummary = existing.capabilitiesSummary ?: capsSummary
+                )
+            } else {
+                unified.add(
+                    UnifiedDevice(
+                        id = regNode.id,
+                        displayName = regNode.name.ifEmpty { matchingPeer?.deviceName ?: "HAT Node" },
+                        modelName = sourcesDesc,
+                        lanIp = ip,
+                        port = lanEp?.port ?: nfcEp?.port ?: AudioConfig.DEFAULT_PORT,
+                        p2pPeer = matchingPeer,
+                        p2pSsid = null,
+                        p2pPassphrase = null,
+                        p2pGoIp = null,
+                        isDirectAvailable = isDirect,
+                        useDirect = isDirect && ip == null,
+                        capabilitiesMask = regNode.nodeInfo.capabilities.toCapabilitiesMask(),
+                        nodeId = regNode.id,
+                        discoverySources = sourcesList,
+                        transportCandidates = candidateTransportsList,
+                        rssi = regNode.rssi,
+                        capabilitiesSummary = capsSummary
                     )
                 )
             }
@@ -813,9 +1021,39 @@ class MainActivity : AppCompatActivity() {
                     val btnDisconnect = itemView.findViewById<MaterialButton>(R.id.btn_device_disconnect)
                     val btnConnect = itemView.findViewById<MaterialButton>(R.id.btn_device_connect)
 
-                    tvName.text = rec.name.ifEmpty { "Audio Receiver" }
-                    val latencyStr = if (rec.latencyMs > 0) " • ${rec.latencyMs}ms" else ""
-                    tvDetails.text = "${rec.ip}:${rec.port} • ${rec.transportType}$latencyStr"
+                    val dest = com.example.audiostreamer.node.HatMultiStreamManager.getDestination(rec.nodeId ?: "")
+                        ?: com.example.audiostreamer.node.HatMultiStreamManager.getAllDestinations().firstOrNull { it.link.metadata.remoteAddress == rec.ip }
+
+                    if (dest != null) {
+                        tvName.text = if (dest.nodeName.isNotEmpty() && dest.nodeName != "Unknown") dest.nodeName else rec.name
+                        val dotColor = when (dest.health) {
+                            com.example.audiostreamer.node.DestinationHealth.HEALTHY -> ContextCompat.getColor(this, R.color.status_green)
+                            com.example.audiostreamer.node.DestinationHealth.DEGRADED -> ContextCompat.getColor(this, R.color.status_orange)
+                            com.example.audiostreamer.node.DestinationHealth.UNREACHABLE -> ContextCompat.getColor(this, R.color.status_red)
+                            else -> ContextCompat.getColor(this, R.color.status_gray)
+                        }
+                        dot.backgroundTintList = ColorStateList.valueOf(dotColor)
+
+                        val detailsSb = StringBuilder()
+                        detailsSb.append("${rec.ip}:${rec.port} • ${dest.transportType.name} • ${dest.stream.codec.name}")
+                        detailsSb.append(" • ").append(dest.health.name)
+                        val sentKBytes = dest.stats.bytesSent.get() / 1024
+                        detailsSb.append("\nTx: ${dest.stats.packetsSent.get()} pkts (${sentKBytes} KB)")
+                        if (dest.stats.rttMs > 0) {
+                            detailsSb.append(" • RTT: ${dest.stats.rttMs.toInt()}ms")
+                        }
+                        detailsSb.append(" • Target: ${dest.bufferStats.targetWatermarkMs.toInt()}ms")
+                        if (dest.stats.sendErrors.get() > 0) {
+                            detailsSb.append(" • Errors: ${dest.stats.sendErrors.get()}")
+                        }
+                        tvDetails.text = detailsSb.toString()
+                    } else {
+                        tvName.text = rec.name.ifEmpty { "Audio Receiver" }
+                        val latencyStr = if (rec.latencyMs > 0) " • ${rec.latencyMs}ms" else ""
+                        tvDetails.text = "${rec.ip}:${rec.port} • ${rec.transportType}$latencyStr"
+                        dot.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_green))
+                    }
+
                     dot.visibility = View.VISIBLE
                     btnConnect.visibility = View.GONE
                     btnDisconnect.visibility = View.VISIBLE
@@ -851,7 +1089,15 @@ class MainActivity : AppCompatActivity() {
                 val btnConnect = itemView.findViewById<MaterialButton>(R.id.btn_device_connect)
 
                 tvName.text = transmitter.name.ifEmpty { "Audio Transmitter" }
-                tvDetails.text = "${transmitter.ip}:${transmitter.port} • ${transmitter.transportType} • Playing"
+
+                val activeLink = t.activeLinks.firstOrNull()
+                val activeStream = t.activeStreams.firstOrNull()
+                val transportStr = activeLink?.hatTransportType?.name ?: transmitter.transportType
+                val streamStr = activeStream?.let { " • ${it.codec.name} (Gen ${it.generation})" } ?: ""
+                val negStr = t.lastNegotiatedCapabilities?.let { "\nNegotiated: ${it.summary()}" } ?: ""
+
+                tvDetails.text = "${transmitter.ip}:${transmitter.port} • $transportStr$streamStr • Playing$negStr"
+                dot.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_green))
                 dot.visibility = View.VISIBLE
                 btnConnect.visibility = View.GONE
                 btnDisconnect.visibility = View.VISIBLE
@@ -907,22 +1153,49 @@ class MainActivity : AppCompatActivity() {
             val btnDisconnect = itemView.findViewById<MaterialButton>(R.id.btn_device_disconnect)
             val btnConnect = itemView.findViewById<MaterialButton>(R.id.btn_device_connect)
 
-            tvName.text = if (!dev.modelName.isNullOrEmpty() && dev.modelName != dev.displayName) {
+            tvName.text = if (!dev.modelName.isNullOrEmpty() && dev.modelName != dev.displayName && !dev.discoverySources.contains(dev.modelName)) {
                 "${dev.displayName} (${dev.modelName})"
             } else {
                 dev.displayName
             }
 
-            val transportDesc = when {
-                dev.useDirect || dev.lanIp == null -> "Wi-Fi Direct P2P"
-                else -> "Local Wi-Fi (${dev.lanIp})"
+            val detailsSb = StringBuilder()
+            val transportLabel = when {
+                dev.useDirect || dev.lanIp == null -> "Wi-Fi Direct"
+                else -> "Local Wi-Fi (${dev.lanIp}:${dev.port})"
             }
-            tvDetails.text = transportDesc
+            detailsSb.append(transportLabel)
+
+            if (dev.discoverySources.isNotEmpty()) {
+                detailsSb.append(" • Via: ").append(dev.discoverySources.joinToString(", "))
+            }
+            if (dev.rssi != null) {
+                detailsSb.append(" (").append(dev.rssi).append(" dBm)")
+            }
+            if (!dev.capabilitiesSummary.isNullOrEmpty()) {
+                detailsSb.append("\n").append(dev.capabilitiesSummary)
+            }
+            tvDetails.text = detailsSb.toString()
             dot.visibility = View.GONE
             btnDisconnect.visibility = View.GONE
+
+            val isAlreadyConnected = dev.nodeId != null && !HatDiscoveryRegistry.canConnect(dev.nodeId)
             btnConnect.visibility = View.VISIBLE
+            if (isAlreadyConnected) {
+                btnConnect.text = "Connected"
+                btnConnect.isEnabled = false
+                btnConnect.alpha = 0.6f
+            } else {
+                btnConnect.text = "Connect"
+                btnConnect.isEnabled = true
+                btnConnect.alpha = 1.0f
+            }
 
             fun performConnect() {
+                if (dev.nodeId != null && !HatDiscoveryRegistry.canConnect(dev.nodeId)) {
+                    Toast.makeText(this@MainActivity, "Already connected to ${dev.displayName}", Toast.LENGTH_SHORT).show()
+                    return
+                }
                 if (currentMode == Mode.TRANSMITTER) {
                     val isRunning = AudioCaptureService.isRunning.get()
                     if (dev.useDirect || dev.lanIp == null) {
@@ -982,7 +1255,8 @@ class MainActivity : AppCompatActivity() {
                     preferredStreamingProfile = AudioConfig.PROFILE_MUSIC,
                     capabilitiesMask = dev.capabilitiesMask,
                     p2pSsid = dev.p2pSsid,
-                    p2pPassphrase = dev.p2pPassphrase
+                    p2pPassphrase = dev.p2pPassphrase,
+                    nodeId = dev.nodeId
                 )
                 ConnectionProfileManager.saveProfile(this@MainActivity, profile)
                 Toast.makeText(this@MainActivity, "Saved profile: ${profile.name}", Toast.LENGTH_SHORT).show()
@@ -1012,31 +1286,40 @@ class MainActivity : AppCompatActivity() {
     private fun connectToUnifiedDeviceDirect(dev: UnifiedDevice, onConnected: ((String) -> Unit)? = null) {
         if (!checkAndRequestP2pPermissions()) return
         currentConnType = ConnectionType.WIFI_DIRECT
+        val connStartMs = System.currentTimeMillis()
+        val targetNodeId = dev.nodeId ?: dev.id
 
         if (!dev.p2pSsid.isNullOrEmpty()) {
             val pass = dev.p2pPassphrase ?: WifiDirectManager.P2P_DEFAULT_PASSPHRASE
             AppLogger.i("MainActivity", "Direct-linking to '${dev.displayName}' SSID=${dev.p2pSsid}...")
             Toast.makeText(this, "Direct-linking to ${dev.displayName}...", Toast.LENGTH_SHORT).show()
             WifiDirectManager.connectWithCredentials(this, dev.p2pSsid, pass) { goIp ->
+                val durationMs = System.currentTimeMillis() - connStartMs
+                WifiDirectDiscoveryProvider.recordConnectionAttempt(targetNodeId, dev.p2pSsid, durationMs, true)
                 runOnUiThread {
                     etTargetIp.setText(goIp)
                     etPort.setText(dev.port.toString())
-                    Toast.makeText(this@MainActivity, "Direct connected to ${dev.displayName} ($goIp)", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Direct connected to ${dev.displayName} ($goIp) in ${durationMs}ms", Toast.LENGTH_SHORT).show()
                     onConnected?.invoke(goIp)
                 }
             }
         } else if (dev.p2pPeer != null) {
-            AppLogger.i("MainActivity", "Connecting to P2P peer '${dev.displayName}'...")
+            val peerAddr = dev.p2pPeer.deviceAddress
+            AppLogger.i("MainActivity", "Connecting to P2P peer '${dev.displayName}' ($peerAddr)...")
             Toast.makeText(this, "Connecting to ${dev.displayName}...", Toast.LENGTH_SHORT).show()
             WifiDirectManager.connectToPeer(this, dev.p2pPeer) { goIp ->
+                val durationMs = System.currentTimeMillis() - connStartMs
+                WifiDirectDiscoveryProvider.recordConnectionAttempt(targetNodeId, peerAddr, durationMs, true)
                 runOnUiThread {
                     etTargetIp.setText(goIp)
                     etPort.setText(dev.port.toString())
-                    Toast.makeText(this@MainActivity, "Direct connected to ${dev.displayName} ($goIp)", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Direct connected to ${dev.displayName} ($goIp) in ${durationMs}ms", Toast.LENGTH_SHORT).show()
                     onConnected?.invoke(goIp)
                 }
             }
         } else {
+            val durationMs = System.currentTimeMillis() - connStartMs
+            WifiDirectDiscoveryProvider.recordConnectionAttempt(targetNodeId, "None", durationMs, false, "Missing credentials or P2P peer")
             Toast.makeText(this, "No Wi-Fi Direct credentials found for ${dev.displayName}", Toast.LENGTH_SHORT).show()
         }
     }
@@ -1277,10 +1560,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshLocalIp() {
         val allIps = NetworkUtils.getAllLocalIpAddresses()
+        val nodeName = com.example.audiostreamer.node.LocalNodeManager.getLocalNode().name
         if (allIps.isNotEmpty()) {
             detectedLocalIp = allIps.first()
             val extra = allIps.size - 1
-            tvHeaderIp.text = if (extra > 0) "${allIps.first()} (+$extra)" else allIps.first()
+            val ipStr = if (extra > 0) "${allIps.first()} (+$extra)" else allIps.first()
+            tvHeaderIp.text = "$ipStr • $nodeName"
             if (etTargetIp.text.isNullOrEmpty() ||
                 etTargetIp.text.toString() == "192.168.1.255" ||
                 etTargetIp.text.toString() == "192.168.43.255") {
@@ -1293,8 +1578,17 @@ class MainActivity : AppCompatActivity() {
             }
         } else {
             detectedLocalIp = null
-            tvHeaderIp.text = "Offline"
+            tvHeaderIp.text = "Offline • $nodeName"
         }
+    }
+
+    private fun updateLocalNodeUi(node: com.example.audiostreamer.node.NodeInfo) {
+        val ipStr = detectedLocalIp?.let { ip ->
+            val allIps = NetworkUtils.getAllLocalIpAddresses()
+            val extra = allIps.size - 1
+            if (extra > 0) "${allIps.first()} (+$extra)" else allIps.first()
+        } ?: "Offline"
+        tvHeaderIp.text = "$ipStr • ${node.name}"
     }
 
     private fun observeTelemetry() {
@@ -1357,6 +1651,18 @@ class MainActivity : AppCompatActivity() {
             tvPipelineFormat.text = "48.0 kHz • $bitStr Stereo PCM • $defaultBitrate kbps"
         }
 
+        val localNode = com.example.audiostreamer.node.LocalNodeManager.getLocalNode()
+        if (isSenderRunning || isSinkRunning) {
+            val linkCount = t.activeLinks.size
+            val streamCount = t.activeStreams.size
+            val fanOutCount = com.example.audiostreamer.node.HatMultiStreamManager.countActiveDestinations()
+            val fanOutStr = if (isSenderRunning && fanOutCount > 0) " • Fan-Out: $fanOutCount" else ""
+            val negStr = t.lastNegotiatedCapabilities?.let { " • ${it.summary()}" } ?: ""
+            tvPipelineNodeInfo.text = "Node: ${localNode.name} • Links: $linkCount • Streams: $streamCount$fanOutStr$negStr"
+        } else {
+            tvPipelineNodeInfo.text = "Node: ${localNode.name} (${localNode.id}) • Ready"
+        }
+
         if (!isSenderRunning && !isSinkRunning) {
             tvBadgeStatus.text = "IDLE"
             tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_gray))
@@ -1385,22 +1691,33 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (isSenderRunning) {
+            val activeDests = com.example.audiostreamer.node.HatMultiStreamManager.countActiveDestinations()
             if (t.isSilenceSuppressed) {
                 tvBadgeStatus.text = "STANDBY"
                 tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_gray))
                 tvDiagnosticTip.text = "Silence suppression active (Battery saver: 2 pkts/s). Instant wake-up (<5ms) when audio resumes."
             } else {
-                tvBadgeStatus.text = if (t.activeReceiversCount > 1) "MULTI-CAST" else "TRANSMITTING"
-                tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
-                tvDiagnosticTip.text = if (t.activeReceiversCount > 1) {
-                    "Multi-unicast active to ${t.activeReceiversCount} receivers. Synchronous silent disco listening."
-                } else if (t.audioPeakPercent > 1) {
-                    "Audio signal detected. Sending live system audio to target."
+                if (activeDests > 1) {
+                    tvBadgeStatus.text = "FAN-OUT ($activeDests)"
+                    tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
+                    tvDiagnosticTip.text = "Fan-out active to $activeDests receivers. Synchronous playback with per-destination telemetry."
+                } else if (t.activeReceiversCount > 1) {
+                    tvBadgeStatus.text = "MULTI-CAST"
+                    tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
+                    tvDiagnosticTip.text = "Multi-unicast active to ${t.activeReceiversCount} receivers. Synchronous silent disco listening."
                 } else {
-                    "Capturing system audio, but signal is currently silent. Start playing media on this device."
+                    tvBadgeStatus.text = "TRANSMITTING"
+                    tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
+                    tvDiagnosticTip.text = if (t.audioPeakPercent > 1) {
+                        "Audio signal detected. Sending live system audio to target."
+                    } else {
+                        "Capturing system audio, but signal is currently silent. Start playing media on this device."
+                    }
                 }
             }
-            tvEndpointInfo.text = if (t.activeReceiversCount > 1) {
+            tvEndpointInfo.text = if (activeDests > 1) {
+                "Fan-Out: $activeDests destinations (${t.streamProfileName})"
+            } else if (t.activeReceiversCount > 1) {
                 "Targets: Multi-Unicast (${t.activeReceiversCount} devices)"
             } else {
                 "Target: ${t.remoteEndpoint ?: "Configuring..."}"

@@ -83,7 +83,8 @@
                 android:text="192.168.1.50 • Local Wi-Fi"
                 android:textSize="12sp"
                 android:textColor="@color/text_secondary"
-                android:maxLines="1"
+                android:maxLines="3"
+                android:lineSpacingExtra="2dp"
                 android:ellipsize="end"
                 android:layout_marginTop="2dp" />
         </LinearLayout>

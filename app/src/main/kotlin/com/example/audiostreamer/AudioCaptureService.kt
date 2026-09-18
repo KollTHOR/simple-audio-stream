@@ -96,6 +96,7 @@ class AudioCaptureService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var audioRecord: AudioRecord? = null
     @Volatile private var udpSocket: DatagramSocket? = null
+    @Volatile private var activeTransport: com.example.audiostreamer.node.transport.HatIpTransport? = null
     val profileTransactionManager = StreamProfileTransactionManager(currentStreamGeneration)
     val activeNegotiatedConfig: NegotiatedStreamConfig?
         get() = profileTransactionManager.activeTransmitterConfig
@@ -108,6 +109,7 @@ class AudioCaptureService : Service() {
     private val clientRegistry = ConcurrentHashMap<ClientEndpoint, Long>()
     private val configuredEndpoints = ConcurrentHashMap.newKeySet<ClientEndpoint>()
     private val clientCapabilities = ConcurrentHashMap<ClientEndpoint, Int>()
+    private val clientNodeInfo = ConcurrentHashMap<ClientEndpoint, com.example.audiostreamer.node.NodeInfo>()
     @Volatile private var lastClientPruneTime = 0L
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -272,6 +274,10 @@ class AudioCaptureService : Service() {
                     clientCapabilities.remove(ep)
                     clientDiag.remove(ep)
                     configuredEndpoints.remove(ep)
+                    val removedNode = clientNodeInfo.remove(ep)
+                    val destId = removedNode?.id ?: "${com.example.audiostreamer.node.NodeIdentity.ID_PREFIX}ep-${(ep.address.hostAddress ?: "").replace(".", "-")}"
+                    com.example.audiostreamer.node.HatMultiStreamManager.removeDestination(destId, "dynamic_removal")
+                    com.example.audiostreamer.node.HatLinkManager.closeLinkByRemoteAddress(ep.address.hostAddress ?: "")
                     Log.i(TAG, "Dynamically removed client: $ep")
                 }
                 publishConnectedReceivers()
@@ -290,15 +296,39 @@ class AudioCaptureService : Service() {
             val friendlyName = DiscoveryManager.getDeviceNameForIp(hostIp) ?: hostIp
             val stats = clientDiag[ep]
             val isP2p = hostIp.startsWith("192.168.49.")
+            val knownCaps = clientCapabilities[ep] ?: 0
+            val config = activeNegotiatedConfig
+            val knownNode = clientNodeInfo[ep]
+            if (hostIp.isNotEmpty()) {
+                com.example.audiostreamer.node.LinkAdapters.registerOutboundStream(
+                    remoteAddress = hostIp,
+                    remotePort = ep.port,
+                    remoteCaps = knownCaps,
+                    generation = currentStreamGeneration.get(),
+                    codec = config?.codec ?: AudioCodec.PCM,
+                    format = config?.audioFormat ?: AudioFormatConfig(),
+                    remoteNode = knownNode
+                )
+            }
             ConnectedDevice(
                 ip = hostIp,
                 port = ep.port,
-                name = friendlyName,
+                name = knownNode?.name ?: friendlyName,
                 isDirectP2p = isP2p,
-                packetsTransferred = stats?.packets?.get() ?: 0L
+                packetsTransferred = stats?.packets?.get() ?: 0L,
+                nodeId = knownNode?.id ?: "${com.example.audiostreamer.node.NodeIdentity.ID_PREFIX}ep-${hostIp.replace(".", "-")}"
             )
         }
-        StreamState.update { it.copy(connectedReceivers = list, activeReceiversCount = list.size) }
+        val links = com.example.audiostreamer.node.HatLinkManager.activeLinks.value
+        val streams = com.example.audiostreamer.node.HatLinkManager.activeStreams.value
+        StreamState.update {
+            it.copy(
+                connectedReceivers = list,
+                activeReceiversCount = list.size,
+                activeLinks = links,
+                activeStreams = streams
+            )
+        }
     }
 
     private fun updateRemoteVolume(newVolume: Int) {
@@ -347,6 +377,9 @@ class AudioCaptureService : Service() {
                     Log.i(TAG, "Pruning inactive multi-unicast client: ${entry.key}")
                     HatDiagnostics.info("RECEIVER_STALE", mapOf("receiver" to entry.key.toString(), "idleMs" to (now - entry.value)))
                     clientDiag.remove(entry.key)
+                    val nodeInfo = clientNodeInfo.remove(entry.key)
+                    val destId = nodeInfo?.id ?: "${com.example.audiostreamer.node.NodeIdentity.ID_PREFIX}ep-${(entry.key.address.hostAddress ?: "").replace(".", "-")}"
+                    com.example.audiostreamer.node.HatMultiStreamManager.removeDestination(destId, "stale_timeout")
                     iter.remove()
                 }
             }
@@ -366,15 +399,28 @@ class AudioCaptureService : Service() {
                     packet.address = client.address
                     packet.port = client.port
                     val stats = clientDiag.getOrPut(client) { TxReceiverStats(client.toString()) }
+                    val knownNode = clientNodeInfo[client]
+                    val destId = knownNode?.id ?: "${com.example.audiostreamer.node.NodeIdentity.ID_PREFIX}ep-${(client.address.hostAddress ?: "").replace(".", "-")}"
                     try {
                         socket.send(packet)
                         stats.packets.incrementAndGet()
                         stats.bytes.addAndGet(packet.length.toLong())
                         diagTxPackets.incrementAndGet()
                         diagTxBytes.addAndGet(packet.length.toLong())
+                        com.example.audiostreamer.node.HatMultiStreamManager.recordFanOut(
+                            destinationNodeId = destId,
+                            packetBytes = packet.length,
+                            isSuccess = true
+                        )
                     } catch (e: Exception) {
                         stats.sendErrors.incrementAndGet()
                         diagTxErrors.incrementAndGet()
+                        com.example.audiostreamer.node.HatMultiStreamManager.recordFanOut(
+                            destinationNodeId = destId,
+                            packetBytes = packet.length,
+                            isSuccess = false,
+                            error = e
+                        )
                         when {
                             e is java.net.SocketTimeoutException -> stats.timeouts.incrementAndGet()
                             e.message?.contains("unreachable", ignoreCase = true) == true -> stats.unreachable.incrementAndGet()
@@ -447,16 +493,19 @@ class AudioCaptureService : Service() {
     private fun sendStreamAnnouncement(config: NegotiatedStreamConfig, volume: Int, targetEndpoint: ClientEndpoint? = null) {
         val socket = udpSocket ?: return
         try {
-            val buffer = ByteArray(HatPacket.HEADER_SIZE)
+            val localNode = com.example.audiostreamer.node.LocalNodeManager.getLocalNode()
+            val exchangePayload = com.example.audiostreamer.node.NodeCapabilityExchange.fromNode(localNode).toByteArray()
+            val buffer = ByteArray(HatPacket.HEADER_SIZE + exchangePayload.size)
             val header = config.createHeader(
                 packetType = HatPacket.TYPE_CONTROL,
                 sequenceNumber = 0,
-                payloadLength = 0,
+                payloadLength = exchangePayload.size,
                 timestamp = config.generation,
                 volumeOrCaps = volume.coerceIn(0, 100).toByte(),
                 generation = config.generation
             )
             HatPacket.writeHeader(buffer, 0, header)
+            System.arraycopy(exchangePayload, 0, buffer, HatPacket.HEADER_SIZE, exchangePayload.size)
             val packet = DatagramPacket(buffer, buffer.size)
             if (targetEndpoint != null) {
                 packet.address = targetEndpoint.address
@@ -802,27 +851,32 @@ class AudioCaptureService : Service() {
             }
         }
         val firstTargetIp = targetAddresses.firstOrNull()?.hostAddress ?: targetIp
-        val matchingLocalIp = NetworkUtils.findMatchingLocalIp(firstTargetIp)
-        val socket: DatagramSocket = try {
-            if (matchingLocalIp != null) {
-                DatagramSocket(InetSocketAddress(InetAddress.getByName(matchingLocalIp), 0)).apply {
-                    sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
-                    broadcast = true
+        val transport = com.example.audiostreamer.node.transport.HatTransportRegistry.selectBestAudioTransport(firstTargetIp)
+        transport.connect(com.example.audiostreamer.node.transport.TransportAddress(firstTargetIp, targetPort))
+        val socket: DatagramSocket = transport.socket ?: run {
+            val matchingLocalIp = NetworkUtils.findMatchingLocalIp(firstTargetIp)
+            try {
+                if (matchingLocalIp != null) {
+                    DatagramSocket(InetSocketAddress(InetAddress.getByName(matchingLocalIp), 0)).apply {
+                        sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
+                        broadcast = true
+                    }
+                } else {
+                    DatagramSocket().apply {
+                        sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
+                        broadcast = true
+                    }
                 }
-            } else {
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed binding socket to interface IP $matchingLocalIp, falling back to unbound socket: ${e.message}")
                 DatagramSocket().apply {
                     sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
                     broadcast = true
                 }
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed binding socket to interface IP $matchingLocalIp, falling back to unbound socket: ${e.message}")
-            DatagramSocket().apply {
-                sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
-                broadcast = true
-            }
         }
         udpSocket = socket
+        activeTransport = transport
 
         val listenerSocket = socket
         controlListenerThread = Thread({
@@ -853,10 +907,36 @@ class AudioCaptureService : Service() {
                             HatPacket.TYPE_RECEIVER_HEARTBEAT -> {
                                 val isNew = !clientRegistry.containsKey(endpoint)
                                 val currentConfig = activeNegotiatedConfig
+                                val payloadLen = header.payloadLength
+                                val rxExchange = if (payloadLen > 0 && recvPacket.length >= HatPacket.HEADER_SIZE + payloadLen) {
+                                    com.example.audiostreamer.node.NodeCapabilityExchange.parseOrNull(recvBuf, HatPacket.HEADER_SIZE, payloadLen)
+                                } else null
+
+                                val localNode = com.example.audiostreamer.node.LocalNodeManager.getLocalNode()
+                                val hostIp = endpoint.address.hostAddress ?: ""
+                                val remoteNodeInfo = rxExchange?.toNodeInfo(role = com.example.audiostreamer.node.StreamRole.RECEIVER)
+                                    ?: com.example.audiostreamer.node.NodeInfo(
+                                        identity = com.example.audiostreamer.node.NodeIdentity(
+                                            "${com.example.audiostreamer.node.NodeIdentity.ID_PREFIX}ep-${hostIp.replace(".", "-")}",
+                                            DiscoveryManager.getDeviceNameForIp(hostIp) ?: "Receiver $hostIp"
+                                        ),
+                                        capabilities = com.example.audiostreamer.node.NodeCapabilities.fromCapabilitiesMask(byteVal),
+                                        activeRole = com.example.audiostreamer.node.StreamRole.RECEIVER
+                                    )
+
+                                val negotiated = com.example.audiostreamer.node.NodeCapabilityNegotiator.negotiate(localNode, remoteNodeInfo)
+                                clientNodeInfo[endpoint] = remoteNodeInfo
+                                HatDiagnostics.setLastNegotiatedCapabilities(negotiated)
+                                StreamState.update { it.copy(lastNegotiatedCapabilities = negotiated) }
+                                com.example.audiostreamer.node.HatLinkManager.recordNegotiatedCapabilitiesForRemote(hostIp, negotiated)
+                                com.example.audiostreamer.node.HatLinkManager.recordNegotiatedCapabilitiesForRemote(remoteNodeInfo.id, negotiated)
+
                                 if (isNew && currentConfig != null) {
-                                    if (!currentConfig.canReceiverConsume(byteVal)) {
+                                    val isLegacyIncompatible = !currentConfig.canReceiverConsume(byteVal)
+                                    val isIncompatible = !negotiated.isCompatible && isLegacyIncompatible
+                                    if (isIncompatible) {
                                         val capsDesc = AudioCapabilities.describeCapabilitiesMask(byteVal)
-                                        Log.w(TAG, "Declining incompatible receiver: $endpoint (Caps: $capsDesc, Active stream requires: ${currentConfig.sampleRateHz} Hz)")
+                                        Log.w(TAG, "Declining incompatible receiver: $endpoint (${negotiated.details})")
                                         try {
                                             val declineHeader = currentConfig.createHeader(
                                                 packetType = HatPacket.TYPE_DISCONNECT,
@@ -881,11 +961,13 @@ class AudioCaptureService : Service() {
                                             clientRegistry[endpoint] = SystemClock.elapsedRealtime()
                                         }
                                         val capsDesc = if (byteVal != 0) AudioCapabilities.describeCapabilitiesMask(byteVal) else "default"
-                                        Log.i(TAG, "Registered new compatible receiver: $endpoint (Caps: $capsDesc)")
+                                        Log.i(TAG, "Registered compatible receiver: $endpoint (Summary: ${negotiated.summary()})")
                                         HatDiagnostics.info(
                                             "RECEIVER_JOIN",
                                             mapOf(
                                                 "receiver" to endpoint.toString(),
+                                                "nodeId" to remoteNodeInfo.id,
+                                                "negotiated" to negotiated.summary(),
                                                 "capabilities" to byteVal,
                                                 "capabilityDesc" to capsDesc,
                                                 "generation" to currentConfig.generation,
@@ -904,6 +986,13 @@ class AudioCaptureService : Service() {
                                     if (!configuredEndpoints.contains(endpoint)) {
                                         clientRegistry[endpoint] = SystemClock.elapsedRealtime()
                                     }
+                                    com.example.audiostreamer.node.HatLinkManager.recordLinkActivity(
+                                        endpoint.address.hostAddress ?: "",
+                                        endpoint.port,
+                                        1L,
+                                        0L,
+                                        isRx = true
+                                    )
                                     if (isNew && currentConfig != null) {
                                         sendStreamAnnouncement(currentConfig, remoteVolumePercent.get(), endpoint)
                                         publishConnectedReceivers()
@@ -915,6 +1004,10 @@ class AudioCaptureService : Service() {
                                 clientRegistry.remove(endpoint)
                                 clientCapabilities.remove(endpoint)
                                 clientDiag.remove(endpoint)
+                                val removedNode = clientNodeInfo.remove(endpoint)
+                                val destId = removedNode?.id ?: "${com.example.audiostreamer.node.NodeIdentity.ID_PREFIX}ep-${(endpoint.address.hostAddress ?: "").replace(".", "-")}"
+                                com.example.audiostreamer.node.HatMultiStreamManager.removeDestination(destId, "client_disconnect")
+                                com.example.audiostreamer.node.HatLinkManager.closeLinkByRemoteAddress(endpoint.address.hostAddress ?: "")
                                 publishConnectedReceivers()
                                 HatDiagnostics.info(
                                     "RECEIVER_LEAVE",
@@ -1205,6 +1298,12 @@ class AudioCaptureService : Service() {
         val aacEnc = this.aacEncoder
         val isFecEnabled = config.transportProfile.fec.enabled
         val negotiatedStreamConfig = config
+
+        com.example.audiostreamer.node.HatMultiStreamManager.configureSharedEncoder(
+            codec = config.codec,
+            format = config.audioFormat,
+            generation = config.generation
+        )
 
         val initialProfileDisplayName = when {
             isOpusActive -> "Low Latency (Opus 320k)"
@@ -1716,6 +1815,12 @@ class AudioCaptureService : Service() {
 
     /** Opens the diagnostics run session: metadata, run id, snapshot sections and the periodic stats task. */
     private fun startDiagnosticsSession() {
+        val localNode = com.example.audiostreamer.node.LocalNodeManager.getLocalNode()
+        com.example.audiostreamer.node.LocalNodeManager.updateState(
+            com.example.audiostreamer.node.NodeState.ACTIVE_STREAMING,
+            com.example.audiostreamer.node.StreamRole.SENDER,
+            currentStreamGeneration.get()
+        )
         HatDiagnostics.setMetadata(
             HatDiagnostics.Metadata(
                 appVersion = BuildConfig.VERSION_NAME,
@@ -1726,7 +1831,12 @@ class AudioCaptureService : Service() {
                 audioOutputDevice = "MediaProjection playback capture",
                 audioSampleRate = activeCaptureSampleRate,
                 audioChannelConfig = if (AudioConfig.CHANNELS == 2) "stereo" else AudioConfig.CHANNELS.toString(),
-                networkTransport = "UDP (unicast/broadcast)"
+                networkTransport = "UDP (unicast/broadcast)",
+                nodeId = localNode.id,
+                nodeName = localNode.name,
+                nodeRole = com.example.audiostreamer.node.StreamRole.SENDER.name,
+                nodeState = com.example.audiostreamer.node.NodeState.ACTIVE_STREAMING.name,
+                nodeCapabilitiesSummary = localNode.capabilities.describe()
             )
         )
         HatDiagnostics.startRun(
@@ -1904,15 +2014,21 @@ class AudioCaptureService : Service() {
 
         stopProducerSynchronously()
         stopDiagnosticsSession()
+        com.example.audiostreamer.node.LocalNodeManager.updateState(
+            com.example.audiostreamer.node.NodeState.AVAILABLE,
+            com.example.audiostreamer.node.StreamRole.IDLE
+        )
 
         val cThread = controlListenerThread
         controlListenerThread = null
         cThread?.interrupt()
 
         try {
+            activeTransport?.close()
             udpSocket?.close()
         } catch (ignored: Exception) {}
         udpSocket = null
+        activeTransport = null
         profileTransactionManager.reset()
         HatDiagnostics.lifecycle(
             "GENERATION_STOPPED",
@@ -1948,6 +2064,9 @@ class AudioCaptureService : Service() {
             previousPhoneVolume = null
             clientRegistry.clear()
             clientCapabilities.clear()
+            clientNodeInfo.clear()
+            com.example.audiostreamer.node.HatMultiStreamManager.clear()
+            com.example.audiostreamer.node.HatLinkManager.clear()
 
             StreamState.update {
                 it.copy(
@@ -1958,7 +2077,9 @@ class AudioCaptureService : Service() {
                     bytesPerSec = 0,
                     statusDetail = "Stopped",
                     activeReceiversCount = 0,
-                    connectedReceivers = emptyList()
+                    connectedReceivers = emptyList(),
+                    activeLinks = emptyList(),
+                    activeStreams = emptyList()
                 )
             }
 
