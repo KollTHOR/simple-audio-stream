@@ -20,8 +20,9 @@ class VolumeKeyInterceptorService : AccessibilityService() {
         isRunning.set(true)
         Log.i(TAG, "VolumeKeyInterceptorService connected")
         val info = serviceInfo ?: AccessibilityServiceInfo()
-        info.flags = info.flags or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
-        info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+        info.eventTypes = 0 // Zero UI/notification event interception; hardware keys only
+        info.flags = AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
+        info.feedbackType = 0
         serviceInfo = info
     }
 

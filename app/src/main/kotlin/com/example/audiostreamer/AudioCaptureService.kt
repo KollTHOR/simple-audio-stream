@@ -312,10 +312,6 @@ class AudioCaptureService : Service() {
         if (streamThread == null || !streamThread!!.isAlive) {
             sendControlPacket(clamped)
         }
-
-        // Update notification
-        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.notify(NOTIFICATION_ID, buildNotification("Streaming @ Receiver Vol: $clamped%"))
     }
 
     private fun parseTargetAddresses(targetIpString: String): List<InetAddress> {
@@ -481,7 +477,7 @@ class AudioCaptureService : Service() {
     }
 
     private fun startServiceForeground() {
-        val notification = buildNotification("Streaming @ Receiver Vol: ${remoteVolumePercent.get()}%")
+        val notification = buildNotification()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 NOTIFICATION_ID,
@@ -493,7 +489,7 @@ class AudioCaptureService : Service() {
         }
     }
 
-    private fun buildNotification(statusText: String): Notification {
+    private fun buildNotification(): Notification {
         val pendingActivityIntent = PendingIntent.getActivity(
             this,
             0,
@@ -501,46 +497,11 @@ class AudioCaptureService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val volDownIntent = Intent(this, AudioCaptureService::class.java).apply {
-            action = ACTION_STEP_VOLUME
-            putExtra(EXTRA_VOLUME_DELTA, -5)
-        }
-        val pVolDown = PendingIntent.getService(
-            this,
-            2,
-            volDownIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val volUpIntent = Intent(this, AudioCaptureService::class.java).apply {
-            action = ACTION_STEP_VOLUME
-            putExtra(EXTRA_VOLUME_DELTA, 5)
-        }
-        val pVolUp = PendingIntent.getService(
-            this,
-            3,
-            volUpIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val stopIntent = Intent(this, AudioCaptureService::class.java).apply {
-            action = ACTION_STOP
-        }
-        val pendingStopIntent = PendingIntent.getService(
-            this,
-            1,
-            stopIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Audio Transmitter Active")
-            .setContentText(statusText)
+            .setContentTitle("Simple Audio Stream")
+            .setContentText("Transmitting audio")
             .setSmallIcon(R.drawable.ic_transmitter)
             .setContentIntent(pendingActivityIntent)
-            .addAction(R.drawable.ic_volume_down, "-5%", pVolDown)
-            .addAction(R.drawable.ic_volume_up, "+5%", pVolUp)
-            .addAction(R.drawable.ic_stop, "Stop", pendingStopIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -888,8 +849,6 @@ class AudioCaptureService : Service() {
                                 Log.i(TAG, "Received reverse volume sync: $incomingVol% from $endpoint")
                                 remoteVolumePercent.set(incomingVol)
                                 StreamState.update { it.copy(remoteVolumePercent = incomingVol) }
-                                val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                                notificationManager.notify(NOTIFICATION_ID, buildNotification("Streaming @ Receiver Vol: $incomingVol%"))
                             }
                             HatPacket.TYPE_RECEIVER_HEARTBEAT -> {
                                 val isNew = !clientRegistry.containsKey(endpoint)
@@ -2009,6 +1968,10 @@ class AudioCaptureService : Service() {
                 @Suppress("DEPRECATION")
                 stopForeground(true)
             }
+            try {
+                val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                notificationManager?.cancel(NOTIFICATION_ID)
+            } catch (ignored: Exception) {}
 
             releaseLocks()
         }
