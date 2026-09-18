@@ -1677,7 +1677,7 @@ class AudioSinkService : Service() {
     }
 
     private fun startServiceForeground(port: Int) {
-        val notification = buildNotification("Listening on UDP port $port...")
+        val notification = buildNotification()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 NOTIFICATION_ID,
@@ -1689,7 +1689,7 @@ class AudioSinkService : Service() {
         }
     }
 
-    private fun buildNotification(statusText: String): Notification {
+    private fun buildNotification(): Notification {
         val activityIntent = PendingIntent.getActivity(
             this,
             0,
@@ -1697,25 +1697,15 @@ class AudioSinkService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val stopIntent = Intent(this, AudioSinkService::class.java).apply {
-            action = ACTION_STOP
-        }
-        val pendingStopIntent = PendingIntent.getService(
-            this,
-            1,
-            stopIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Audio Receiver Active")
-            .setContentText(statusText)
+            .setContentTitle("Simple Audio Stream")
+            .setContentText("Receiving audio")
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentIntent(activityIntent)
-            .addAction(android.R.drawable.ic_media_pause, "Stop", pendingStopIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
     }
 
@@ -1854,6 +1844,10 @@ class AudioSinkService : Service() {
             @Suppress("DEPRECATION")
             stopForeground(true)
         }
+        try {
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            notificationManager?.cancel(NOTIFICATION_ID)
+        } catch (ignored: Exception) {}
     }
 
     override fun onDestroy() {
