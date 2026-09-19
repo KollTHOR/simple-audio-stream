@@ -87,7 +87,17 @@ object VersionComparator {
     private fun comparePrereleaseDates(v1: String, v2: String): Int {
         val date1 = extractDateOrTimestamp(v1)
         val date2 = extractDateOrTimestamp(v2)
-        return date1.compareTo(date2)
+        val dateCmp = date1.compareTo(date2)
+        if (dateCmp != 0) return dateCmp
+        val b1 = extractBuildNumber(v1)
+        val b2 = extractBuildNumber(v2)
+        if (b1 != null && b2 != null) return b1.compareTo(b2)
+        return 0
+    }
+
+    private fun extractBuildNumber(str: String): Long? {
+        val match = Regex("""-b(\d+)-""").find(str)
+        return match?.groupValues?.get(1)?.toLongOrNull()
     }
 
     private fun extractDateOrTimestamp(str: String): String {

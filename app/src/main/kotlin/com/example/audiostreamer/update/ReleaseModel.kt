@@ -148,7 +148,7 @@ data class GithubRelease(
             if (metaMatch != null) return metaMatch.groupValues[1].take(7)
             val tagMatch = Regex("""\+([a-f0-9]{7,40})""").find(tag)
             if (tagMatch != null) return tagMatch.groupValues[1].take(7)
-            val nightlyMatch = Regex("""nightly-\d{8}-([a-f0-9]{7,40})""", RegexOption.IGNORE_CASE).find(tag)
+            val nightlyMatch = Regex("""nightly-\d{8}-(?:b\d+-)?([a-f0-9]{7,40})""", RegexOption.IGNORE_CASE).find(tag)
             if (nightlyMatch != null) return nightlyMatch.groupValues[1].take(7)
             return null
         }
@@ -158,6 +158,8 @@ data class GithubRelease(
             if (metaMatch != null) return metaMatch.groupValues[1].toLongOrNull()
             val buildMatch = Regex("""\*{0,2}Build:?\*{0,2}\s*`?(\d+)`?""", RegexOption.IGNORE_CASE).find(body)
             if (buildMatch != null) return buildMatch.groupValues[1].toLongOrNull()
+            val tagBuildMatch = Regex("""nightly-\d{8}-b(\d+)-""", RegexOption.IGNORE_CASE).find(tag)
+            if (tagBuildMatch != null) return tagBuildMatch.groupValues[1].toLongOrNull()
             return null
         }
 

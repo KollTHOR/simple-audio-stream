@@ -37,11 +37,38 @@ class UpdateRepository(private val context: Context) {
         }
 
         /**
+         * Sorts releases strictly descending:
+         * 1. parsedVersionCode descending (if available for both and different)
+         * 2. VersionComparator.compareSemantic descending
+         * 3. publishedAt descending
+         * 4. release id descending
+         */
+        fun sortReleasesDescending(releases: List<GithubRelease>): List<GithubRelease> {
+            return releases.sortedWith { r1, r2 ->
+                val c1 = r1.parsedVersionCode
+                val c2 = r2.parsedVersionCode
+                if (c1 != null && c2 != null && c1 != c2) {
+                    return@sortedWith c2.compareTo(c1)
+                }
+                val semCmp = VersionComparator.compareSemantic(r1.cleanVersion, r2.cleanVersion)
+                if (semCmp != 0) {
+                    return@sortedWith -semCmp
+                }
+                val pubCmp = r1.publishedAt.compareTo(r2.publishedAt)
+                if (pubCmp != 0) {
+                    return@sortedWith -pubCmp
+                }
+                r2.id.compareTo(r1.id)
+            }
+        }
+
+        /**
          * Finds the latest update candidate for the specified channel that has an APK attached.
          */
         fun findLatestCandidate(releases: List<GithubRelease>, channel: ReleaseChannel): GithubRelease? {
             val filtered = filterByChannel(releases, channel)
-            return filtered.firstOrNull { it.apkAsset != null }
+            val sorted = sortReleasesDescending(filtered)
+            return sorted.firstOrNull { it.apkAsset != null }
         }
     }
 
@@ -93,10 +120,11 @@ class UpdateRepository(private val context: Context) {
                 val array = JSONArray(cachedJson)
                 val list = GithubRelease.parseList(array)
                 if (list.isNotEmpty()) {
+                    val sortedList = sortReleasesDescending(list)
                     return@withContext ReleasesResult(
-                        releases = list,
+                        releases = sortedList,
                         isFromCache = true,
-                        hasMorePages = list.size >= perPage,
+                        hasMorePages = sortedList.size >= perPage,
                         page = 1
                     )
                 }
@@ -121,6 +149,7 @@ class UpdateRepository(private val context: Context) {
                 val jsonText = conn.inputStream.bufferedReader().use { it.readText() }
                 val array = JSONArray(jsonText)
                 val parsedList = GithubRelease.parseList(array)
+                val sortedList = sortReleasesDescending(parsedList)
 
                 // Cache page 1 results locally
                 if (page == 1) {
@@ -131,9 +160,9 @@ class UpdateRepository(private val context: Context) {
                 }
 
                 ReleasesResult(
-                    releases = parsedList,
+                    releases = sortedList,
                     isFromCache = false,
-                    hasMorePages = parsedList.size >= perPage,
+                    hasMorePages = sortedList.size >= perPage,
                     page = page
                 )
             } else if (code == 403) {
@@ -155,8 +184,9 @@ class UpdateRepository(private val context: Context) {
             return try {
                 val array = JSONArray(cachedJson)
                 val list = GithubRelease.parseList(array)
+                val sortedList = sortReleasesDescending(list)
                 ReleasesResult(
-                    releases = list,
+                    releases = sortedList,
                     isFromCache = true,
                     hasMorePages = false,
                     page = 1,
@@ -174,4 +204,7 @@ class UpdateRepository(private val context: Context) {
 
     fun findLatestCandidate(releases: List<GithubRelease>, channel: ReleaseChannel): GithubRelease? =
         Companion.findLatestCandidate(releases, channel)
+
+    fun sortReleasesDescending(releases: List<GithubRelease>): List<GithubRelease> =
+        Companion.sortReleasesDescending(releases)
 }
