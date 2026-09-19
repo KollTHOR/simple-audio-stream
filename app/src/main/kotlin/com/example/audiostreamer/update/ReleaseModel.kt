@@ -112,7 +112,7 @@ data class GithubRelease(
 
             val commitSha = parseCommitSha(body, tagName)
             val versionCode = parseVersionCode(body, tagName)
-            val cleanVer = tagName.removePrefix("v").trim()
+            val versionName = parseVersionName(body, tagName)
 
             return GithubRelease(
                 id = id,
@@ -125,7 +125,7 @@ data class GithubRelease(
                 apkAsset = apk,
                 checksumAsset = checksum,
                 channel = channel,
-                parsedVersionName = cleanVer,
+                parsedVersionName = versionName,
                 parsedVersionCode = versionCode,
                 commitSha = commitSha
             )
@@ -156,9 +156,17 @@ data class GithubRelease(
         private fun parseVersionCode(body: String, tag: String): Long? {
             val metaMatch = Regex("""versionCode[:=]\s*(\d+)""", RegexOption.IGNORE_CASE).find(body)
             if (metaMatch != null) return metaMatch.groupValues[1].toLongOrNull()
-            val buildMatch = Regex("""Build\s+(\d+)""", RegexOption.IGNORE_CASE).find(body)
+            val buildMatch = Regex("""\*{0,2}Build:?\*{0,2}\s*`?(\d+)`?""", RegexOption.IGNORE_CASE).find(body)
             if (buildMatch != null) return buildMatch.groupValues[1].toLongOrNull()
             return null
+        }
+
+        private fun parseVersionName(body: String, tag: String): String {
+            val metaMatch = Regex("""versionName[:=]\s*([^\s>]+)""", RegexOption.IGNORE_CASE).find(body)
+            if (metaMatch != null) return metaMatch.groupValues[1].trim()
+            val bodyMatch = Regex("""\*{0,2}Version:?\*{0,2}\s*`?([0-9]+\.[0-9]+[^`\r\n\s]*)`?""", RegexOption.IGNORE_CASE).find(body)
+            if (bodyMatch != null) return bodyMatch.groupValues[1].trim()
+            return tag.removePrefix("v").trim()
         }
     }
 }

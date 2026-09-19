@@ -317,6 +317,131 @@ class UpdateCenterTest {
         )
     }
 
+    @Test
+    fun versionComparator_nightlyWithOlderVersionCodeButNewerDateIsNewer() {
+        val installed = BuildInfo(
+            versionName = "1.8.15-nightly.20260917+ec5fbe3",
+            versionCode = 113L,
+            channel = ReleaseChannel.NIGHTLY,
+            gitCommitSha = "ec5fbe3",
+            buildTimestamp = "20260917",
+            baseVersionName = "1.8.15"
+        )
+
+        // Remote candidate has an erroneous lower versionCode (e.g. 112) but newer date (20260919)
+        assertEquals(
+            UpdateCompatibility.NEWER,
+            VersionComparator.compare(112L, "nightly-20260919-0b8352a", installed)
+        )
+    }
+
+    @Test
+    fun versionComparator_oldStableToNewStableIsNewer() {
+        val installed = BuildInfo(
+            versionName = "1.8.12",
+            versionCode = 65L,
+            channel = ReleaseChannel.STABLE,
+            gitCommitSha = "a6c1ebd",
+            buildTimestamp = "20260916",
+            baseVersionName = "1.8.12"
+        )
+
+        assertEquals(
+            UpdateCompatibility.NEWER,
+            VersionComparator.compare(119L, "1.8.15", installed)
+        )
+        assertEquals(
+            UpdateCompatibility.NEWER,
+            VersionComparator.compare(null, "1.8.15", installed)
+        )
+    }
+
+    @Test
+    fun versionComparator_nightlyToStableTransitionIsNewer() {
+        val installed = BuildInfo(
+            versionName = "1.8.15-nightly.20260919+0b8352a",
+            versionCode = 118L,
+            channel = ReleaseChannel.NIGHTLY,
+            gitCommitSha = "0b8352a",
+            buildTimestamp = "20260919",
+            baseVersionName = "1.8.15"
+        )
+
+        // Same release line final stable is newer than its nightly
+        assertEquals(
+            UpdateCompatibility.NEWER,
+            VersionComparator.compare(119L, "1.8.15", installed)
+        )
+        assertEquals(
+            UpdateCompatibility.NEWER,
+            VersionComparator.compare(null, "1.8.15", installed)
+        )
+
+        // Next release line stable is also newer
+        assertEquals(
+            UpdateCompatibility.NEWER,
+            VersionComparator.compare(120L, "1.9.0", installed)
+        )
+        assertEquals(
+            UpdateCompatibility.NEWER,
+            VersionComparator.compare(null, "1.9.0", installed)
+        )
+    }
+
+    @Test
+    fun versionComparator_oldStableCannotReplaceNewerNightly() {
+        val installed = BuildInfo(
+            versionName = "1.8.15-nightly.20260919+0b8352a",
+            versionCode = 118L,
+            channel = ReleaseChannel.NIGHTLY,
+            gitCommitSha = "0b8352a",
+            buildTimestamp = "20260919",
+            baseVersionName = "1.8.15"
+        )
+
+        // Older stable v1.8.12 must be classified as OLDER (Rollback), never NEWER
+        assertEquals(
+            UpdateCompatibility.OLDER,
+            VersionComparator.compare(65L, "1.8.12", installed)
+        )
+        assertEquals(
+            UpdateCompatibility.OLDER,
+            VersionComparator.compare(null, "1.8.12", installed)
+        )
+    }
+
+    @Test
+    fun versionComparator_nightlyCannotReplaceNewerStable() {
+        val installed = BuildInfo(
+            versionName = "1.9.0",
+            versionCode = 120L,
+            channel = ReleaseChannel.STABLE,
+            gitCommitSha = "abcdef1",
+            buildTimestamp = "20260920",
+            baseVersionName = "1.9.0"
+        )
+
+        // Older line nightly must be OLDER
+        assertEquals(
+            UpdateCompatibility.OLDER,
+            VersionComparator.compare(118L, "1.8.15-nightly.20260919+0b8352a", installed)
+        )
+        assertEquals(
+            UpdateCompatibility.OLDER,
+            VersionComparator.compare(null, "1.8.15-nightly.20260919+0b8352a", installed)
+        )
+
+        // Same line nightly must also be OLDER than final stable
+        assertEquals(
+            UpdateCompatibility.OLDER,
+            VersionComparator.compare(119L, "1.9.0-nightly.20260919+abcdef0", installed)
+        )
+        assertEquals(
+            UpdateCompatibility.OLDER,
+            VersionComparator.compare(null, "1.9.0-nightly.20260919+abcdef0", installed)
+        )
+    }
+
     // =========================================================================
     // 3. CHECKSUM VERIFIER
     // =========================================================================

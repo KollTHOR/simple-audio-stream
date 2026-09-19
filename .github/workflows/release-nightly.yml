@@ -3,8 +3,12 @@ name: Release Nightly
 on:
   push:
     branches:
-      - nightly
+      - main
   workflow_dispatch:
+
+concurrency:
+  group: release-pipeline
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -25,11 +29,29 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
       - name: Grant Execute Permissions for gradlew
         run: chmod +x gradlew
 
+      - name: Run Unit Tests
+        run: ./gradlew test
+
+      - name: Resolve Release Version Metadata
+        id: version_meta
+        run: python3 .github/scripts/resolve_version.py --channel nightly --run-number ${{ github.run_number }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build Nightly Release APK
-        run: ./gradlew assembleRelease -Pchannel=nightly
+        run: |
+          ./gradlew assembleRelease \
+            -Pchannel=nightly \
+            -PversionCode=${{ steps.version_meta.outputs.version_code }} \
+            -PversionName=${{ steps.version_meta.outputs.version_name }}
         env:
           RELEASE_KEYSTORE_PATH: ${{ secrets.RELEASE_KEYSTORE_PATH }}
           RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
@@ -37,56 +59,37 @@ jobs:
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
 
       - name: Prepare Nightly Assets
-        id: prepare_nightly
+        id: prepare_assets
         run: |
-          COMMIT_SHA=$(git rev-parse HEAD)
-          SHORT_SHA=$(git rev-parse --short=7 HEAD)
-          BUILD_DATE=$(date -u +%Y%m%d)
-          
-          BASE_VERSION=$(grep 'baseVersionName = ' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/')
-          BASE_CODE=$(grep 'baseVersionCode = ' app/build.gradle.kts | sed -E 's/.*= ([0-9]+).*/\1/')
-          if [ -z "$BASE_VERSION" ]; then BASE_VERSION="1.8.15"; fi
-          if [ -z "$BASE_CODE" ]; then BASE_CODE="112"; fi
-          
-          NIGHTLY_TAG="nightly-${BUILD_DATE}-${SHORT_SHA}"
           APK_SRC="app/build/outputs/apk/release/app-release.apk"
-          APK_NAME="simple-audio-stream-${NIGHTLY_TAG}.apk"
-          SHA_NAME="${APK_NAME}.sha256"
+          APK_TARGET="${{ steps.version_meta.outputs.apk_name }}"
+          SHA_TARGET="${{ steps.version_meta.outputs.sha_name }}"
           
-          cp "$APK_SRC" "$APK_NAME"
-          sha256sum "$APK_NAME" | awk '{print $1}' > "$SHA_NAME"
-          
-          echo "tag=$NIGHTLY_TAG" >> $GITHUB_OUTPUT
-          echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
-          echo "sha_name=$SHA_NAME" >> $GITHUB_OUTPUT
-          echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
-          echo "commit_short=$SHORT_SHA" >> $GITHUB_OUTPUT
-          echo "build_date=$BUILD_DATE" >> $GITHUB_OUTPUT
-          echo "base_version=$BASE_VERSION" >> $GITHUB_OUTPUT
-          echo "version_code=$BASE_CODE" >> $GITHUB_OUTPUT
-          echo "checksum=$(cat $SHA_NAME)" >> $GITHUB_OUTPUT
+          cp "$APK_SRC" "$APK_TARGET"
+          sha256sum "$APK_TARGET" | awk '{print $1}' > "$SHA_TARGET"
+          echo "checksum=$(cat $SHA_TARGET)" >> $GITHUB_OUTPUT
 
       - name: Publish Nightly GitHub Prerelease
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.prepare_nightly.outputs.tag }}
-          name: "Nightly Build: ${{ steps.prepare_nightly.outputs.tag }}"
+          tag_name: ${{ steps.version_meta.outputs.tag_name }}
+          name: ${{ steps.version_meta.outputs.release_title }}
           body: |
-            ### Automated Nightly Build: `${{ steps.prepare_nightly.outputs.tag }}`
+            ### Automated Nightly Build: `${{ steps.version_meta.outputs.tag_name }}`
             
-            This is an automated development prerelease from the `nightly` branch.
+            This is an automated development prerelease built from the `main` branch.
             
-            - **Version:** `${{ steps.prepare_nightly.outputs.base_version }}-nightly.${{ steps.prepare_nightly.outputs.build_date }}+${{ steps.prepare_nightly.outputs.commit_short }}`
-            - **Build:** `${{ steps.prepare_nightly.outputs.version_code }}`
-            - **Commit:** `${{ steps.prepare_nightly.outputs.commit_sha }}`
-            - **Build Date:** `${{ steps.prepare_nightly.outputs.build_date }}`
+            - **Version:** `${{ steps.version_meta.outputs.version_name }}`
+            - **Build:** `${{ steps.version_meta.outputs.version_code }}`
+            - **Commit:** `${{ steps.version_meta.outputs.commit_sha }}`
+            - **Build Date:** `${{ steps.version_meta.outputs.build_date }}`
             - **Channel:** `Nightly`
-            - **SHA-256 Checksum:** `${{ steps.prepare_nightly.outputs.checksum }}`
+            - **SHA-256 Checksum:** `${{ steps.prepare_assets.outputs.checksum }}`
             
-            <!-- metadata: channel=nightly commit=${{ steps.prepare_nightly.outputs.commit_sha }} versionCode=${{ steps.prepare_nightly.outputs.version_code }} -->
+            <!-- metadata: channel=nightly commit=${{ steps.version_meta.outputs.commit_sha }} versionCode=${{ steps.version_meta.outputs.version_code }} versionName=${{ steps.version_meta.outputs.version_name }} -->
           files: |
-            ${{ steps.prepare_nightly.outputs.apk_name }}
-            ${{ steps.prepare_nightly.outputs.sha_name }}
+            ${{ steps.version_meta.outputs.apk_name }}
+            ${{ steps.version_meta.outputs.sha_name }}
           draft: false
           prerelease: true
         env:

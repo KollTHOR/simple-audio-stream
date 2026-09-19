@@ -42,7 +42,7 @@ android {
         return null
     }
 
-    val baseVersionCode = 112
+    val baseVersionCode = 118
     val baseVersionName = "1.8.15"
 
     val channelProp = findProp("BUILD_CHANNEL", "RELEASE_CHANNEL", "channel") ?: "stable"
@@ -88,7 +88,10 @@ android {
         timeZone = TimeZone.getTimeZone("UTC")
     }.format(Date())
 
-    val finalVersionName = if (buildChannel == "nightly") {
+    val envVersionName = findProp("VERSION_NAME", "versionName")
+    val finalVersionName = if (!envVersionName.isNullOrBlank()) {
+        envVersionName
+    } else if (buildChannel == "nightly") {
         "$baseVersionName-nightly.$buildTimestamp+$gitCommitSha"
     } else {
         baseVersionName

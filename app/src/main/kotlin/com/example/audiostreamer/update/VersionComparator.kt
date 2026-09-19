@@ -17,11 +17,19 @@ object VersionComparator {
      */
     fun compare(selectedVersionCode: Long?, selectedVersionName: String, installed: BuildInfo): UpdateCompatibility {
         if (selectedVersionCode != null && selectedVersionCode > 0) {
-            return when {
+            val cmp = when {
                 selectedVersionCode > installed.versionCode -> UpdateCompatibility.NEWER
                 selectedVersionCode == installed.versionCode -> UpdateCompatibility.SAME
                 else -> UpdateCompatibility.OLDER
             }
+            // Safeguard: if versionCode would classify as OLDER or SAME, but semantic/date comparison
+            // shows the candidate is strictly NEWER (e.g. newer nightly date or higher version number),
+            // prevent false rollback classification.
+            if (cmp != UpdateCompatibility.NEWER) {
+                val semCmp = compareSemantic(selectedVersionName, installed.versionName)
+                if (semCmp > 0) return UpdateCompatibility.NEWER
+            }
+            return cmp
         }
 
         val cmp = compareSemantic(selectedVersionName, installed.versionName)
