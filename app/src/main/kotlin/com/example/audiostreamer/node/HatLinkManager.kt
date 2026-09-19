@@ -143,7 +143,9 @@ object HatLinkManager {
             // 3. LAN
             val lanEp = entry.getLanEndpoint()
             if (lanEp != null || entry.hasTransport(NodeTransportType.LOCAL_WIFI)) {
+                val isLanAvail = com.example.audiostreamer.NetworkUtils.isLanAvailable()
                 val availability = when {
+                    !isLanAvail -> TransportAvailability.UNAVAILABLE
                     lanEp?.address != null -> TransportAvailability.AVAILABLE
                     entry.hasTransport(NodeTransportType.LOCAL_WIFI) -> TransportAvailability.PROBING
                     else -> TransportAvailability.UNAVAILABLE

@@ -38,6 +38,21 @@ object HatPacket {
     const val TYPE_STREAM_INVITE: Byte = 0x0A
     const val TYPE_TRANSMITTER_ANNOUNCE: Byte = 0x0B
 
+    fun describePacketType(type: Byte): String = when (type) {
+        TYPE_AUDIO -> "AUDIO"
+        TYPE_SILENCE_HEARTBEAT -> "SILENCE_HEARTBEAT"
+        TYPE_FEC_PARITY -> "FEC_PARITY"
+        TYPE_CONTROL -> "CONTROL"
+        TYPE_RECEIVER_HEARTBEAT -> "RECEIVER_HEARTBEAT"
+        TYPE_REVERSE_VOLUME_SYNC -> "REVERSE_VOLUME_SYNC"
+        TYPE_DISCONNECT -> "DISCONNECT"
+        TYPE_DISCOVERY_PROBE -> "DISCOVERY_PROBE"
+        TYPE_DISCOVERY_ANNOUNCE -> "DISCOVERY_ANNOUNCE"
+        TYPE_STREAM_INVITE -> "STREAM_INVITE"
+        TYPE_TRANSMITTER_ANNOUNCE -> "TRANSMITTER_ANNOUNCE"
+        else -> "UNKNOWN(0x${(type.toInt() and 0xFF).toString(16)})"
+    }
+
     // Codec Types (Byte 16 bits 0..1)
     const val CODEC_RAW_PCM: Byte = 0x00
     const val CODEC_LOSSLESS_PCM: Byte = 0x01
@@ -327,11 +342,13 @@ object HatPacket {
         when (packetType) {
             TYPE_SILENCE_HEARTBEAT,
             TYPE_CONTROL,
-            TYPE_RECEIVER_HEARTBEAT,
             TYPE_REVERSE_VOLUME_SYNC,
             TYPE_DISCONNECT,
             TYPE_DISCOVERY_PROBE -> {
                 if (payloadLength != 0) return null
+            }
+            TYPE_RECEIVER_HEARTBEAT -> {
+                // Heartbeats may be payload-free or carry NodeCapabilityExchange metadata
             }
             TYPE_FEC_PARITY -> {
                 val fecSize = fecBlockSize.toInt() and 0xFF
