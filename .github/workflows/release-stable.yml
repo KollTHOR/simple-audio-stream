@@ -3,19 +3,22 @@ name: Release Stable
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release Tag (e.g. v1.8.14)'
-        required: false
-        default: ''
+        description: 'Release Tag (e.g. v1.8.15)'
+        required: true
+
+concurrency:
+  group: release-pipeline
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  build-and-release-stable:
     runs-on: ubuntu-latest
 
     steps:
@@ -30,11 +33,31 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
       - name: Grant Execute Permissions for gradlew
         run: chmod +x gradlew
 
-      - name: Build Release APK
-        run: ./gradlew assembleRelease -Pchannel=stable
+      - name: Resolve and Validate Release Version Metadata
+        id: version_meta
+        run: |
+          TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
+          python3 .github/scripts/resolve_version.py --channel stable --tag "$TAG" --run-number ${{ github.run_number }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Unit Tests
+        run: ./gradlew test
+
+      - name: Build Stable Release APK
+        run: |
+          ./gradlew assembleRelease \
+            -Pchannel=stable \
+            -PversionCode=${{ steps.version_meta.outputs.version_code }} \
+            -PversionName=${{ steps.version_meta.outputs.version_name }}
         env:
           RELEASE_KEYSTORE_PATH: ${{ secrets.RELEASE_KEYSTORE_PATH }}
           RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
@@ -44,43 +67,32 @@ jobs:
       - name: Prepare Release Assets
         id: prepare_assets
         run: |
-          TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
           APK_SRC="app/build/outputs/apk/release/app-release.apk"
-          APK_NAME="simple-audio-stream-${TAG}.apk"
-          SHA_NAME="${APK_NAME}.sha256"
+          APK_TARGET="${{ steps.version_meta.outputs.apk_name }}"
+          SHA_TARGET="${{ steps.version_meta.outputs.sha_name }}"
           
-          cp "$APK_SRC" "$APK_NAME"
-          sha256sum "$APK_NAME" | awk '{print $1}' > "$SHA_NAME"
-          
-          COMMIT_SHA=$(git rev-parse HEAD)
-          COMMIT_SHORT=$(git rev-parse --short=7 HEAD)
-          VERSION_NAME="${TAG#v}"
-          
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
-          echo "sha_name=$SHA_NAME" >> $GITHUB_OUTPUT
-          echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
-          echo "commit_short=$COMMIT_SHORT" >> $GITHUB_OUTPUT
-          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
-          echo "checksum=$(cat $SHA_NAME)" >> $GITHUB_OUTPUT
+          cp "$APK_SRC" "$APK_TARGET"
+          sha256sum "$APK_TARGET" | awk '{print $1}' > "$SHA_TARGET"
+          echo "checksum=$(cat $SHA_TARGET)" >> $GITHUB_OUTPUT
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.prepare_assets.outputs.tag }}
-          name: "Release ${{ steps.prepare_assets.outputs.tag }}"
+          tag_name: ${{ steps.version_meta.outputs.tag_name }}
+          name: ${{ steps.version_meta.outputs.release_title }}
           body: |
-            ### Release ${{ steps.prepare_assets.outputs.tag }}
+            ### Release ${{ steps.version_meta.outputs.tag_name }}
             
-            - **Version:** `${{ steps.prepare_assets.outputs.version_name }}`
-            - **Commit:** `${{ steps.prepare_assets.outputs.commit_sha }}`
+            - **Version:** `${{ steps.version_meta.outputs.version_name }}`
+            - **Build:** `${{ steps.version_meta.outputs.version_code }}`
+            - **Commit:** `${{ steps.version_meta.outputs.commit_sha }}`
             - **Channel:** `Stable`
             - **SHA-256 Checksum:** `${{ steps.prepare_assets.outputs.checksum }}`
             
-            <!-- metadata: channel=stable commit=${{ steps.prepare_assets.outputs.commit_sha }} -->
+            <!-- metadata: channel=stable commit=${{ steps.version_meta.outputs.commit_sha }} versionCode=${{ steps.version_meta.outputs.version_code }} versionName=${{ steps.version_meta.outputs.version_name }} -->
           files: |
-            ${{ steps.prepare_assets.outputs.apk_name }}
-            ${{ steps.prepare_assets.outputs.sha_name }}
+            ${{ steps.version_meta.outputs.apk_name }}
+            ${{ steps.version_meta.outputs.sha_name }}
           draft: false
           prerelease: false
           generate_release_notes: true

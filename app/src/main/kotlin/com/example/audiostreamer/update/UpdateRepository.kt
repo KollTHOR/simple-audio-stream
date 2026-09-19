@@ -50,11 +50,12 @@ class UpdateRepository(private val context: Context) {
     }
 
     fun getPreferredChannel(): ReleaseChannel {
-        val str = prefs.getString(KEY_CHANNEL, ReleaseChannel.STABLE.name)
+        val defaultChannel = BuildInfo.current().channel.name
+        val str = prefs.getString(KEY_CHANNEL, defaultChannel)
         return try {
-            ReleaseChannel.valueOf(str ?: ReleaseChannel.STABLE.name)
+            ReleaseChannel.valueOf(str ?: defaultChannel)
         } catch (e: Exception) {
-            ReleaseChannel.STABLE
+            ReleaseChannel.fromString(defaultChannel)
         }
     }
 

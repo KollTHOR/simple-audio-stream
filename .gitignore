@@ -40,3 +40,7 @@ Thumbs.db
 
 # Repomix
 repomix-output.xml
+
+# Python
+__pycache__/
+*.pyc
