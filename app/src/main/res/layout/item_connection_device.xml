@@ -18,123 +18,202 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center_vertical"
+        android:orientation="vertical"
         android:paddingStart="12dp"
         android:paddingEnd="12dp"
         android:paddingTop="10dp"
         android:paddingBottom="10dp">
 
-        <!-- Device Icon -->
-        <FrameLayout
-            android:layout_width="36dp"
-            android:layout_height="36dp"
-            android:background="@drawable/bg_stat_badge"
-            android:layout_marginEnd="12dp">
-
-            <ImageView
-                android:id="@+id/iv_device_icon"
-                android:layout_width="20dp"
-                android:layout_height="20dp"
-                android:layout_gravity="center"
-                android:src="@drawable/ic_receiver"
-                app:tint="@color/primary" />
-        </FrameLayout>
-
-        <!-- Device Info -->
+        <!-- Top Row: Icon, Device Name, Badges, Connect/Disconnect Button -->
         <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:orientation="vertical">
-
-            <LinearLayout
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical">
-
-                <TextView
-                    android:id="@+id/tv_device_name"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Xiaomi 15"
-                    android:textSize="14sp"
-                    android:textStyle="bold"
-                    android:textColor="@color/text_primary"
-                    android:maxLines="1"
-                    android:ellipsize="end" />
-
-                <!-- Active Dot Indicator -->
-                <View
-                    android:id="@+id/view_active_dot"
-                    android:layout_width="6dp"
-                    android:layout_height="6dp"
-                    android:layout_marginStart="8dp"
-                    android:background="@drawable/bg_badge"
-                    android:backgroundTint="@color/status_green"
-                    android:visibility="gone" />
-            </LinearLayout>
-
-            <TextView
-                android:id="@+id/tv_device_details"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="192.168.1.50 • Local Wi-Fi"
-                android:textSize="12sp"
-                android:textColor="@color/text_secondary"
-                android:maxLines="3"
-                android:lineSpacingExtra="2dp"
-                android:ellipsize="end"
-                android:layout_marginTop="2dp" />
-        </LinearLayout>
-
-        <!-- Action Button Container -->
-        <LinearLayout
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical">
 
-            <!-- Disconnect Button (Shown when connected) -->
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btn_device_disconnect"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            <!-- Device Icon Frame -->
+            <FrameLayout
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:background="@drawable/bg_stat_badge"
+                android:layout_marginEnd="10dp">
+
+                <ImageView
+                    android:id="@+id/iv_device_icon"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_receiver"
+                    app:tint="@color/primary" />
+            </FrameLayout>
+
+            <!-- Device Name & Dot -->
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <TextView
+                        android:id="@+id/tv_device_name"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Receiver Node"
+                        android:textSize="14sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/text_primary"
+                        android:maxLines="1"
+                        android:ellipsize="end" />
+
+                    <!-- Active Dot Indicator -->
+                    <View
+                        android:id="@+id/view_active_dot"
+                        android:layout_width="6dp"
+                        android:layout_height="6dp"
+                        android:layout_marginStart="6dp"
+                        android:background="@drawable/bg_badge"
+                        android:backgroundTint="@color/status_green"
+                        android:visibility="gone" />
+
+                    <!-- Transport Badge -->
+                    <TextView
+                        android:id="@+id/tv_device_transport_badge"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:text="LAN"
+                        android:textSize="9sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/pill_text"
+                        android:background="@drawable/bg_stat_badge"
+                        android:paddingStart="5dp"
+                        android:paddingEnd="5dp"
+                        android:paddingTop="1dp"
+                        android:paddingBottom="1dp" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/tv_device_details"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="192.168.1.50 • Local Wi-Fi"
+                    android:textSize="11sp"
+                    android:textColor="@color/text_secondary"
+                    android:maxLines="3"
+                    android:lineSpacingExtra="1dp"
+                    android:ellipsize="end"
+                    android:layout_marginTop="2dp" />
+            </LinearLayout>
+
+            <!-- Action Button Container -->
+            <LinearLayout
                 android:layout_width="wrap_content"
-                android:layout_height="32dp"
-                android:minHeight="0dp"
-                android:minWidth="0dp"
-                android:paddingLeft="10dp"
-                android:paddingRight="10dp"
-                android:paddingTop="0dp"
-                android:paddingBottom="0dp"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginStart="6dp">
+
+                <!-- Disconnect Button (Shown when connected) -->
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_device_disconnect"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="32dp"
+                    android:minHeight="0dp"
+                    android:minWidth="0dp"
+                    android:paddingLeft="10dp"
+                    android:paddingRight="10dp"
+                    android:paddingTop="0dp"
+                    android:paddingBottom="0dp"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/status_red"
+                    app:strokeColor="@color/status_red"
+                    app:strokeWidth="1dp"
+                    app:cornerRadius="8dp"
+                    android:text="Disconnect"
+                    android:visibility="gone" />
+
+                <!-- Connect Button (Shown when available) -->
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_device_connect"
+                    style="@style/Widget.MaterialComponents.Button.UnelevatedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="32dp"
+                    android:minHeight="0dp"
+                    android:minWidth="0dp"
+                    android:paddingLeft="12dp"
+                    android:paddingRight="12dp"
+                    android:paddingTop="0dp"
+                    android:paddingBottom="0dp"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:backgroundTint="@color/primary"
+                    android:textColor="@color/white"
+                    app:cornerRadius="8dp"
+                    android:text="Connect" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Dedicated Per-Receiver Volume Control Row (Multi-Receiver Fan-Out) -->
+        <LinearLayout
+            android:id="@+id/layout_device_volume"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_stat_badge"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:paddingTop="4dp"
+            android:paddingBottom="4dp"
+            android:visibility="gone">
+
+            <!-- Mute/Unmute Toggle Button -->
+            <ImageView
+                android:id="@+id/btn_device_mute"
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/ic_volume_up"
+                app:tint="@color/primary"
+                android:clickable="true"
+                android:focusable="true"
+                android:layout_marginEnd="6dp" />
+
+            <!-- Individual Volume Slider -->
+            <com.google.android.material.slider.Slider
+                android:id="@+id/slider_device_vol"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:valueFrom="0.0"
+                android:valueTo="100.0"
+                android:stepSize="1.0"
+                android:value="100.0"
+                app:thumbColor="@color/primary"
+                app:trackColorActive="@color/primary"
+                app:trackColorInactive="#2A2A38"
+                app:thumbRadius="7dp" />
+
+            <!-- Volume Percent Label -->
+            <TextView
+                android:id="@+id/tv_device_vol_val"
+                android:layout_width="36dp"
+                android:layout_height="wrap_content"
+                android:gravity="end"
+                android:text="100%"
                 android:textSize="11sp"
                 android:textStyle="bold"
-                android:textColor="@color/status_red"
-                app:strokeColor="@color/status_red"
-                app:strokeWidth="1dp"
-                app:cornerRadius="8dp"
-                android:text="Disconnect"
-                android:visibility="gone" />
-
-            <!-- Connect Button (Shown when available) -->
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btn_device_connect"
-                style="@style/Widget.MaterialComponents.Button.UnelevatedButton"
-                android:layout_width="wrap_content"
-                android:layout_height="32dp"
-                android:minHeight="0dp"
-                android:minWidth="0dp"
-                android:paddingLeft="14dp"
-                android:paddingRight="14dp"
-                android:paddingTop="0dp"
-                android:paddingBottom="0dp"
-                android:textSize="12sp"
-                android:textStyle="bold"
-                android:backgroundTint="@color/primary"
-                android:textColor="@color/white"
-                app:cornerRadius="8dp"
-                android:text="Connect" />
+                android:textColor="@color/primary"
+                android:layout_marginStart="4dp" />
         </LinearLayout>
+
     </LinearLayout>
 </com.google.android.material.card.MaterialCardView>

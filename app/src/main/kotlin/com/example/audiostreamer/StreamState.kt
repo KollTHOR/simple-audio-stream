@@ -12,7 +12,9 @@ data class ConnectedDevice(
     val latencyMs: Int = 0,
     val packetsTransferred: Long = 0L,
     val lastSeenMs: Long = System.currentTimeMillis(),
-    val nodeId: String? = null
+    val nodeId: String? = null,
+    val volumePercent: Int = 100,
+    val isMuted: Boolean = false
 ) {
     val transportType: String get() = if (isDirectP2p) "Wi-Fi Direct" else "Local Wi-Fi"
 }

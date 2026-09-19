@@ -62,6 +62,7 @@ class AudioCaptureService : Service() {
         const val ACTION_STEP_VOLUME = "com.example.audiostreamer.ACTION_STEP_VOLUME"
         const val ACTION_ADD_CLIENT = "com.example.audiostreamer.ACTION_ADD_CLIENT"
         const val ACTION_REMOVE_CLIENT = "com.example.audiostreamer.ACTION_REMOVE_CLIENT"
+        const val ACTION_SET_RECEIVER_VOLUME = "com.example.audiostreamer.ACTION_SET_RECEIVER_VOLUME"
 
         const val EXTRA_RESULT_CODE = "EXTRA_RESULT_CODE"
         const val EXTRA_RESULT_DATA = "EXTRA_RESULT_DATA"
@@ -69,13 +70,29 @@ class AudioCaptureService : Service() {
         const val EXTRA_TARGET_PORT = "EXTRA_TARGET_PORT"
         const val EXTRA_VOLUME_PERCENT = "EXTRA_VOLUME_PERCENT"
         const val EXTRA_VOLUME_DELTA = "EXTRA_VOLUME_DELTA"
+        const val EXTRA_RECEIVER_IP = "EXTRA_RECEIVER_IP"
+        const val EXTRA_RECEIVER_NODE_ID = "EXTRA_RECEIVER_NODE_ID"
 
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "AudioCaptureChannel"
 
         val isRunning = AtomicBoolean(false)
         val remoteVolumePercent = AtomicInteger(100)
+        val receiverVolumes = ConcurrentHashMap<String, Int>()
         val currentStreamGeneration = java.util.concurrent.atomic.AtomicLong(0L)
+
+        fun getReceiverVolume(ip: String, nodeId: String? = null): Int {
+            if (nodeId != null && receiverVolumes.containsKey(nodeId)) {
+                return receiverVolumes[nodeId] ?: remoteVolumePercent.get()
+            }
+            return receiverVolumes[ip] ?: remoteVolumePercent.get()
+        }
+
+        fun setReceiverVolume(ip: String?, nodeId: String?, volume: Int) {
+            val clamped = volume.coerceIn(0, 100)
+            if (!ip.isNullOrBlank()) receiverVolumes[ip] = clamped
+            if (!nodeId.isNullOrBlank()) receiverVolumes[nodeId] = clamped
+        }
 
         @Volatile
         var currentInstance: AudioCaptureService? = null
@@ -177,6 +194,21 @@ class AudioCaptureService : Service() {
             ACTION_SET_VOLUME -> {
                 val newVol = intent.getIntExtra(EXTRA_VOLUME_PERCENT, remoteVolumePercent.get())
                 updateRemoteVolume(newVol)
+                return START_NOT_STICKY
+            }
+            ACTION_SET_RECEIVER_VOLUME -> {
+                val ip = intent.getStringExtra(EXTRA_RECEIVER_IP) ?: intent.getStringExtra(EXTRA_TARGET_IP)
+                val nodeId = intent.getStringExtra(EXTRA_RECEIVER_NODE_ID)
+                val newVol = intent.getIntExtra(EXTRA_VOLUME_PERCENT, 100).coerceIn(0, 100)
+                setReceiverVolume(ip, nodeId, newVol)
+                Log.d(TAG, "Set receiver volume: ip=$ip, nodeId=$nodeId, vol=$newVol%")
+                publishConnectedReceivers()
+                if (!ip.isNullOrBlank()) {
+                    val targetEp = clientRegistry.keys.firstOrNull { it.address.hostAddress == ip }
+                    if (targetEp != null) {
+                        sendControlPacket(newVol, targetEp)
+                    }
+                }
                 return START_NOT_STICKY
             }
             ACTION_STEP_VOLUME -> {
@@ -310,13 +342,16 @@ class AudioCaptureService : Service() {
                     remoteNode = knownNode
                 )
             }
+            val recVol = getReceiverVolume(hostIp, knownNode?.id)
             ConnectedDevice(
                 ip = hostIp,
                 port = ep.port,
                 name = knownNode?.name ?: friendlyName,
                 isDirectP2p = isP2p,
                 packetsTransferred = stats?.packets?.get() ?: 0L,
-                nodeId = knownNode?.id ?: "${com.example.audiostreamer.node.NodeIdentity.ID_PREFIX}ep-${hostIp.replace(".", "-")}"
+                nodeId = knownNode?.id ?: "${com.example.audiostreamer.node.NodeIdentity.ID_PREFIX}ep-${hostIp.replace(".", "-")}",
+                volumePercent = recVol,
+                isMuted = recVol == 0
             )
         }
         val links = com.example.audiostreamer.node.HatLinkManager.activeLinks.value
@@ -411,6 +446,11 @@ class AudioCaptureService : Service() {
                     val stats = clientDiag.getOrPut(client) { TxReceiverStats(client.toString()) }
                     val knownNode = clientNodeInfo[client]
                     val destId = knownNode?.id ?: "${com.example.audiostreamer.node.NodeIdentity.ID_PREFIX}ep-${(client.address.hostAddress ?: "").replace(".", "-")}"
+                    val clientIp = client.address.hostAddress ?: ""
+                    val destVol = getReceiverVolume(clientIp, knownNode?.id)
+                    if (packet.length >= HatPacket.HEADER_SIZE) {
+                        packet.data[packet.offset + 18] = destVol.toByte()
+                    }
                     try {
                         socket.send(packet)
                         stats.packets.incrementAndGet()
@@ -458,7 +498,7 @@ class AudioCaptureService : Service() {
         }
     }
 
-    private fun sendControlPacket(volume: Int) {
+    private fun sendControlPacket(volume: Int, targetEndpoint: ClientEndpoint? = null) {
         val socket = udpSocket ?: return
         Thread({
             try {
@@ -490,7 +530,13 @@ class AudioCaptureService : Service() {
                 HatPacket.writeHeader(buffer, 0, header)
 
                 val packet = DatagramPacket(buffer, buffer.size)
-                broadcastDatagram(socket, packet)
+                if (targetEndpoint != null) {
+                    packet.address = targetEndpoint.address
+                    packet.port = targetEndpoint.port
+                    socket.send(packet)
+                } else {
+                    broadcastDatagram(socket, packet)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Error sending volume control packet", e)
             }
