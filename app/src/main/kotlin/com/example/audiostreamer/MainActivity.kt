@@ -42,6 +42,7 @@ import com.google.android.material.textfield.TextInputLayout
 import android.net.wifi.p2p.WifiP2pDevice
 import android.widget.EditText
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.RadioButton
 import androidx.appcompat.widget.PopupMenu
 import com.google.android.material.card.MaterialCardView
@@ -54,6 +55,7 @@ import com.example.audiostreamer.node.discovery.LanDiscoveryProvider
 import com.example.audiostreamer.node.discovery.WifiDirectDiscoveryProvider
 import com.example.audiostreamer.node.discovery.HatNfcBootstrapProvider
 import com.example.audiostreamer.node.discovery.HatDiscoveryRegistry
+import com.example.audiostreamer.node.discovery.NfcBootstrapState
 
 class MainActivity : AppCompatActivity() {
 
@@ -63,7 +65,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     private lateinit var layoutIpPill: LinearLayout
+    private lateinit var viewHeaderNodeDot: View
+    private lateinit var tvHeaderNodeName: TextView
     private lateinit var tvHeaderIp: TextView
+
+    // Active Transport Badges
+    private lateinit var layoutTransportBadges: LinearLayout
+    private lateinit var badgeTransportLan: TextView
+    private lateinit var badgeTransportP2p: TextView
+    private lateinit var badgeTransportNan: TextView
+    private lateinit var badgeTransportBle: TextView
+    private lateinit var badgeTransportNfc: TextView
+
+    // Interactive NFC Tap-to-Pair Card
+    private lateinit var cardNfcTap: MaterialCardView
+    private lateinit var ivNfcIcon: ImageView
+    private lateinit var tvNfcTitle: TextView
+    private lateinit var tvNfcSubtitle: TextView
+
     private lateinit var toggleModeGroup: MaterialButtonToggleGroup
     private lateinit var btnModeTransmitter: MaterialButton
     private lateinit var btnModeReceiver: MaterialButton
@@ -341,7 +360,32 @@ class MainActivity : AppCompatActivity() {
         WifiDirectManager.init(this)
 
         layoutIpPill = findViewById(R.id.layout_ip_pill)
+        viewHeaderNodeDot = findViewById(R.id.view_header_node_dot)
+        tvHeaderNodeName = findViewById(R.id.tv_header_node_name)
         tvHeaderIp = findViewById(R.id.tv_header_ip)
+
+        layoutTransportBadges = findViewById(R.id.layout_transport_badges)
+        badgeTransportLan = findViewById(R.id.badge_transport_lan)
+        badgeTransportP2p = findViewById(R.id.badge_transport_p2p)
+        badgeTransportNan = findViewById(R.id.badge_transport_nan)
+        badgeTransportBle = findViewById(R.id.badge_transport_ble)
+        badgeTransportNfc = findViewById(R.id.badge_transport_nfc)
+
+        layoutIpPill.setOnClickListener {
+            showNodeDetailsDialog()
+        }
+        layoutTransportBadges.setOnClickListener {
+            showNodeDetailsDialog()
+        }
+
+        cardNfcTap = findViewById(R.id.card_nfc_tap)
+        ivNfcIcon = findViewById(R.id.iv_nfc_icon)
+        tvNfcTitle = findViewById(R.id.tv_nfc_title)
+        tvNfcSubtitle = findViewById(R.id.tv_nfc_subtitle)
+        cardNfcTap.setOnClickListener {
+            showNfcInteractionDialog()
+        }
+
         toggleModeGroup = findViewById(R.id.toggle_mode_group)
         btnModeTransmitter = findViewById(R.id.btn_mode_transmitter)
         btnModeReceiver = findViewById(R.id.btn_mode_receiver)
@@ -394,9 +438,9 @@ class MainActivity : AppCompatActivity() {
             isAdvancedExpanded = !isAdvancedExpanded
             layoutAdvancedContent.visibility = if (isAdvancedExpanded) View.VISIBLE else View.GONE
             tvAdvancedToggle.text = if (isAdvancedExpanded) {
-                "Advanced Settings (Manual IP & Port) -"
+                "Legacy Direct IP Fallback (Manual IP & Port) ▴"
             } else {
-                "Advanced Settings (Manual IP & Port) +"
+                "Legacy Direct IP Fallback (Manual IP & Port) ▾"
             }
         }
 
@@ -501,11 +545,17 @@ class MainActivity : AppCompatActivity() {
                 launch {
                     com.example.audiostreamer.node.HatLinkManager.activeLinks.collect {
                         updateConnectedDevicesUi(StreamState.telemetry.value)
+                        updateTransportBadges()
                     }
                 }
                 launch {
                     LocalNodeManager.localNode.collect { node ->
                         updateLocalNodeUi(node)
+                    }
+                }
+                launch {
+                    HatNfcBootstrapProvider.state.collect { nfcState ->
+                        updateNfcUi(nfcState)
                     }
                 }
                 launch {
@@ -1018,6 +1068,11 @@ class MainActivity : AppCompatActivity() {
                     val tvName = itemView.findViewById<TextView>(R.id.tv_device_name)
                     val tvDetails = itemView.findViewById<TextView>(R.id.tv_device_details)
                     val dot = itemView.findViewById<View>(R.id.view_active_dot)
+                    val tvTransportBadge = itemView.findViewById<TextView>(R.id.tv_device_transport_badge)
+                    val layoutDeviceVolume = itemView.findViewById<LinearLayout>(R.id.layout_device_volume)
+                    val btnDeviceMute = itemView.findViewById<ImageView>(R.id.btn_device_mute)
+                    val sliderDeviceVol = itemView.findViewById<Slider>(R.id.slider_device_vol)
+                    val tvDeviceVolVal = itemView.findViewById<TextView>(R.id.tv_device_vol_val)
                     val btnDisconnect = itemView.findViewById<MaterialButton>(R.id.btn_device_disconnect)
                     val btnConnect = itemView.findViewById<MaterialButton>(R.id.btn_device_connect)
 
@@ -1047,16 +1102,59 @@ class MainActivity : AppCompatActivity() {
                             detailsSb.append(" • Errors: ${dest.stats.sendErrors.get()}")
                         }
                         tvDetails.text = detailsSb.toString()
+                        tvTransportBadge.text = dest.transportType.name
                     } else {
                         tvName.text = rec.name.ifEmpty { "Audio Receiver" }
                         val latencyStr = if (rec.latencyMs > 0) " • ${rec.latencyMs}ms" else ""
                         tvDetails.text = "${rec.ip}:${rec.port} • ${rec.transportType}$latencyStr"
                         dot.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_green))
+                        tvTransportBadge.text = rec.transportType
                     }
 
+                    tvTransportBadge.visibility = View.VISIBLE
                     dot.visibility = View.VISIBLE
                     btnConnect.visibility = View.GONE
                     btnDisconnect.visibility = View.VISIBLE
+
+                    // Multi-receiver Volume Control Row
+                    layoutDeviceVolume.visibility = View.VISIBLE
+                    val vol = rec.volumePercent.coerceIn(0, 100)
+                    sliderDeviceVol.value = vol.toFloat()
+                    tvDeviceVolVal.text = "$vol%"
+
+                    if (rec.isMuted || vol == 0) {
+                        btnDeviceMute.setImageResource(R.drawable.ic_volume_mute)
+                        btnDeviceMute.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_red))
+                    } else {
+                        btnDeviceMute.setImageResource(R.drawable.ic_volume_up)
+                        btnDeviceMute.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
+                    }
+
+                    sliderDeviceVol.clearOnChangeListeners()
+                    sliderDeviceVol.addOnChangeListener { _, value, fromUser ->
+                        if (fromUser) {
+                            val newVol = value.toInt()
+                            tvDeviceVolVal.text = "$newVol%"
+                            val volIntent = Intent(this, AudioCaptureService::class.java).apply {
+                                action = AudioCaptureService.ACTION_SET_RECEIVER_VOLUME
+                                putExtra(AudioCaptureService.EXTRA_RECEIVER_IP, rec.ip)
+                                putExtra(AudioCaptureService.EXTRA_RECEIVER_NODE_ID, rec.nodeId)
+                                putExtra(AudioCaptureService.EXTRA_VOLUME_PERCENT, newVol)
+                            }
+                            startService(volIntent)
+                        }
+                    }
+
+                    btnDeviceMute.setOnClickListener {
+                        val newVol = if (rec.isMuted || vol == 0) 100 else 0
+                        val volIntent = Intent(this, AudioCaptureService::class.java).apply {
+                            action = AudioCaptureService.ACTION_SET_RECEIVER_VOLUME
+                            putExtra(AudioCaptureService.EXTRA_RECEIVER_IP, rec.ip)
+                            putExtra(AudioCaptureService.EXTRA_RECEIVER_NODE_ID, rec.nodeId)
+                            putExtra(AudioCaptureService.EXTRA_VOLUME_PERCENT, newVol)
+                        }
+                        startService(volIntent)
+                    }
 
                     btnDisconnect.setOnClickListener {
                         val removeIntent = Intent(this, AudioCaptureService::class.java).apply {
@@ -1085,6 +1183,8 @@ class MainActivity : AppCompatActivity() {
                 val tvName = itemView.findViewById<TextView>(R.id.tv_device_name)
                 val tvDetails = itemView.findViewById<TextView>(R.id.tv_device_details)
                 val dot = itemView.findViewById<View>(R.id.view_active_dot)
+                val tvTransportBadge = itemView.findViewById<TextView>(R.id.tv_device_transport_badge)
+                val layoutDeviceVolume = itemView.findViewById<LinearLayout>(R.id.layout_device_volume)
                 val btnDisconnect = itemView.findViewById<MaterialButton>(R.id.btn_device_disconnect)
                 val btnConnect = itemView.findViewById<MaterialButton>(R.id.btn_device_connect)
 
@@ -1097,6 +1197,10 @@ class MainActivity : AppCompatActivity() {
                 val negStr = t.lastNegotiatedCapabilities?.let { "\nNegotiated: ${it.summary()}" } ?: ""
 
                 tvDetails.text = "${transmitter.ip}:${transmitter.port} • $transportStr$streamStr • Playing$negStr"
+                tvTransportBadge.visibility = View.VISIBLE
+                tvTransportBadge.text = transportStr
+                layoutDeviceVolume.visibility = View.GONE
+
                 dot.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_green))
                 dot.visibility = View.VISIBLE
                 btnConnect.visibility = View.GONE
@@ -1559,13 +1663,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshLocalIp() {
+        val node = com.example.audiostreamer.node.LocalNodeManager.getLocalNode()
+        updateLocalNodeUi(node)
+
         val allIps = NetworkUtils.getAllLocalIpAddresses()
-        val nodeName = com.example.audiostreamer.node.LocalNodeManager.getLocalNode().name
         if (allIps.isNotEmpty()) {
-            detectedLocalIp = allIps.first()
-            val extra = allIps.size - 1
-            val ipStr = if (extra > 0) "${allIps.first()} (+$extra)" else allIps.first()
-            tvHeaderIp.text = "$ipStr • $nodeName"
             if (etTargetIp.text.isNullOrEmpty() ||
                 etTargetIp.text.toString() == "192.168.1.255" ||
                 etTargetIp.text.toString() == "192.168.43.255") {
@@ -1579,19 +1681,191 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
-        } else {
-            detectedLocalIp = null
-            tvHeaderIp.text = "Offline • $nodeName"
         }
     }
 
     private fun updateLocalNodeUi(node: com.example.audiostreamer.node.NodeInfo) {
+        tvHeaderNodeName.text = node.name
         val allIps = NetworkUtils.getAllLocalIpAddresses()
-        val ipStr = if (allIps.isNotEmpty()) {
+        if (allIps.isNotEmpty()) {
+            detectedLocalIp = allIps.first()
             val extra = allIps.size - 1
-            if (extra > 0) "${allIps.first()} (+$extra)" else allIps.first()
-        } else "Offline"
-        tvHeaderIp.text = "$ipStr • ${node.name}"
+            val ipStr = if (extra > 0) "${allIps.first()} (+$extra)" else allIps.first()
+            tvHeaderIp.text = " • $ipStr"
+            viewHeaderNodeDot.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_green))
+        } else {
+            detectedLocalIp = null
+            tvHeaderIp.text = " • Offline"
+            viewHeaderNodeDot.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_gray))
+        }
+        updateTransportBadges()
+    }
+
+    private fun updateTransportBadges() {
+        val hasLan = NetworkUtils.getAllLocalIpAddresses().isNotEmpty()
+        val hasP2p = packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)
+        val hasNan = packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)
+        val hasBle = packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
+        val nfcState = HatNfcBootstrapProvider.state.value
+
+        // LAN
+        if (hasLan) {
+            badgeTransportLan.visibility = View.VISIBLE
+            badgeTransportLan.setTextColor(ContextCompat.getColor(this, R.color.status_green))
+        } else {
+            badgeTransportLan.visibility = View.VISIBLE
+            badgeTransportLan.setTextColor(ContextCompat.getColor(this, R.color.text_hint))
+        }
+
+        // P2P (Wi-Fi Direct)
+        if (hasP2p) {
+            badgeTransportP2p.visibility = View.VISIBLE
+            val isP2pActive = WifiDirectManager.isGroupCreated.value ||
+                com.example.audiostreamer.node.HatLinkManager.activeLinks.value.any { it.hatTransportType == com.example.audiostreamer.node.transport.HatTransportType.WIFI_DIRECT }
+            badgeTransportP2p.setTextColor(
+                ContextCompat.getColor(this, if (isP2pActive) R.color.status_green else R.color.pill_text)
+            )
+        } else {
+            badgeTransportP2p.visibility = View.GONE
+        }
+
+        // Wi-Fi Aware (NAN)
+        if (hasNan) {
+            badgeTransportNan.visibility = View.VISIBLE
+            val isNanActive = com.example.audiostreamer.node.HatLinkManager.activeLinks.value.any { it.hatTransportType == com.example.audiostreamer.node.transport.HatTransportType.WIFI_AWARE }
+            badgeTransportNan.setTextColor(
+                ContextCompat.getColor(this, if (isNanActive) R.color.status_green else R.color.pill_text)
+            )
+        } else {
+            badgeTransportNan.visibility = View.GONE
+        }
+
+        // BLE
+        if (hasBle) {
+            badgeTransportBle.visibility = View.VISIBLE
+            val isBleScanning = com.example.audiostreamer.node.discovery.HatBlePresenceProvider.isScanning.value
+            badgeTransportBle.setTextColor(
+                ContextCompat.getColor(this, if (isBleScanning) R.color.status_green else R.color.pill_text)
+            )
+        } else {
+            badgeTransportBle.visibility = View.GONE
+        }
+
+        // NFC
+        updateNfcUi(nfcState)
+    }
+
+    private fun updateNfcUi(state: NfcBootstrapState) {
+        when (state) {
+            NfcBootstrapState.UNSUPPORTED -> {
+                cardNfcTap.visibility = View.GONE
+                badgeTransportNfc.visibility = View.GONE
+            }
+            NfcBootstrapState.DISABLED -> {
+                cardNfcTap.visibility = View.VISIBLE
+                badgeTransportNfc.visibility = View.VISIBLE
+                badgeTransportNfc.setTextColor(ContextCompat.getColor(this, R.color.status_orange))
+                ivNfcIcon.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_orange))
+                tvNfcTitle.text = "NFC is Disabled"
+                tvNfcSubtitle.text = "Tap to open settings and enable NFC tap-to-pair"
+            }
+            NfcBootstrapState.READY -> {
+                cardNfcTap.visibility = View.VISIBLE
+                badgeTransportNfc.visibility = View.VISIBLE
+                badgeTransportNfc.setTextColor(ContextCompat.getColor(this, R.color.status_green))
+                ivNfcIcon.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
+                tvNfcTitle.text = "NFC Tap-to-Pair Ready"
+                tvNfcSubtitle.text = if (currentMode == Mode.TRANSMITTER) {
+                    "Touch devices back-to-back to send stream invitation"
+                } else {
+                    "Touch devices back-to-back to tune in and receive"
+                }
+            }
+            NfcBootstrapState.PROCESSING_TAP -> {
+                cardNfcTap.visibility = View.VISIBLE
+                badgeTransportNfc.visibility = View.VISIBLE
+                ivNfcIcon.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_green))
+                tvNfcTitle.text = "Pairing via NFC..."
+                tvNfcSubtitle.text = "Exchanging node connection parameters"
+            }
+            NfcBootstrapState.STOPPED, NfcBootstrapState.ERROR -> {
+                cardNfcTap.visibility = View.VISIBLE
+                badgeTransportNfc.visibility = View.VISIBLE
+                badgeTransportNfc.setTextColor(ContextCompat.getColor(this, R.color.status_red))
+                ivNfcIcon.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_red))
+                tvNfcTitle.text = "NFC Offline"
+                tvNfcSubtitle.text = "Tap to view NFC diagnostics"
+            }
+        }
+    }
+
+    private fun showNodeDetailsDialog() {
+        val node = com.example.audiostreamer.node.LocalNodeManager.getLocalNode()
+        val allIps = NetworkUtils.getAllLocalIpAddresses()
+        val ipListStr = if (allIps.isNotEmpty()) allIps.joinToString(", ") else "Offline"
+        val transports = mutableListOf<String>()
+        if (allIps.isNotEmpty()) transports.add("LAN (Local Network)")
+        if (packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)) transports.add("Wi-Fi Direct (P2P)")
+        if (packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)) transports.add("Wi-Fi Aware (NAN)")
+        if (packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)) transports.add("BLE Proximity")
+        if (HatNfcBootstrapProvider.isSupported) transports.add("NFC Out-of-Band Bootstrap")
+
+        val supportedCodecs = node.capabilities.supportedCodecs.joinToString(", ") { it.name }
+        val supportedRates = node.capabilities.supportedSampleRates.joinToString(", ") { "${it / 1000}kHz" }
+        val maxChannels = node.capabilities.supportedChannelCounts.maxOrNull() ?: 2
+
+        val message = """
+            Device Name: ${node.name}
+            Node ID: ${node.id}
+            Current Role: ${if (currentMode == Mode.TRANSMITTER) "Broadcast Hub (Send)" else "Audio Sink (Listen)"}
+            Local IP(s): $ipListStr
+
+            Active / Available Transports:
+            ${transports.joinToString("\n") { "• $it" }}
+
+            Hardware Audio Capabilities:
+            • Codecs: $supportedCodecs
+            • Sample Rates: $supportedRates
+            • Max Channels: $maxChannels
+        """.trimIndent()
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Local HAT Node Identity")
+            .setMessage(message)
+            .setPositiveButton("Close", null)
+            .show()
+    }
+
+    private fun showNfcInteractionDialog() {
+        val nfcState = HatNfcBootstrapProvider.state.value
+        if (nfcState == NfcBootstrapState.DISABLED) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("NFC is Disabled")
+                .setMessage("Near Field Communication (NFC) is turned off. Would you like to open Android Settings to enable it?")
+                .setPositiveButton("Open Settings") { _, _ ->
+                    try {
+                        startActivity(Intent(Settings.ACTION_NFC_SETTINGS))
+                    } catch (e: Exception) {
+                        Toast.makeText(this, "Could not open NFC settings: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+            return
+        }
+
+        val roleStr = if (currentMode == Mode.TRANSMITTER) "Broadcast (Send)" else "Receive (Listen)"
+        val actionStr = if (currentMode == Mode.TRANSMITTER) {
+            "Touching another device back-to-back will transmit an invitation to stream audio from this device."
+        } else {
+            "Touching another device back-to-back will accept an incoming stream invitation and begin playback."
+        }
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle("NFC Tap-to-Pair")
+            .setMessage("Current Role: $roleStr\n\n$actionStr\n\nEnsure both devices have NFC enabled and touch their back panels together.")
+            .setPositiveButton("Got It", null)
+            .show()
     }
 
     private fun observeTelemetry() {
@@ -1884,7 +2158,7 @@ class MainActivity : AppCompatActivity() {
                 btnModeReceiver.setTextColor(colorTextSecondary)
                 btnModeReceiver.iconTint = ColorStateList.valueOf(colorTextSecondary)
 
-                tvModeGuide.text = "Capture & stream system audio to a receiver device"
+                tvModeGuide.text = "Broadcast audio to nearby speakers, receivers, or devices"
                 layoutSavedProfilesSection.visibility = View.VISIBLE
                 layoutDiscoverySection.visibility = View.VISIBLE
                 layoutReceiverP2p.visibility = View.GONE
@@ -1929,7 +2203,7 @@ class MainActivity : AppCompatActivity() {
                 btnModeTransmitter.setTextColor(colorTextSecondary)
                 btnModeTransmitter.iconTint = ColorStateList.valueOf(colorTextSecondary)
 
-                tvModeGuide.text = "Play raw audio stream received from transmitter"
+                tvModeGuide.text = "Accept and play audio streams from nearby transmitters"
                 layoutDiscoverySection.visibility = View.GONE
                 layoutSavedProfilesSection.visibility = View.GONE
                 layoutReceiverP2p.visibility = View.VISIBLE
@@ -1965,6 +2239,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+        updateNfcUi(HatNfcBootstrapProvider.state.value)
     }
 
     private fun sendVolumeIntent(volumePercent: Int) {
