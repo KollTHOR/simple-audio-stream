@@ -18,7 +18,7 @@ class UpdateRepository(private val context: Context) {
         private const val KEY_CHANNEL = "update_channel"
         private const val KEY_CACHED_RELEASES = "cached_releases_json"
         private const val KEY_CACHE_TIMESTAMP = "cached_releases_timestamp"
-        private const val CACHE_MAX_AGE_MS = 30 * 60 * 1000L // 30 minutes
+        private const val CACHE_MAX_AGE_MS = 2 * 60 * 1000L // 2 minutes
 
         const val REPO_OWNER = "KollTHOR"
         const val REPO_NAME = "simple-audio-stream"

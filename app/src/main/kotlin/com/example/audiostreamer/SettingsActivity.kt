@@ -434,6 +434,7 @@ class SettingsActivity : AppCompatActivity() {
                 tvSettingsTitle.text = "App Updates"
                 tvSettingsSubtitle.text = "GitHub Releases & APK Updater"
                 diagnosticsViewModel.stopSampling()
+                refreshUpdateCenter(forceRefresh = true)
             }
             Category.ABOUT -> {
                 tvSettingsTitle.text = "About"
