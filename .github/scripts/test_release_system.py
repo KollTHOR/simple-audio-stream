@@ -44,16 +44,16 @@ class ReleaseSystemSimulationTest(unittest.TestCase):
         self.assertEqual(data["is_prerelease"], "true")
         self.assertTrue(int(data["version_code"]) >= 119)
         self.assertTrue(re.match(r"^1\.[0-9]+\.[0-9]+-nightly\.\d{8}\+[a-f0-9]{7}$", data["version_name"]))
-        self.assertTrue(re.match(r"^nightly-\d{8}-[a-f0-9]{7}$", data["tag_name"]))
+        self.assertTrue(re.match(r"^nightly-\d{8}-b\d+-[a-f0-9]{7}$", data["tag_name"]))
         self.assertEqual(data["apk_name"], f"SimpleAudioStream-{data['version_name']}.apk")
 
     # 2. Second nightly build (higher versionCode than first)
     def test_02_second_nightly_build(self):
         import json
-        _, out1, _ = self.run_resolver(["--channel", "nightly", "--dry-run", "--run-number", "1"])
+        _, out1, _ = self.run_resolver(["--channel", "nightly", "--dry-run", "--run-number", "1", "--offline"])
         code1 = int(json.loads(out1)["version_code"])
 
-        _, out2, _ = self.run_resolver(["--channel", "nightly", "--dry-run", "--run-number", "2"])
+        _, out2, _ = self.run_resolver(["--channel", "nightly", "--dry-run", "--run-number", "2", "--offline"])
         code2 = int(json.loads(out2)["version_code"])
 
         self.assertGreater(code2, code1, "Second nightly build must have strictly higher versionCode than first")
@@ -75,10 +75,10 @@ class ReleaseSystemSimulationTest(unittest.TestCase):
     # 4. Nightly after stable
     def test_04_nightly_after_stable(self):
         import json
-        _, out_stable, _ = self.run_resolver(["--channel", "stable", "--tag", "v1.8.15", "--dry-run", "--run-number", "3"])
+        _, out_stable, _ = self.run_resolver(["--channel", "stable", "--tag", "v1.8.15", "--dry-run", "--run-number", "3", "--offline"])
         stable_code = int(json.loads(out_stable)["version_code"])
 
-        _, out_nightly, _ = self.run_resolver(["--channel", "nightly", "--dry-run", "--run-number", "4"])
+        _, out_nightly, _ = self.run_resolver(["--channel", "nightly", "--dry-run", "--run-number", "4", "--offline"])
         nightly_code = int(json.loads(out_nightly)["version_code"])
 
         self.assertGreater(nightly_code, stable_code, "Nightly build after stable must strictly increase versionCode")
@@ -113,7 +113,7 @@ class ReleaseSystemSimulationTest(unittest.TestCase):
         seen_codes = set()
         for run_num in range(1, 15):
             channel = "stable" if run_num % 5 == 0 else "nightly"
-            args = ["--channel", channel, "--dry-run", "--run-number", str(run_num)]
+            args = ["--channel", channel, "--dry-run", "--run-number", str(run_num), "--offline"]
             if channel == "stable":
                 args.extend(["--tag", f"v1.8.{14 + run_num}"])
             ret, out, _ = self.run_resolver(args)

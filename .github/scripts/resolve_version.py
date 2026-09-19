@@ -7,7 +7,7 @@ for Simple Audio Stream releases (nightly and stable).
 
 Guarantees:
 1. Version code is CI-controlled and strictly monotonically increasing (> 118).
-2. Nightly tags follow 'nightly-YYYYMMDD-SHORT_SHA' and are immutable.
+2. Nightly tags follow 'nightly-YYYYMMDD-bVERSION-SHORT_SHA' and are immutable.
 3. Stable tags follow 'vX.Y.Z' and must point to a commit on 'main'.
 4. Artifacts are explicitly named 'SimpleAudioStream-<versionName>.apk'.
 5. Historical versions and releases are preserved and never overwritten.
@@ -93,6 +93,9 @@ def fetch_published_version_codes_and_tags() -> tuple[set[int], set[str], set[st
                 tag = r.get("tag_name", "").strip()
                 if tag:
                     published_release_tags.add(tag)
+                    m_tag = re.search(r'-b(\d+)-', tag)
+                    if m_tag:
+                        version_codes.add(int(m_tag.group(1)))
                 body = r.get("body", "") or ""
                 for m in re.finditer(r'(?:versionCode|Build)[:=\s*`]+(\d+)', body, re.IGNORECASE):
                     version_codes.add(int(m.group(1)))
@@ -109,6 +112,9 @@ def fetch_published_version_codes_and_tags() -> tuple[set[int], set[str], set[st
                     tag = r.get("tagName", "").strip()
                     if tag:
                         published_release_tags.add(tag)
+                        m_tag = re.search(r'-b(\d+)-', tag)
+                        if m_tag:
+                            version_codes.add(int(m_tag.group(1)))
         except Exception:
             pass
 
@@ -119,6 +125,9 @@ def fetch_published_version_codes_and_tags() -> tuple[set[int], set[str], set[st
             t = t.strip()
             if t:
                 git_tags.add(t)
+                m_tag = re.search(r'-b(\d+)-', t)
+                if m_tag:
+                    version_codes.add(int(m_tag.group(1)))
     except Exception:
         pass
 
@@ -132,6 +141,8 @@ def main():
     parser.add_argument("--run-number", default="0", help="GitHub Actions run number")
     parser.add_argument("--output-file", default="", help="File to write GitHub Actions output key-values")
     parser.add_argument("--dry-run", action="store_true", help="Dry run mode without failing on existing tags")
+    parser.add_argument("--base-code", type=int, default=None, help="Override baseline version code")
+    parser.add_argument("--offline", action="store_true", help="Skip querying remote GitHub API")
     args = parser.parse_args()
 
     base_version = get_base_version_from_gradle()
@@ -139,17 +150,26 @@ def main():
     commit_short = get_git_commit_short()
     build_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
 
-    published_codes, published_releases, git_tags = fetch_published_version_codes_and_tags()
-    max_published_code = max(published_codes) if published_codes else BASELINE_VERSION_CODE
+    baseline_code = args.base_code if args.base_code is not None else BASELINE_VERSION_CODE
+    if args.offline:
+        published_codes = {baseline_code}
+        published_releases = {"v1.8.12"}
+        git_tags = set()
+    else:
+        published_codes, published_releases, git_tags = fetch_published_version_codes_and_tags()
+        if args.base_code is not None:
+            published_codes.add(args.base_code)
+
+    max_published_code = max(published_codes) if published_codes else baseline_code
 
     run_num = int(args.run_number) if args.run_number.isdigit() else 0
-    ci_code = (BASELINE_VERSION_CODE + run_num) if run_num > 0 else 0
+    ci_code = (baseline_code + run_num) if run_num > 0 else 0
 
-    version_code = max(BASELINE_VERSION_CODE + 1, max_published_code + 1, ci_code)
+    version_code = max(baseline_code + 1, max_published_code + 1, ci_code)
 
     if args.channel == "nightly":
         version_name = f"{base_version}-nightly.{build_date}+{commit_short}"
-        tag_name = f"nightly-{build_date}-{commit_short}"
+        tag_name = f"nightly-{build_date}-b{version_code}-{commit_short}"
         is_prerelease = "true"
         release_title = f"Nightly Build: {tag_name}"
 

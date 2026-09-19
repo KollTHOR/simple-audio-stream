@@ -117,6 +117,40 @@ class UpdateCenterTest {
     }
 
     @Test
+    fun parseNightlyReleaseJson_withBuildNumberInTag() {
+        val jsonStr = """
+        {
+            "id": 1005,
+            "tag_name": "nightly-20260919-b129-054ad38",
+            "name": "Nightly Build: nightly-20260919-b129-054ad38",
+            "body": "Automated build without body metadata",
+            "published_at": "2026-09-19T12:00:00Z",
+            "prerelease": true,
+            "draft": false,
+            "html_url": "https://github.com/KollTHOR/simple-audio-stream/releases/tag/nightly-20260919-b129-054ad38",
+            "assets": [
+                {
+                    "id": 501,
+                    "name": "SimpleAudioStream-1.8.15-nightly.20260919+054ad38.apk",
+                    "browser_download_url": "https://example.com/nightly.apk",
+                    "size": 5500000
+                }
+            ]
+        }
+        """.trimIndent()
+
+        val release = GithubRelease.fromJson(JSONObject(jsonStr))
+
+        assertEquals(1005L, release.id)
+        assertEquals(ReleaseChannel.NIGHTLY, release.channel)
+        assertTrue(release.isPrerelease)
+        assertEquals("054ad38", release.commitSha)
+        assertEquals(129L, release.parsedVersionCode)
+        assertEquals("2026-09-19", release.formattedPublishDate)
+        assertNotNull(release.apkAsset)
+    }
+
+    @Test
     fun parseRelease_missingApkAsset() {
         val jsonStr = """
         {
@@ -614,5 +648,98 @@ class UpdateCenterTest {
         assertNotNull(candidate)
         assertEquals(2L, candidate?.id)
         assertEquals("v1.8.14", candidate?.tagName)
+    }
+
+    @Test
+    fun versionComparator_nightlyTagsWithBuildNumber() {
+        // Tag with higher build number on same date is newer
+        val vNew = "nightly-20260919-b130-1111111"
+        val vOld = "nightly-20260919-b129-0000000"
+
+        assertTrue("vNew (b130) should be greater than vOld (b129)", VersionComparator.compareSemantic(vNew, vOld) > 0)
+        assertTrue("vOld (b129) should be less than vNew (b130)", VersionComparator.compareSemantic(vOld, vNew) < 0)
+    }
+
+    @Test
+    fun updateRepository_sortReleasesDescending_sortsByBuildNumberAndVersion() {
+        val rel126 = GithubRelease(
+            id = 1,
+            tagName = "nightly-20260919-8268319",
+            name = "Nightly 126",
+            body = "",
+            publishedAt = "2026-09-19T10:00:00Z",
+            isPrerelease = true,
+            htmlUrl = "",
+            apkAsset = ReleaseAsset(1, "app.apk", "http://dl/1", 5000, isApk = true, isSha256 = false),
+            checksumAsset = null,
+            channel = ReleaseChannel.NIGHTLY,
+            parsedVersionName = "1.8.15-nightly.20260919+8268319",
+            parsedVersionCode = 126L,
+            commitSha = "8268319"
+        )
+
+        val rel125 = GithubRelease(
+            id = 2,
+            tagName = "nightly-20260919-30d193e",
+            name = "Nightly 125",
+            body = "",
+            publishedAt = "2026-09-19T09:00:00Z",
+            isPrerelease = true,
+            htmlUrl = "",
+            apkAsset = ReleaseAsset(2, "app.apk", "http://dl/2", 5000, isApk = true, isSha256 = false),
+            checksumAsset = null,
+            channel = ReleaseChannel.NIGHTLY,
+            parsedVersionName = "1.8.15-nightly.20260919+30d193e",
+            parsedVersionCode = 125L,
+            commitSha = "30d193e"
+        )
+
+        val rel128 = GithubRelease(
+            id = 3,
+            tagName = "nightly-20260919-054ad38",
+            name = "Nightly 128",
+            body = "",
+            publishedAt = "2026-09-19T11:00:00Z",
+            isPrerelease = true,
+            htmlUrl = "",
+            apkAsset = ReleaseAsset(3, "app.apk", "http://dl/3", 5000, isApk = true, isSha256 = false),
+            checksumAsset = null,
+            channel = ReleaseChannel.NIGHTLY,
+            parsedVersionName = "1.8.15-nightly.20260919+054ad38",
+            parsedVersionCode = 128L,
+            commitSha = "054ad38"
+        )
+
+        val rel129 = GithubRelease(
+            id = 4,
+            tagName = "nightly-20260919-b129-abcdef0",
+            name = "Nightly 129",
+            body = "",
+            publishedAt = "2026-09-19T12:00:00Z",
+            isPrerelease = true,
+            htmlUrl = "",
+            apkAsset = ReleaseAsset(4, "app.apk", "http://dl/4", 5000, isApk = true, isSha256 = false),
+            checksumAsset = null,
+            channel = ReleaseChannel.NIGHTLY,
+            parsedVersionName = "1.8.15-nightly.20260919+abcdef0",
+            parsedVersionCode = 129L,
+            commitSha = "abcdef0"
+        )
+
+        // Pass in GitHub's unsorted/inverted order (e.g. 126 first, then 125, then 128, then 129)
+        val unsorted = listOf(rel126, rel125, rel128, rel129)
+
+        val sorted = UpdateRepository.sortReleasesDescending(unsorted)
+        assertEquals(4, sorted.size)
+        assertEquals(129L, sorted[0].parsedVersionCode)
+        assertEquals(128L, sorted[1].parsedVersionCode)
+        assertEquals(126L, sorted[2].parsedVersionCode)
+        assertEquals(125L, sorted[3].parsedVersionCode)
+
+        // Candidate must be the latest (129)
+        val candidate = UpdateRepository.findLatestCandidate(unsorted, ReleaseChannel.NIGHTLY)
+        assertNotNull(candidate)
+        assertEquals("nightly-20260919-b129-abcdef0", candidate?.tagName)
+        assertEquals(129L, candidate?.parsedVersionCode)
     }
 }
