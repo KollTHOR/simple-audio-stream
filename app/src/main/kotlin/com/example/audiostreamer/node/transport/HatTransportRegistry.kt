@@ -42,7 +42,7 @@ object HatTransportRegistry {
      */
     fun selectBestAudioTransport(remoteAddress: String? = null): HatIpTransport {
         val isDirectP2p = remoteAddress?.startsWith("192.168.49.") == true ||
-                (WifiDirectManager.isConnected.value && NetworkUtils.getLocalIpAddress()?.startsWith("192.168.49.") == true)
+                (WifiDirectManager.isConnected.value && NetworkUtils.getP2pIpAddresses().isNotEmpty())
         return if (isDirectP2p) {
             wifiDirectTransportInstance
         } else {

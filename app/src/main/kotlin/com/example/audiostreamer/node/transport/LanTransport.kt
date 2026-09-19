@@ -34,10 +34,7 @@ class LanTransport(
     override val type: HatTransportType = HatTransportType.LAN
 
     override val isAvailable: Boolean
-        get() {
-            val ip = NetworkUtils.getLocalIpAddress()
-            return ip != null && !ip.startsWith("192.168.49.")
-        }
+        get() = NetworkUtils.isLanAvailable()
 
     override val state: TransportState
         get() = _state
@@ -52,6 +49,12 @@ class LanTransport(
         get() = _socket
 
     override fun connect(remote: TransportAddress): Result<Unit> = synchronized(lock) {
+        if (!NetworkUtils.isLanAvailable()) {
+            _state = TransportState.FAILED
+            val err = IllegalStateException("LAN transport unavailable: no active Wi-Fi or Ethernet network")
+            Log.e(TAG, err.message ?: "")
+            return Result.failure(err)
+        }
         try {
             _remoteAddress = remote
             _state = TransportState.CONNECTING
@@ -94,6 +97,12 @@ class LanTransport(
     }
 
     override fun listen(port: Int): Result<Unit> = synchronized(lock) {
+        if (!NetworkUtils.isLanAvailable()) {
+            _state = TransportState.FAILED
+            val err = IllegalStateException("LAN transport unavailable: no active Wi-Fi or Ethernet network")
+            Log.e(TAG, err.message ?: "")
+            return Result.failure(err)
+        }
         try {
             _state = TransportState.CONNECTING
             var sock = _socket
@@ -133,10 +142,18 @@ class LanTransport(
     }
 
     override fun broadcast(packet: DatagramPacket) {
+        if (!NetworkUtils.isLanAvailable()) {
+            Log.w(TAG, "Cannot broadcast on LAN: LAN unavailable")
+            return
+        }
         val s = _socket ?: throw IllegalStateException("LAN transport socket not active")
         val originalAddr = packet.address
         try {
             val bcastIp = NetworkUtils.getSuggestedBroadcastIp()
+            if (bcastIp.isEmpty()) {
+                Log.w(TAG, "No LAN broadcast IP available")
+                return
+            }
             packet.address = InetAddress.getByName(bcastIp)
             s.send(packet)
             packetsSent.incrementAndGet()

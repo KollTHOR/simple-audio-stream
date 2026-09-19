@@ -87,6 +87,10 @@ object DiscoveryManager {
     // -------------------------------------------------------------------------
 
     fun startDiscovery(scope: CoroutineScope) {
+        if (!NetworkUtils.isLanAvailable()) {
+            Log.d(TAG, "Cannot start LAN discovery: LAN unavailable (Offline)")
+            return
+        }
         if (discoveryJob?.isActive == true) return
 
         discoveryJob = scope.launch(Dispatchers.IO) {
@@ -166,7 +170,8 @@ object DiscoveryManager {
                                     }
 
                                     val senderIp = packet.address.hostAddress
-                                    if (senderIp != null && !NetworkUtils.getAllLocalIpAddresses().contains(senderIp)) {
+                                    val localIps = (NetworkUtils.getAllLocalIpAddresses() + NetworkUtils.getP2pIpAddresses()).toSet()
+                                    if (senderIp != null && !localIps.contains(senderIp)) {
                                         addDiscoveredDevice(
                                             DiscoveredDevice(
                                                 name = devName,
@@ -224,6 +229,10 @@ object DiscoveryManager {
     }
 
     fun triggerScan(scope: CoroutineScope) {
+        if (!NetworkUtils.isLanAvailable()) {
+            Log.d(TAG, "Scan not triggered: LAN unavailable (Offline)")
+            return
+        }
         _isScanning.value = true
         _lastScanTimeMs.value = System.currentTimeMillis()
         if (discoveryJob?.isActive != true) {
@@ -248,6 +257,10 @@ object DiscoveryManager {
     // -------------------------------------------------------------------------
 
     fun startReceiverResponder(context: Context, scope: CoroutineScope) {
+        if (!NetworkUtils.isLanAvailable(context)) {
+            Log.d(TAG, "Receiver responder not started: LAN unavailable (Offline)")
+            return
+        }
         if (receiverResponderJob?.isActive == true) return
 
         val appContext = context.applicationContext
@@ -544,6 +557,10 @@ object DiscoveryManager {
     }
 
     fun sendAnnouncement(socket: DatagramSocket) {
+        if (!NetworkUtils.isLanAvailable()) {
+            Log.d(TAG, "Skipping announcement: LAN unavailable (Offline)")
+            return
+        }
         try {
             val announceBuf = buildAnnouncePacket()
             val targets = mutableSetOf<String>()
@@ -567,6 +584,10 @@ object DiscoveryManager {
     }
 
     fun sendTransmitterAnnouncement(socket: DatagramSocket, isStreaming: Boolean) {
+        if (!NetworkUtils.isLanAvailable()) {
+            Log.d(TAG, "Skipping transmitter announcement: LAN unavailable (Offline)")
+            return
+        }
         try {
             val modelName = getLocalDeviceName()
             val localNode = com.example.audiostreamer.node.LocalNodeManager.getLocalNode()
@@ -594,7 +615,6 @@ object DiscoveryManager {
 
             val targets = mutableSetOf<String>()
             targets.addAll(NetworkUtils.getAllBroadcastAddresses())
-            targets.add("255.255.255.255")
 
             for (targetIp in targets) {
                 try {
@@ -608,10 +628,13 @@ object DiscoveryManager {
     }
 
     private fun sendProbe(socket: DatagramSocket) {
+        if (!NetworkUtils.isLanAvailable()) {
+            Log.d(TAG, "Skipping probe: LAN unavailable (Offline)")
+            return
+        }
         val targets = mutableSetOf<String>()
         targets.addAll(NetworkUtils.getAllBroadcastAddresses())
         targets.addAll(NetworkUtils.getArpClientIps())
-        targets.add("255.255.255.255")
 
         val buffer = ByteArray(HatPacket.HEADER_SIZE)
         HatPacket.writeHeader(

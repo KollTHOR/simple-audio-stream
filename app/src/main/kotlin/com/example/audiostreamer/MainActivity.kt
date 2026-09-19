@@ -625,7 +625,7 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this, "Node ID copied: ${node.id}", Toast.LENGTH_SHORT).show()
                 }
                 .setNeutralButton("Copy IP") { _, _ ->
-                    val ipToCopy = detectedLocalIp ?: allIps.firstOrNull() ?: "127.0.0.1"
+                    val ipToCopy = detectedLocalIp ?: allIps.firstOrNull() ?: "Unavailable (Offline)"
                     val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     clipboard.setPrimaryClip(ClipData.newPlainText("IP Address", ipToCopy))
                     Toast.makeText(this, "IP copied: $ipToCopy", Toast.LENGTH_SHORT).show()
@@ -843,7 +843,7 @@ class MainActivity : AppCompatActivity() {
         val localDevices = DiscoveryManager.discoveredDevices.value
         val p2pPeers = WifiDirectManager.discoveredPeers.value.toMutableList()
         val blePeers = BleDiscoveryManager.bleDevices.value.toMutableList()
-        val localIps = NetworkUtils.getAllLocalIpAddresses().toSet()
+        val localIps = (NetworkUtils.getAllLocalIpAddresses() + NetworkUtils.getP2pIpAddresses()).toSet()
         val unified = mutableListOf<UnifiedDevice>()
 
         for (dev in localDevices) {
@@ -1573,7 +1573,10 @@ class MainActivity : AppCompatActivity() {
                 if (activeProf != null) {
                     etTargetIp.setText(activeProf.targetIp)
                 } else {
-                    etTargetIp.setText(NetworkUtils.getSuggestedBroadcastIp())
+                    val suggested = NetworkUtils.getSuggestedBroadcastIp()
+                    if (suggested.isNotEmpty()) {
+                        etTargetIp.setText(suggested)
+                    }
                 }
             }
         } else {
@@ -1583,11 +1586,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateLocalNodeUi(node: com.example.audiostreamer.node.NodeInfo) {
-        val ipStr = detectedLocalIp?.let { ip ->
-            val allIps = NetworkUtils.getAllLocalIpAddresses()
+        val allIps = NetworkUtils.getAllLocalIpAddresses()
+        val ipStr = if (allIps.isNotEmpty()) {
             val extra = allIps.size - 1
             if (extra > 0) "${allIps.first()} (+$extra)" else allIps.first()
-        } ?: "Offline"
+        } else "Offline"
         tvHeaderIp.text = "$ipStr • ${node.name}"
     }
 

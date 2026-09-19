@@ -371,16 +371,25 @@ class AudioCaptureService : Service() {
         if (now - lastClientPruneTime > 2500L) {
             lastClientPruneTime = now
             val iter = clientRegistry.entries.iterator()
+            var anyPruned = false
             while (iter.hasNext()) {
                 val entry = iter.next()
-                if (entry.value != Long.MAX_VALUE && !configuredEndpoints.contains(entry.key) && (now - entry.value > 10_000L)) {
-                    Log.i(TAG, "Pruning inactive multi-unicast client: ${entry.key}")
+                if (now - entry.value > 10_000L) {
+                    Log.i(TAG, "Receiver removed: ${entry.key} (reason: stale_timeout, idleMs=${now - entry.value})")
                     HatDiagnostics.info("RECEIVER_STALE", mapOf("receiver" to entry.key.toString(), "idleMs" to (now - entry.value)))
                     clientDiag.remove(entry.key)
                     val nodeInfo = clientNodeInfo.remove(entry.key)
                     val destId = nodeInfo?.id ?: "${com.example.audiostreamer.node.NodeIdentity.ID_PREFIX}ep-${(entry.key.address.hostAddress ?: "").replace(".", "-")}"
                     com.example.audiostreamer.node.HatMultiStreamManager.removeDestination(destId, "stale_timeout")
+                    com.example.audiostreamer.node.HatLinkManager.closeLinkByRemoteAddress(entry.key.address.hostAddress ?: "")
                     iter.remove()
+                    anyPruned = true
+                }
+            }
+            if (anyPruned) {
+                publishConnectedReceivers()
+                if (clientRegistry.isEmpty()) {
+                    pauseSystemMediaPlayback()
                 }
             }
         }
@@ -395,7 +404,8 @@ class AudioCaptureService : Service() {
         val sendStartNs = SystemClock.elapsedRealtimeNanos()
         try {
             synchronized(socketSendLock) {
-                for (client in clientRegistry.keys) {
+                val targets = if (clientRegistry.isNotEmpty()) clientRegistry.keys else configuredEndpoints
+                for (client in targets) {
                     packet.address = client.address
                     packet.port = client.port
                     val stats = clientDiag.getOrPut(client) { TxReceiverStats(client.toString()) }
@@ -844,7 +854,6 @@ class AudioCaptureService : Service() {
         for (addr in targetAddresses) {
             val ep = ClientEndpoint(addr, targetPort)
             configuredEndpoints.add(ep)
-            clientRegistry[ep] = Long.MAX_VALUE
             val knownCaps = DiscoveryManager.lastDiscoveredReceiverCapabilities
             if (knownCaps != 0) {
                 clientCapabilities[ep] = knownCaps
@@ -887,95 +896,70 @@ class AudioCaptureService : Service() {
                     recvPacket.length = recvBuf.size
                     listenerSocket.receive(recvPacket)
                     val endpoint = ClientEndpoint(recvPacket.address, recvPacket.port)
-                    // Keep client active in registry if not statically configured
-                    if (!configuredEndpoints.contains(endpoint)) {
-                        clientRegistry[endpoint] = SystemClock.elapsedRealtime()
+
+                    if (recvPacket.length < HatPacket.HEADER_SIZE) {
+                        Log.d(TAG, "Rejected packet from $endpoint: too short (${recvPacket.length} bytes < ${HatPacket.HEADER_SIZE})")
+                        continue
                     }
 
                     val header = HatPacket.parseHeader(recvBuf, 0, recvPacket.length)
-                    if (header != null) {
-                        val endpoint = ClientEndpoint(recvPacket.address, recvPacket.port)
-                        val byteVal = header.volumeOrCaps.toInt() and 0xFF
+                    if (header == null) {
+                        Log.d(TAG, "Rejected packet from $endpoint: invalid HAT header or magic mismatch")
+                        continue
+                    }
 
-                        when (header.packetType) {
-                            HatPacket.TYPE_REVERSE_VOLUME_SYNC -> {
-                                val incomingVol = byteVal.coerceIn(0, 100)
-                                Log.i(TAG, "Received reverse volume sync: $incomingVol% from $endpoint")
-                                remoteVolumePercent.set(incomingVol)
-                                StreamState.update { it.copy(remoteVolumePercent = incomingVol) }
-                            }
-                            HatPacket.TYPE_RECEIVER_HEARTBEAT -> {
-                                val isNew = !clientRegistry.containsKey(endpoint)
-                                val currentConfig = activeNegotiatedConfig
-                                val payloadLen = header.payloadLength
-                                val rxExchange = if (payloadLen > 0 && recvPacket.length >= HatPacket.HEADER_SIZE + payloadLen) {
-                                    com.example.audiostreamer.node.NodeCapabilityExchange.parseOrNull(recvBuf, HatPacket.HEADER_SIZE, payloadLen)
-                                } else null
+                    val typeName = HatPacket.describePacketType(header.packetType)
+                    Log.d(TAG, "Received control packet type $typeName (${header.packetType}) from $endpoint")
 
-                                val localNode = com.example.audiostreamer.node.LocalNodeManager.getLocalNode()
-                                val hostIp = endpoint.address.hostAddress ?: ""
-                                val remoteNodeInfo = rxExchange?.toNodeInfo(role = com.example.audiostreamer.node.StreamRole.RECEIVER)
-                                    ?: com.example.audiostreamer.node.NodeInfo(
-                                        identity = com.example.audiostreamer.node.NodeIdentity(
-                                            "${com.example.audiostreamer.node.NodeIdentity.ID_PREFIX}ep-${hostIp.replace(".", "-")}",
-                                            DiscoveryManager.getDeviceNameForIp(hostIp) ?: "Receiver $hostIp"
-                                        ),
-                                        capabilities = com.example.audiostreamer.node.NodeCapabilities.fromCapabilitiesMask(byteVal),
-                                        activeRole = com.example.audiostreamer.node.StreamRole.RECEIVER
-                                    )
+                    val byteVal = header.volumeOrCaps.toInt() and 0xFF
 
-                                val negotiated = com.example.audiostreamer.node.NodeCapabilityNegotiator.negotiate(localNode, remoteNodeInfo)
-                                clientNodeInfo[endpoint] = remoteNodeInfo
-                                HatDiagnostics.setLastNegotiatedCapabilities(negotiated)
-                                StreamState.update { it.copy(lastNegotiatedCapabilities = negotiated) }
-                                com.example.audiostreamer.node.HatLinkManager.recordNegotiatedCapabilitiesForRemote(hostIp, negotiated)
-                                com.example.audiostreamer.node.HatLinkManager.recordNegotiatedCapabilitiesForRemote(remoteNodeInfo.id, negotiated)
+                    when (header.packetType) {
+                        HatPacket.TYPE_RECEIVER_HEARTBEAT -> {
+                            val isNew = !clientRegistry.containsKey(endpoint)
+                            val currentConfig = activeNegotiatedConfig
+                            val payloadLen = header.payloadLength
+                            val rxExchange = if (payloadLen > 0 && recvPacket.length >= HatPacket.HEADER_SIZE + payloadLen) {
+                                com.example.audiostreamer.node.NodeCapabilityExchange.parseOrNull(recvBuf, HatPacket.HEADER_SIZE, payloadLen)
+                            } else null
 
-                                if (isNew && currentConfig != null) {
-                                    val isLegacyIncompatible = !currentConfig.canReceiverConsume(byteVal)
-                                    val isIncompatible = !negotiated.isCompatible && isLegacyIncompatible
-                                    if (isIncompatible) {
-                                        val capsDesc = AudioCapabilities.describeCapabilitiesMask(byteVal)
-                                        Log.w(TAG, "Declining incompatible receiver: $endpoint (${negotiated.details})")
-                                        try {
-                                            val declineHeader = currentConfig.createHeader(
-                                                packetType = HatPacket.TYPE_DISCONNECT,
-                                                sequenceNumber = 0,
-                                                payloadLength = 0,
-                                                timestamp = 0L
-                                            )
-                                            val declineBuf = ByteArray(AudioConfig.HEADER_SIZE)
-                                            HatPacket.writeHeader(declineBuf, 0, declineHeader)
-                                            val declinePkt = DatagramPacket(declineBuf, AudioConfig.HEADER_SIZE, endpoint.address, endpoint.port)
-                                            listenerSocket.send(declinePkt)
-                                        } catch (e: Exception) {
-                                            Log.w(TAG, "Failed to send disconnect to incompatible receiver $endpoint: ${e.message}")
-                                        }
-                                    } else {
-                                        if (byteVal != 0) {
-                                            clientCapabilities[endpoint] = byteVal
-                                            val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
-                                            prefs.edit().putInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, byteVal).apply()
-                                        }
-                                        if (!configuredEndpoints.contains(endpoint)) {
-                                            clientRegistry[endpoint] = SystemClock.elapsedRealtime()
-                                        }
-                                        val capsDesc = if (byteVal != 0) AudioCapabilities.describeCapabilitiesMask(byteVal) else "default"
-                                        Log.i(TAG, "Registered compatible receiver: $endpoint (Summary: ${negotiated.summary()})")
-                                        HatDiagnostics.info(
-                                            "RECEIVER_JOIN",
-                                            mapOf(
-                                                "receiver" to endpoint.toString(),
-                                                "nodeId" to remoteNodeInfo.id,
-                                                "negotiated" to negotiated.summary(),
-                                                "capabilities" to byteVal,
-                                                "capabilityDesc" to capsDesc,
-                                                "generation" to currentConfig.generation,
-                                                "activeReceivers" to clientRegistry.size
-                                            )
+                            val localNode = com.example.audiostreamer.node.LocalNodeManager.getLocalNode()
+                            val hostIp = endpoint.address.hostAddress ?: ""
+                            val remoteNodeInfo = rxExchange?.toNodeInfo(role = com.example.audiostreamer.node.StreamRole.RECEIVER)
+                                ?: com.example.audiostreamer.node.NodeInfo(
+                                    identity = com.example.audiostreamer.node.NodeIdentity(
+                                        "${com.example.audiostreamer.node.NodeIdentity.ID_PREFIX}ep-${hostIp.replace(".", "-")}",
+                                        DiscoveryManager.getDeviceNameForIp(hostIp) ?: "Receiver $hostIp"
+                                    ),
+                                    capabilities = com.example.audiostreamer.node.NodeCapabilities.fromCapabilitiesMask(byteVal),
+                                    activeRole = com.example.audiostreamer.node.StreamRole.RECEIVER
+                                )
+
+                            val negotiated = com.example.audiostreamer.node.NodeCapabilityNegotiator.negotiate(localNode, remoteNodeInfo)
+                            clientNodeInfo[endpoint] = remoteNodeInfo
+                            HatDiagnostics.setLastNegotiatedCapabilities(negotiated)
+                            StreamState.update { it.copy(lastNegotiatedCapabilities = negotiated) }
+                            com.example.audiostreamer.node.HatLinkManager.recordNegotiatedCapabilitiesForRemote(hostIp, negotiated)
+                            com.example.audiostreamer.node.HatLinkManager.recordNegotiatedCapabilitiesForRemote(remoteNodeInfo.id, negotiated)
+
+                            if (isNew && currentConfig != null) {
+                                val isLegacyIncompatible = !currentConfig.canReceiverConsume(byteVal)
+                                val isIncompatible = !negotiated.isCompatible && isLegacyIncompatible
+                                if (isIncompatible) {
+                                    val capsDesc = AudioCapabilities.describeCapabilitiesMask(byteVal)
+                                    Log.w(TAG, "Rejected receiver $endpoint: incompatible ($capsDesc / ${negotiated.details})")
+                                    try {
+                                        val declineHeader = currentConfig.createHeader(
+                                            packetType = HatPacket.TYPE_DISCONNECT,
+                                            sequenceNumber = 0,
+                                            payloadLength = 0,
+                                            timestamp = 0L
                                         )
-                                        sendStreamAnnouncement(currentConfig, remoteVolumePercent.get(), endpoint)
-                                        publishConnectedReceivers()
+                                        val declineBuf = ByteArray(AudioConfig.HEADER_SIZE)
+                                        HatPacket.writeHeader(declineBuf, 0, declineHeader)
+                                        val declinePkt = DatagramPacket(declineBuf, AudioConfig.HEADER_SIZE, endpoint.address, endpoint.port)
+                                        listenerSocket.send(declinePkt)
+                                    } catch (e: Exception) {
+                                        Log.w(TAG, "Failed to send disconnect to incompatible receiver $endpoint: ${e.message}")
                                     }
                                 } else {
                                     if (byteVal != 0) {
@@ -983,24 +967,61 @@ class AudioCaptureService : Service() {
                                         val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
                                         prefs.edit().putInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, byteVal).apply()
                                     }
-                                    if (!configuredEndpoints.contains(endpoint)) {
-                                        clientRegistry[endpoint] = SystemClock.elapsedRealtime()
-                                    }
-                                    com.example.audiostreamer.node.HatLinkManager.recordLinkActivity(
-                                        endpoint.address.hostAddress ?: "",
-                                        endpoint.port,
-                                        1L,
-                                        0L,
-                                        isRx = true
+                                    clientRegistry[endpoint] = SystemClock.elapsedRealtime()
+                                    val capsDesc = if (byteVal != 0) AudioCapabilities.describeCapabilitiesMask(byteVal) else "default"
+                                    Log.i(TAG, "Receiver registered: $endpoint (reason: valid TYPE_RECEIVER_HEARTBEAT, caps: $capsDesc, summary: ${negotiated.summary()})")
+                                    HatDiagnostics.info(
+                                        "RECEIVER_JOIN",
+                                        mapOf(
+                                            "receiver" to endpoint.toString(),
+                                            "nodeId" to remoteNodeInfo.id,
+                                            "negotiated" to negotiated.summary(),
+                                            "capabilities" to byteVal,
+                                            "capabilityDesc" to capsDesc,
+                                            "generation" to currentConfig.generation,
+                                            "activeReceivers" to clientRegistry.size
+                                        )
                                     )
-                                    if (isNew && currentConfig != null) {
-                                        sendStreamAnnouncement(currentConfig, remoteVolumePercent.get(), endpoint)
-                                        publishConnectedReceivers()
-                                    }
+                                    sendStreamAnnouncement(currentConfig, remoteVolumePercent.get(), endpoint)
+                                    publishConnectedReceivers()
+                                }
+                            } else {
+                                if (byteVal != 0) {
+                                    clientCapabilities[endpoint] = byteVal
+                                    val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+                                    prefs.edit().putInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, byteVal).apply()
+                                }
+                                clientRegistry[endpoint] = SystemClock.elapsedRealtime()
+                                Log.d(TAG, "Receiver heartbeat refreshed: $endpoint")
+                                com.example.audiostreamer.node.HatLinkManager.recordLinkActivity(
+                                    endpoint.address.hostAddress ?: "",
+                                    endpoint.port,
+                                    1L,
+                                    0L,
+                                    isRx = true
+                                )
+                                if (isNew) {
+                                    val capsDesc = if (byteVal != 0) AudioCapabilities.describeCapabilitiesMask(byteVal) else "default"
+                                    Log.i(TAG, "Receiver registered: $endpoint (pre-config, caps: $capsDesc)")
+                                    publishConnectedReceivers()
                                 }
                             }
-                            HatPacket.TYPE_DISCONNECT -> {
-                                Log.i(TAG, "Received client disconnect signal from $endpoint. Pausing media.")
+                        }
+                        HatPacket.TYPE_REVERSE_VOLUME_SYNC -> {
+                            val incomingVol = byteVal.coerceIn(0, 100)
+                            Log.i(TAG, "Received reverse volume sync: $incomingVol% from $endpoint")
+                            remoteVolumePercent.set(incomingVol)
+                            StreamState.update { it.copy(remoteVolumePercent = incomingVol) }
+                            if (clientRegistry.containsKey(endpoint)) {
+                                clientRegistry[endpoint] = SystemClock.elapsedRealtime()
+                                Log.d(TAG, "Receiver heartbeat refreshed: $endpoint (via volume sync)")
+                            } else {
+                                Log.d(TAG, "Reverse volume sync from non-admitted endpoint $endpoint - volume applied, receiver NOT created")
+                            }
+                        }
+                        HatPacket.TYPE_DISCONNECT -> {
+                            if (clientRegistry.containsKey(endpoint)) {
+                                Log.i(TAG, "Receiver removed: $endpoint (reason: received TYPE_DISCONNECT)")
                                 clientRegistry.remove(endpoint)
                                 clientCapabilities.remove(endpoint)
                                 clientDiag.remove(endpoint)
@@ -1020,7 +1041,12 @@ class AudioCaptureService : Service() {
                                 if (clientRegistry.isEmpty()) {
                                     pauseSystemMediaPlayback()
                                 }
+                            } else {
+                                Log.d(TAG, "Rejected packet from $endpoint: TYPE_DISCONNECT from non-connected client")
                             }
+                        }
+                        else -> {
+                            Log.d(TAG, "Rejected packet from $endpoint: type $typeName (${header.packetType}) is not a receiver admission control packet")
                         }
                     }
                 } catch (e: SocketException) {

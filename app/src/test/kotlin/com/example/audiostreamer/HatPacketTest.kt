@@ -472,4 +472,36 @@ class HatPacketTest {
         assertEquals(gen, parsed?.generation)
         assertEquals(gen, parsed?.timestamp)
     }
+
+    @Test
+    fun testReceiverHeartbeatWithPayloadAccepted() {
+        val payload = "{\"nodeId\":\"hat-node-rx\",\"caps\":123}".toByteArray(Charsets.UTF_8)
+        val header = HatPacket.Header(
+            packetType = HatPacket.TYPE_RECEIVER_HEARTBEAT,
+            payloadLength = payload.size,
+            volumeOrCaps = 42
+        )
+        val buffer = ByteArray(HatPacket.HEADER_SIZE + payload.size)
+        HatPacket.writeHeader(buffer, 0, header)
+        System.arraycopy(payload, 0, buffer, HatPacket.HEADER_SIZE, payload.size)
+
+        val parsed = HatPacket.parseHeader(buffer, 0, buffer.size)
+        assertNotNull("Receiver heartbeat with payload must parse successfully", parsed)
+        assertEquals(HatPacket.TYPE_RECEIVER_HEARTBEAT, parsed?.packetType)
+        assertEquals(payload.size, parsed?.payloadLength)
+        assertEquals(42.toByte(), parsed?.volumeOrCaps)
+    }
+
+    @Test
+    fun testDescribePacketType() {
+        assertEquals("AUDIO", HatPacket.describePacketType(HatPacket.TYPE_AUDIO))
+        assertEquals("RECEIVER_HEARTBEAT", HatPacket.describePacketType(HatPacket.TYPE_RECEIVER_HEARTBEAT))
+        assertEquals("REVERSE_VOLUME_SYNC", HatPacket.describePacketType(HatPacket.TYPE_REVERSE_VOLUME_SYNC))
+        assertEquals("DISCONNECT", HatPacket.describePacketType(HatPacket.TYPE_DISCONNECT))
+        assertEquals("DISCOVERY_PROBE", HatPacket.describePacketType(HatPacket.TYPE_DISCOVERY_PROBE))
+        assertEquals("DISCOVERY_ANNOUNCE", HatPacket.describePacketType(HatPacket.TYPE_DISCOVERY_ANNOUNCE))
+        assertEquals("TRANSMITTER_ANNOUNCE", HatPacket.describePacketType(HatPacket.TYPE_TRANSMITTER_ANNOUNCE))
+        assertEquals("STREAM_INVITE", HatPacket.describePacketType(HatPacket.TYPE_STREAM_INVITE))
+        org.junit.Assert.assertTrue(HatPacket.describePacketType(0x7F).startsWith("UNKNOWN"))
+    }
 }

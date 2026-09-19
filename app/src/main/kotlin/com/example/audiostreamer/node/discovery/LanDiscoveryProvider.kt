@@ -122,6 +122,12 @@ object LanDiscoveryProvider {
      */
     fun startDiscovery(context: Context) {
         synchronized(lock) {
+            if (!NetworkUtils.isLanAvailable(context)) {
+                _state.value = LanDiscoveryState.STOPPED
+                _statusMessage.value = "LAN unavailable (Offline)"
+                Log.d(TAG, "Cannot start LAN discovery: LAN unavailable")
+                return
+            }
             if (_isScanning.value || isDiscoveryRegistered.get()) {
                 Log.d(TAG, "Discovery already active or registered")
                 return
@@ -256,6 +262,10 @@ object LanDiscoveryProvider {
         port: Int = AudioConfig.DEFAULT_PORT
     ) {
         synchronized(lock) {
+            if (!NetworkUtils.isLanAvailable(context)) {
+                Log.d(TAG, "Skipping DNS-SD node advertisement: LAN unavailable")
+                return
+            }
             if (_isAdvertising.value || isRegistrationActive.get()) {
                 Log.d(TAG, "Advertisement already active, skipping re-registration")
                 return
