@@ -115,23 +115,36 @@ android {
     val keyAlias = findProp("RELEASE_KEY_ALIAS", "KEY_ALIAS", "releaseKeyAlias")
     val keyPassword = findProp("RELEASE_KEY_PASSWORD", "KEY_PASSWORD", "releaseKeyPassword")
 
+    val defaultKeystoreFile = rootProject.file("keystore/release.keystore")
     val resolvedKeystoreFile = storeFilePath?.let {
         val f = file(it)
         if (f.exists()) f else rootProject.file(it).takeIf { rf -> rf.exists() }
-    }
+    } ?: defaultKeystoreFile.takeIf { it.exists() }
+
+    val resolvedStorePassword = if (storePassword.isNullOrBlank() && resolvedKeystoreFile == defaultKeystoreFile) "android" else storePassword
+    val resolvedKeyAlias = if (keyAlias.isNullOrBlank() && resolvedKeystoreFile == defaultKeystoreFile) "androiddebugkey" else keyAlias
+    val resolvedKeyPassword = if (keyPassword.isNullOrBlank() && resolvedKeystoreFile == defaultKeystoreFile) "android" else keyPassword
 
     val hasReleaseSigning = resolvedKeystoreFile != null &&
-        !storePassword.isNullOrBlank() &&
-        !keyAlias.isNullOrBlank() &&
-        !keyPassword.isNullOrBlank()
+        !resolvedStorePassword.isNullOrBlank() &&
+        !resolvedKeyAlias.isNullOrBlank() &&
+        !resolvedKeyPassword.isNullOrBlank()
 
     signingConfigs {
+        if (defaultKeystoreFile.exists()) {
+            getByName("debug") {
+                this.storeFile = defaultKeystoreFile
+                this.storePassword = "android"
+                this.keyAlias = "androiddebugkey"
+                this.keyPassword = "android"
+            }
+        }
         if (hasReleaseSigning) {
             create("release") {
                 this.storeFile = resolvedKeystoreFile
-                this.storePassword = storePassword
-                this.keyAlias = keyAlias
-                this.keyPassword = keyPassword
+                this.storePassword = resolvedStorePassword
+                this.keyAlias = resolvedKeyAlias
+                this.keyPassword = resolvedKeyPassword
             }
         }
     }
