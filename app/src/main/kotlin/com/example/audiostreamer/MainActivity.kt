@@ -1133,7 +1133,8 @@ class MainActivity : AppCompatActivity() {
 
                     // Multi-receiver Volume Control Row
                     layoutDeviceVolume.visibility = View.VISIBLE
-                    val vol = rec.volumePercent.coerceIn(0, 100)
+                    val masterVol = AudioCaptureService.remoteVolumePercent.get()
+                    val vol = rec.volumePercent.coerceIn(0, masterVol)
                     if (!sliderDeviceVol.isPressed && sliderDeviceVol.value.toInt() != vol) {
                         sliderDeviceVol.value = vol.toFloat()
                         tvDeviceVolVal.text = "$vol%"
@@ -1151,20 +1152,25 @@ class MainActivity : AppCompatActivity() {
                         sliderDeviceVol.clearOnChangeListeners()
                         sliderDeviceVol.addOnChangeListener { _, value, fromUser ->
                             if (fromUser) {
-                                val newVol = value.toInt()
-                                tvDeviceVolVal.text = "$newVol%"
+                                val curMaster = AudioCaptureService.remoteVolumePercent.get()
+                                val clampedVol = value.toInt().coerceIn(0, curMaster)
+                                if (value.toInt() > curMaster) {
+                                    sliderDeviceVol.value = curMaster.toFloat()
+                                }
+                                tvDeviceVolVal.text = "$clampedVol%"
                                 val volIntent = Intent(this, AudioCaptureService::class.java).apply {
                                     action = AudioCaptureService.ACTION_SET_RECEIVER_VOLUME
                                     putExtra(AudioCaptureService.EXTRA_RECEIVER_IP, rec.ip)
                                     putExtra(AudioCaptureService.EXTRA_RECEIVER_NODE_ID, rec.nodeId)
-                                    putExtra(AudioCaptureService.EXTRA_VOLUME_PERCENT, newVol)
+                                    putExtra(AudioCaptureService.EXTRA_VOLUME_PERCENT, clampedVol)
                                 }
                                 startService(volIntent)
                             }
                         }
 
                         btnDeviceMute.setOnClickListener {
-                            val newVol = if (rec.isMuted || vol == 0) 100 else 0
+                            val curMaster = AudioCaptureService.remoteVolumePercent.get()
+                            val newVol = if (rec.isMuted || vol == 0) curMaster else 0
                             val volIntent = Intent(this, AudioCaptureService::class.java).apply {
                                 action = AudioCaptureService.ACTION_SET_RECEIVER_VOLUME
                                 putExtra(AudioCaptureService.EXTRA_RECEIVER_IP, rec.ip)
@@ -1199,8 +1205,24 @@ class MainActivity : AppCompatActivity() {
                 tvConnectedDevicesTitle.text = "CONNECTED TRANSMITTER"
                 tvConnectedCountBadge.text = "1 active"
 
-                val itemView = layoutInflater.inflate(R.layout.item_connection_device, layoutConnectedDevicesContainer, false)
-                val tvName = itemView.findViewById<TextView>(R.id.tv_device_name)
+                // Remove any non-receiver views if present
+                val toRemove = mutableListOf<View>()
+                for (i in 0 until layoutConnectedDevicesContainer.childCount) {
+                    val child = layoutConnectedDevicesContainer.getChildAt(i)
+                    if (child.tag != "connected_transmitter") {
+                        toRemove.add(child)
+                    }
+                }
+                toRemove.forEach { layoutConnectedDevicesContainer.removeView(it) }
+
+                var itemView = layoutConnectedDevicesContainer.findViewWithTag<View>("connected_transmitter")
+                val isNew = (itemView == null)
+                if (isNew) {
+                    itemView = layoutInflater.inflate(R.layout.item_connection_device, layoutConnectedDevicesContainer, false)
+                    itemView.tag = "connected_transmitter"
+                }
+
+                val tvName = itemView!!.findViewById<TextView>(R.id.tv_device_name)
                 val tvDetails = itemView.findViewById<TextView>(R.id.tv_device_details)
                 val dot = itemView.findViewById<View>(R.id.view_active_dot)
                 val tvTransportBadge = itemView.findViewById<TextView>(R.id.tv_device_transport_badge)
@@ -1226,13 +1248,15 @@ class MainActivity : AppCompatActivity() {
                 btnConnect.visibility = View.GONE
                 btnDisconnect.visibility = View.VISIBLE
 
-                btnDisconnect.setOnClickListener {
-                    stopReceiverService()
-                    Toast.makeText(this, "Stopped receiver playback", Toast.LENGTH_SHORT).show()
+                if (isNew) {
+                    btnDisconnect.setOnClickListener {
+                        stopReceiverService()
+                        Toast.makeText(this, "Stopped receiver playback", Toast.LENGTH_SHORT).show()
+                    }
+                    layoutConnectedDevicesContainer.addView(itemView)
                 }
-
-                layoutConnectedDevicesContainer.addView(itemView)
             } else {
+                layoutConnectedDevicesContainer.removeAllViews()
                 layoutConnectedDevicesSection.visibility = View.GONE
             }
         }
