@@ -941,11 +941,13 @@ class AudioCaptureService : Service() {
                     DatagramSocket(InetSocketAddress(InetAddress.getByName(matchingLocalIp), 0)).apply {
                         sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
                         broadcast = true
+                        try { trafficClass = 0xB8 } catch (ignored: Exception) {}
                     }
                 } else {
                     DatagramSocket().apply {
                         sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
                         broadcast = true
+                        try { trafficClass = 0xB8 } catch (ignored: Exception) {}
                     }
                 }
             } catch (e: Exception) {
@@ -953,9 +955,11 @@ class AudioCaptureService : Service() {
                 DatagramSocket().apply {
                     sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
                     broadcast = true
+                    try { trafficClass = 0xB8 } catch (ignored: Exception) {}
                 }
             }
         }
+        try { socket.trafficClass = 0xB8 } catch (ignored: Exception) {}
         udpSocket = socket
         activeTransport = transport
 
@@ -1485,6 +1489,7 @@ class AudioCaptureService : Service() {
             var intervalPackets = 0
             var intervalBytes = 0
             var lastStatsTime = SystemClock.elapsedRealtime()
+            var lastVuTime = SystemClock.elapsedRealtime()
             val audioMeter = AudioLevelMeter(AudioConfig.CHANNELS)
             var silentPacketsCount = 0
             var isSilenceSuppressed = false
@@ -1531,6 +1536,14 @@ class AudioCaptureService : Service() {
                             }
 
                             val now = SystemClock.elapsedRealtime()
+                            if (now - lastVuTime >= 200L) {
+                                val intervalPeak = audioMeter.getAndResetIntervalPeak()
+                                val peakPercent = AudioLevelMeter.calculatePeakPercent(intervalPeak, is24Bit = false)
+                                StreamState.update {
+                                    it.copy(audioPeakPercent = if (isSilenceSuppressed) 0 else peakPercent)
+                                }
+                                lastVuTime = now
+                            }
                             val shouldSendHeartbeat = isSilenceSuppressed && (now - lastHeartbeatTime >= AudioConfig.SILENCE_HEARTBEAT_INTERVAL_MS)
 
                             val framesInChunk = if (isOpusActive) 960 else if (isAacActive) 1024 else (activePayloadSize / 4)
@@ -1634,15 +1647,19 @@ class AudioCaptureService : Service() {
                                 val bps = smoothBps.toInt()
 
                                 val activeEndpointsCount = clientRegistry.size
+                                val intervalPeak = audioMeter.getAndResetIntervalPeak()
+                                val peakPercent = AudioLevelMeter.calculatePeakPercent(intervalPeak, is24Bit = false)
                                 StreamState.update {
                                     it.copy(
                                         packetsTotal = totalPackets,
                                         packetsPerSec = pps,
                                         bytesPerSec = bps,
                                         isSilenceSuppressed = isSilenceSuppressed,
-                                        activeReceiversCount = activeEndpointsCount
+                                        activeReceiversCount = activeEndpointsCount,
+                                        audioPeakPercent = if (isSilenceSuppressed) 0 else peakPercent
                                     )
                                 }
+                                lastVuTime = nowStats
 
                                 intervalPackets = 0
                                 intervalBytes = 0
@@ -1724,6 +1741,14 @@ class AudioCaptureService : Service() {
                             }
 
                             val now = SystemClock.elapsedRealtime()
+                            if (now - lastVuTime >= 200L) {
+                                val intervalPeak = audioMeter.getAndResetIntervalPeak()
+                                val peakPercent = AudioLevelMeter.calculatePeakPercent(intervalPeak, is24Bit = isEffective24)
+                                StreamState.update {
+                                    it.copy(audioPeakPercent = if (isSilenceSuppressed) 0 else peakPercent)
+                                }
+                                lastVuTime = now
+                            }
                             val shouldSendHeartbeat = isSilenceSuppressed && (now - lastHeartbeatTime >= AudioConfig.SILENCE_HEARTBEAT_INTERVAL_MS)
 
                             if (!isSilenceSuppressed || shouldSendHeartbeat) {
@@ -1829,15 +1854,19 @@ class AudioCaptureService : Service() {
                                 val bps = smoothBps.toInt()
 
                                 val activeEndpointsCount = clientRegistry.size
+                                val intervalPeak = audioMeter.getAndResetIntervalPeak()
+                                val peakPercent = AudioLevelMeter.calculatePeakPercent(intervalPeak, is24Bit = isEffective24)
                                 StreamState.update {
                                     it.copy(
                                         packetsTotal = totalPackets,
                                         packetsPerSec = pps,
                                         bytesPerSec = bps,
                                         isSilenceSuppressed = isSilenceSuppressed,
-                                        activeReceiversCount = activeEndpointsCount
+                                        activeReceiversCount = activeEndpointsCount,
+                                        audioPeakPercent = if (isSilenceSuppressed) 0 else peakPercent
                                     )
                                 }
+                                lastVuTime = nowStats
 
                                 intervalPackets = 0
                                 intervalBytes = 0

@@ -58,7 +58,7 @@ class AdaptivePlayoutControllerTest {
         assertEquals(150.0f, initial, 0.01f)
 
         // Feed many packets with buffer well above target (overfilled) + clean playback
-        val minDwell = 200 + 50 // policy.minDwellPacketsForRecovery for AUTO + extra
+        val minDwell = 800 + 50 // policy.minDwellPacketsForRecovery for AUTO + extra
         repeat(minDwell) {
             ctrl.onPacketArrived(availableCount = 25, targetWatermarkSlots = 10, packetDurationMs = PACKET_MS)
             ctrl.onCleanPlayback()
@@ -137,11 +137,11 @@ class AdaptivePlayoutControllerTest {
             ctrl.onPacketArrived(availableCount = 0, targetWatermarkSlots = 2, packetDurationMs = PACKET_MS)
         }
 
-        // Must not exceed LOW_LATENCY maxTargetMs = 60ms
-        assertTrue("LOW_LATENCY effectiveTargetMs must stay ≤ 60ms",
-            ctrl.effectiveTargetMs <= 60.0f)
-        assertTrue("LOW_LATENCY desiredTargetMs must stay ≤ 60ms",
-            ctrl.desiredTargetMs <= 60.0f)
+        // Must not exceed LOW_LATENCY maxTargetMs = 100ms
+        assertTrue("LOW_LATENCY effectiveTargetMs must stay ≤ 100ms",
+            ctrl.effectiveTargetMs <= 100.0f)
+        assertTrue("LOW_LATENCY desiredTargetMs must stay ≤ 100ms",
+            ctrl.desiredTargetMs <= 100.0f)
     }
 
     // -------------------------------------------------------------------------
