@@ -120,18 +120,25 @@ object BleDiscoveryManager {
             .build()
 
         // Encode compact payload in service data
-        // Format: JSON with {"r": role, "s": ssid, "p": pass, "g": goIp}
-        val json = JSONObject().apply {
-            put("r", if (role == "receiver") "rx" else "tx")
-            if (!p2pSsid.isNullOrEmpty()) put("s", p2pSsid)
-            if (!p2pPassphrase.isNullOrEmpty()) put("p", p2pPassphrase)
-            if (!p2pGoIp.isNullOrEmpty()) put("g", p2pGoIp)
+        val roleStr = if (role == "receiver") "rx" else "tx"
+        val payloadStr = if (!p2pSsid.isNullOrEmpty()) {
+            val pass = p2pPassphrase ?: ""
+            "H:$roleStr:$p2pSsid:$pass"
+        } else {
+            JSONObject().apply {
+                put("r", roleStr)
+            }.toString()
         }
-        val serviceDataBytes = json.toString().toByteArray(Charsets.UTF_8).take(24).toByteArray()
+        val serviceDataBytes = payloadStr.toByteArray(Charsets.UTF_8).take(26).toByteArray()
 
-        val data = AdvertiseData.Builder()
-            .setIncludeDeviceName(true)
+        val advertiseData = AdvertiseData.Builder()
+            .setIncludeDeviceName(false)
+            .setIncludeTxPowerLevel(false)
             .addServiceUuid(HAT_PARCEL_UUID)
+            .build()
+
+        val scanResponseData = AdvertiseData.Builder()
+            .setIncludeDeviceName(true)
             .addServiceData(HAT_PARCEL_UUID, serviceDataBytes)
             .build()
 
@@ -148,7 +155,7 @@ object BleDiscoveryManager {
         }
 
         try {
-            advertiser?.startAdvertising(settings, data, advertiseCallback)
+            advertiser?.startAdvertising(settings, advertiseData, scanResponseData, advertiseCallback)
         } catch (e: Exception) {
             Log.e(TAG, "Exception starting BLE advertisement: ${e.message}")
             _isAdvertising.value = false
@@ -259,7 +266,21 @@ object BleDiscoveryManager {
         if (serviceData.isNotEmpty()) {
             try {
                 val str = String(serviceData, Charsets.UTF_8).trim()
-                if (str.startsWith("{") && str.endsWith("}")) {
+                if (str.startsWith("H:")) {
+                    val parts = str.substring(2).split(":")
+                    if (parts.isNotEmpty()) {
+                        role = if (parts[0] == "tx") "transmitter" else "receiver"
+                    }
+                    if (parts.size > 1 && parts[1].isNotEmpty()) {
+                        p2pSsid = parts[1]
+                    }
+                    if (parts.size > 2 && parts[2].isNotEmpty()) {
+                        p2pPassphrase = parts[2]
+                    }
+                    if (parts.size > 3 && parts[3].isNotEmpty()) {
+                        p2pGoIp = parts[3]
+                    }
+                } else if (str.startsWith("{") && str.endsWith("}")) {
                     val json = JSONObject(str)
                     val r = json.optString("r", "rx")
                     role = if (r == "tx") "transmitter" else "receiver"
