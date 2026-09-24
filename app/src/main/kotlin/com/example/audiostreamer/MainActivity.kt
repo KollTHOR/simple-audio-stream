@@ -1054,8 +1054,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateConnectedDevicesUi(t: Telemetry) {
-        layoutConnectedDevicesContainer.removeAllViews()
-
         if (currentMode == Mode.TRANSMITTER) {
             val receivers = t.connectedReceivers
             if (receivers.isNotEmpty()) {
@@ -1063,9 +1061,26 @@ class MainActivity : AppCompatActivity() {
                 tvConnectedDevicesTitle.text = "CONNECTED RECEIVERS"
                 tvConnectedCountBadge.text = "${receivers.size} active"
 
+                val activeIps = receivers.map { it.ip }.toSet()
+                val toRemove = mutableListOf<View>()
+                for (i in 0 until layoutConnectedDevicesContainer.childCount) {
+                    val child = layoutConnectedDevicesContainer.getChildAt(i)
+                    val tagIp = child.tag as? String
+                    if (tagIp == null || tagIp !in activeIps) {
+                        toRemove.add(child)
+                    }
+                }
+                toRemove.forEach { layoutConnectedDevicesContainer.removeView(it) }
+
                 for (rec in receivers) {
-                    val itemView = layoutInflater.inflate(R.layout.item_connection_device, layoutConnectedDevicesContainer, false)
-                    val tvName = itemView.findViewById<TextView>(R.id.tv_device_name)
+                    var itemView = layoutConnectedDevicesContainer.findViewWithTag<View>(rec.ip)
+                    val isNew = (itemView == null)
+                    if (isNew) {
+                        itemView = layoutInflater.inflate(R.layout.item_connection_device, layoutConnectedDevicesContainer, false)
+                        itemView.tag = rec.ip
+                    }
+
+                    val tvName = itemView!!.findViewById<TextView>(R.id.tv_device_name)
                     val tvDetails = itemView.findViewById<TextView>(R.id.tv_device_details)
                     val dot = itemView.findViewById<View>(R.id.view_active_dot)
                     val tvTransportBadge = itemView.findViewById<TextView>(R.id.tv_device_transport_badge)
@@ -1119,8 +1134,10 @@ class MainActivity : AppCompatActivity() {
                     // Multi-receiver Volume Control Row
                     layoutDeviceVolume.visibility = View.VISIBLE
                     val vol = rec.volumePercent.coerceIn(0, 100)
-                    sliderDeviceVol.value = vol.toFloat()
-                    tvDeviceVolVal.text = "$vol%"
+                    if (!sliderDeviceVol.isPressed && sliderDeviceVol.value.toInt() != vol) {
+                        sliderDeviceVol.value = vol.toFloat()
+                        tvDeviceVolVal.text = "$vol%"
+                    }
 
                     if (rec.isMuted || vol == 0) {
                         btnDeviceMute.setImageResource(R.drawable.ic_volume_mute)
@@ -1130,11 +1147,24 @@ class MainActivity : AppCompatActivity() {
                         btnDeviceMute.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
                     }
 
-                    sliderDeviceVol.clearOnChangeListeners()
-                    sliderDeviceVol.addOnChangeListener { _, value, fromUser ->
-                        if (fromUser) {
-                            val newVol = value.toInt()
-                            tvDeviceVolVal.text = "$newVol%"
+                    if (isNew) {
+                        sliderDeviceVol.clearOnChangeListeners()
+                        sliderDeviceVol.addOnChangeListener { _, value, fromUser ->
+                            if (fromUser) {
+                                val newVol = value.toInt()
+                                tvDeviceVolVal.text = "$newVol%"
+                                val volIntent = Intent(this, AudioCaptureService::class.java).apply {
+                                    action = AudioCaptureService.ACTION_SET_RECEIVER_VOLUME
+                                    putExtra(AudioCaptureService.EXTRA_RECEIVER_IP, rec.ip)
+                                    putExtra(AudioCaptureService.EXTRA_RECEIVER_NODE_ID, rec.nodeId)
+                                    putExtra(AudioCaptureService.EXTRA_VOLUME_PERCENT, newVol)
+                                }
+                                startService(volIntent)
+                            }
+                        }
+
+                        btnDeviceMute.setOnClickListener {
+                            val newVol = if (rec.isMuted || vol == 0) 100 else 0
                             val volIntent = Intent(this, AudioCaptureService::class.java).apply {
                                 action = AudioCaptureService.ACTION_SET_RECEIVER_VOLUME
                                 putExtra(AudioCaptureService.EXTRA_RECEIVER_IP, rec.ip)
@@ -1143,31 +1173,21 @@ class MainActivity : AppCompatActivity() {
                             }
                             startService(volIntent)
                         }
-                    }
 
-                    btnDeviceMute.setOnClickListener {
-                        val newVol = if (rec.isMuted || vol == 0) 100 else 0
-                        val volIntent = Intent(this, AudioCaptureService::class.java).apply {
-                            action = AudioCaptureService.ACTION_SET_RECEIVER_VOLUME
-                            putExtra(AudioCaptureService.EXTRA_RECEIVER_IP, rec.ip)
-                            putExtra(AudioCaptureService.EXTRA_RECEIVER_NODE_ID, rec.nodeId)
-                            putExtra(AudioCaptureService.EXTRA_VOLUME_PERCENT, newVol)
+                        btnDisconnect.setOnClickListener {
+                            val removeIntent = Intent(this, AudioCaptureService::class.java).apply {
+                                action = AudioCaptureService.ACTION_REMOVE_CLIENT
+                                putExtra(AudioCaptureService.EXTRA_TARGET_IP, rec.ip)
+                            }
+                            startService(removeIntent)
+                            Toast.makeText(this, "Disconnected ${rec.name.ifEmpty { rec.ip }}", Toast.LENGTH_SHORT).show()
                         }
-                        startService(volIntent)
-                    }
 
-                    btnDisconnect.setOnClickListener {
-                        val removeIntent = Intent(this, AudioCaptureService::class.java).apply {
-                            action = AudioCaptureService.ACTION_REMOVE_CLIENT
-                            putExtra(AudioCaptureService.EXTRA_TARGET_IP, rec.ip)
-                        }
-                        startService(removeIntent)
-                        Toast.makeText(this, "Disconnected ${rec.name.ifEmpty { rec.ip }}", Toast.LENGTH_SHORT).show()
+                        layoutConnectedDevicesContainer.addView(itemView)
                     }
-
-                    layoutConnectedDevicesContainer.addView(itemView)
                 }
             } else {
+                layoutConnectedDevicesContainer.removeAllViews()
                 layoutConnectedDevicesSection.visibility = View.GONE
             }
         } else {
@@ -1429,6 +1449,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onModeSwitched(oldMode: Mode, newMode: Mode) {
+        layoutConnectedDevicesContainer.removeAllViews()
         if (oldMode == Mode.RECEIVER && newMode == Mode.TRANSMITTER) {
             // 1. If receiver autonomous P2P group was active, tear it down
             if (switchReceiverP2p.isChecked || WifiDirectManager.isGroupCreated.value) {
@@ -1756,13 +1777,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateNfcUi(state: NfcBootstrapState) {
+        cardNfcTap.visibility = View.GONE
         when (state) {
             NfcBootstrapState.UNSUPPORTED -> {
-                cardNfcTap.visibility = View.GONE
                 badgeTransportNfc.visibility = View.GONE
             }
             NfcBootstrapState.DISABLED -> {
-                cardNfcTap.visibility = View.VISIBLE
                 badgeTransportNfc.visibility = View.VISIBLE
                 badgeTransportNfc.setTextColor(ContextCompat.getColor(this, R.color.status_orange))
                 ivNfcIcon.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_orange))
@@ -1770,7 +1790,6 @@ class MainActivity : AppCompatActivity() {
                 tvNfcSubtitle.text = "Tap to open settings and enable NFC tap-to-pair"
             }
             NfcBootstrapState.READY -> {
-                cardNfcTap.visibility = View.VISIBLE
                 badgeTransportNfc.visibility = View.VISIBLE
                 badgeTransportNfc.setTextColor(ContextCompat.getColor(this, R.color.status_green))
                 ivNfcIcon.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
@@ -1782,14 +1801,12 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             NfcBootstrapState.PROCESSING_TAP -> {
-                cardNfcTap.visibility = View.VISIBLE
                 badgeTransportNfc.visibility = View.VISIBLE
                 ivNfcIcon.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_green))
                 tvNfcTitle.text = "Pairing via NFC..."
                 tvNfcSubtitle.text = "Exchanging node connection parameters"
             }
             NfcBootstrapState.STOPPED, NfcBootstrapState.ERROR -> {
-                cardNfcTap.visibility = View.VISIBLE
                 badgeTransportNfc.visibility = View.VISIBLE
                 badgeTransportNfc.setTextColor(ContextCompat.getColor(this, R.color.status_red))
                 ivNfcIcon.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_red))
@@ -2159,11 +2176,12 @@ class MainActivity : AppCompatActivity() {
                 btnModeReceiver.iconTint = ColorStateList.valueOf(colorTextSecondary)
 
                 tvModeGuide.text = "Broadcast audio to nearby speakers, receivers, or devices"
-                layoutSavedProfilesSection.visibility = View.VISIBLE
+                layoutSavedProfilesSection.visibility = View.GONE
                 layoutDiscoverySection.visibility = View.VISIBLE
                 layoutReceiverP2p.visibility = View.GONE
                 layoutVolumeControl.visibility = View.VISIBLE
-                layoutAdvancedHeader.visibility = View.VISIBLE
+                layoutAdvancedHeader.visibility = View.GONE
+                layoutAdvancedContent.visibility = View.GONE
                 etTargetIp.isEnabled = !isSenderActive && !isStarting && !isStopping
                 etPort.isEnabled = !isSenderActive && !isStarting && !isStopping
 
@@ -2206,9 +2224,10 @@ class MainActivity : AppCompatActivity() {
                 tvModeGuide.text = "Accept and play audio streams from nearby transmitters"
                 layoutDiscoverySection.visibility = View.GONE
                 layoutSavedProfilesSection.visibility = View.GONE
-                layoutReceiverP2p.visibility = View.VISIBLE
+                layoutReceiverP2p.visibility = View.GONE
                 layoutVolumeControl.visibility = View.GONE
-                layoutAdvancedHeader.visibility = View.VISIBLE
+                layoutAdvancedHeader.visibility = View.GONE
+                layoutAdvancedContent.visibility = View.GONE
                 etPort.isEnabled = !isSinkActive && !isStarting && !isStopping
 
                 when {
@@ -2244,7 +2263,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun sendVolumeIntent(volumePercent: Int) {
         val clamped = volumePercent.coerceIn(0, 100)
-        sliderRemoteVol.value = clamped.toFloat()
+        if (!sliderRemoteVol.isPressed && sliderRemoteVol.value.toInt() != clamped) {
+            sliderRemoteVol.value = clamped.toFloat()
+        }
         tvRemoteVolLabel.text = "$clamped%"
         val intent = Intent(this, AudioCaptureService::class.java).apply {
             action = AudioCaptureService.ACTION_SET_VOLUME

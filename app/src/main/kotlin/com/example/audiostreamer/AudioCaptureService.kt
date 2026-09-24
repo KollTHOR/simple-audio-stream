@@ -369,6 +369,7 @@ class AudioCaptureService : Service() {
     private fun updateRemoteVolume(newVolume: Int) {
         val clamped = newVolume.coerceIn(0, 100)
         remoteVolumePercent.set(clamped)
+        receiverVolumes.clear()
         StreamState.update { it.copy(remoteVolumePercent = clamped) }
         Log.d(TAG, "Remote volume updated: $clamped%")
 

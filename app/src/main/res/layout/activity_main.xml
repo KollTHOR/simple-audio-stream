@@ -74,6 +74,7 @@
                             android:id="@+id/tv_header_node_name"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
+                            android:maxWidth="150dp"
                             android:text="HAT Node"
                             android:textSize="12sp"
                             android:textStyle="bold"
@@ -89,7 +90,8 @@
                             android:textSize="11sp"
                             android:textColor="@color/text_secondary"
                             android:maxLines="1"
-                            android:ellipsize="end" />
+                            android:ellipsize="end"
+                            android:visibility="gone" />
                     </LinearLayout>
                 </LinearLayout>
 
@@ -350,6 +352,7 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginBottom="12dp"
+                            android:visibility="gone"
                             android:clickable="true"
                             android:focusable="true"
                             android:foreground="?attr/selectableItemBackground"
@@ -539,6 +542,7 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:orientation="vertical"
+                            android:visibility="gone"
                             android:layout_marginBottom="10dp">
 
                             <LinearLayout
@@ -757,6 +761,7 @@
                             android:layout_height="wrap_content"
                             android:orientation="horizontal"
                             android:gravity="center_vertical"
+                            android:visibility="gone"
                             android:clickable="true"
                             android:focusable="true"
                             android:paddingTop="10dp"
@@ -951,12 +956,13 @@
                             android:progressTint="@color/status_green"
                             android:layout_marginBottom="10dp" />
 
-                        <!-- Audio Pipeline & Buffer Monitor -->
+                        <!-- Audio Pipeline & Buffer Monitor (Available in Diagnostics) -->
                         <LinearLayout
                             android:id="@+id/layout_pipeline_details"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:orientation="vertical"
+                            android:visibility="gone"
                             android:background="@color/input_bg"
                             android:padding="10dp"
                             android:layout_marginBottom="10dp">
@@ -1059,11 +1065,12 @@
                             android:textColor="@color/text_secondary"
                             android:lineSpacingMultiplier="1.15" />
 
-                        <!-- Diagnostics Action Buttons -->
+                        <!-- Diagnostics Action Buttons (Hidden from Stream Monitor) -->
                         <LinearLayout
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:orientation="horizontal"
+                            android:visibility="gone"
                             android:layout_marginTop="12dp">
 
                             <com.google.android.material.button.MaterialButton
