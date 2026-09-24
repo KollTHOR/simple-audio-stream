@@ -260,7 +260,7 @@ data class TransportProfile(
                         maxUnderrunFrames = AudioConfig.AUTO_MAX_UNDERRUN_FRAMES,
                         waitTimeoutMs = AudioConfig.AUTO_WAIT_TIMEOUT_MS,
                         targetWatermarkSlots = AudioConfig.AUTO_TARGET_WATERMARK_SLOTS,
-                        targetWatermarkMs = 50.0f
+                        targetWatermarkMs = 80.0f
                     )
                 }
                 LatencyTarget.RELIABLE -> {

@@ -67,11 +67,13 @@ class LanTransport(
                         DatagramSocket(InetSocketAddress(InetAddress.getByName(matchingLocalIp), 0)).apply {
                             sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
                             broadcast = true
+                            try { trafficClass = 0xB8 } catch (ignored: Exception) {}
                         }
                     } else {
                         DatagramSocket().apply {
                             sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
                             broadcast = true
+                            try { trafficClass = 0xB8 } catch (ignored: Exception) {}
                         }
                     }
                 } catch (e: Exception) {
@@ -79,6 +81,7 @@ class LanTransport(
                     DatagramSocket().apply {
                         sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
                         broadcast = true
+                        try { trafficClass = 0xB8 } catch (ignored: Exception) {}
                     }
                 }
                 _socket = sock
@@ -111,6 +114,7 @@ class LanTransport(
                     reuseAddress = true
                     broadcast = true
                     receiveBufferSize = AudioConfig.SOCKET_RECEIVE_BUFFER_BYTES
+                    try { trafficClass = 0xB8 } catch (ignored: Exception) {}
                     bind(InetSocketAddress(port))
                 }
                 _socket = sock

@@ -44,7 +44,7 @@ class JitterBuffer(
     private val driftController = DriftController(AudioConfig.getPreRollPackets(initialProfile).toFloat())
     private val adaptiveController = AdaptivePlayoutController(
         initialProfile = initialProfile,
-        initialTargetMs = if (initialProfile == AudioConfig.PROFILE_AUTO) 50.0f else 40.0f,
+        initialTargetMs = if (initialProfile == AudioConfig.PROFILE_AUTO) 80.0f else 40.0f,
         initialPacketDurationMs = 5.0f
     )
     private val plc = PacketLossConcealment()
@@ -106,6 +106,9 @@ class JitterBuffer(
     }
 
     fun calculateFramesForPayload(length: Int): Int {
+        if (isOpusStream) {
+            return 960
+        }
         if (isCompressedStream) {
             return if (length in 1..400) 960 else 1024
         }
@@ -200,13 +203,13 @@ class JitterBuffer(
                 val nominalDuration = packetDurationMs
                 val nominalSlots = kotlin.math.ceil(200.0f / nominalDuration).toInt()
                 preRollThreshold = if (normProfile == AudioConfig.PROFILE_AUTO) {
-                    kotlin.math.ceil(50.0f / nominalDuration).toInt().coerceIn(2, slotCount / 4)
+                    kotlin.math.ceil(80.0f / nominalDuration).toInt().coerceIn(2, slotCount / 4)
                 } else {
                     nominalSlots.coerceIn(4, slotCount / 4)
                 }
                 maxUnderrunFrames = AudioConfig.getMaxUnderrunFrames(normProfile)
                 waitTimeoutMs = AudioConfig.getReceiverWaitTimeoutMs(normProfile)
-                val targetMs = if (normProfile == AudioConfig.PROFILE_AUTO) 50.0f else 200.0f
+                val targetMs = if (normProfile == AudioConfig.PROFILE_AUTO) 80.0f else 200.0f
                 val targetSlots = kotlin.math.ceil(targetMs / nominalDuration).toInt().coerceIn(2, slotCount - 4)
                 jitterEstimator.configure(targetSlots, targetMs)
                 adaptiveController.configure(normProfile, targetMs, packetDurationMs)
@@ -482,10 +485,12 @@ class JitterBuffer(
                     return ReadResult(fillLen, ReadStatus.BUFFERING)
                 }
 
-                // Root-cause fix #3: scale wait timeout with effective target for AUTO profile
+                // Root-cause fix: scale wait timeout with effective target for AUTO and LOW_LATENCY profiles
                 // so packets arriving within the target window are never prematurely declared underruns.
-                val dynamicWaitMs = if (!isCompressedStream && currentProfile == AudioConfig.PROFILE_AUTO) {
+                val dynamicWaitMs = if (currentProfile == AudioConfig.PROFILE_AUTO) {
                     maxOf(waitTimeoutMs, minOf(jitterEstimator.targetWatermarkMs.toLong(), 150L))
+                } else if (isCompressedStream || currentProfile == AudioConfig.PROFILE_LOW_LATENCY || currentProfile == AudioConfig.PROFILE_VIDEO) {
+                    maxOf(waitTimeoutMs, minOf(jitterEstimator.targetWatermarkMs.toLong(), 100L))
                 } else {
                     waitTimeoutMs
                 }

@@ -554,8 +554,10 @@ class AudioSinkService : Service() {
                 reuseAddress = true
                 broadcast = true
                 receiveBufferSize = AudioConfig.SOCKET_RECEIVE_BUFFER_BYTES // 1MB OS receive buffer
+                try { trafficClass = 0xB8 } catch (ignored: Exception) {}
                 bind(InetSocketAddress(port))
             }
+            try { socket.trafficClass = 0xB8 } catch (ignored: Exception) {}
             datagramSocket = socket
             activeTransport = transport
 

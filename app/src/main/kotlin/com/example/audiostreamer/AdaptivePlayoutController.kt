@@ -70,7 +70,7 @@ class AdaptivePlayoutController(
                 profile == AudioConfig.PROFILE_VIDEO ||
                 profile.equals("LOW_LATENCY", ignoreCase = true) ->
                 ProfilePolicy(
-                    minTargetMs = 35f, maxTargetMs = 60f,
+                    minTargetMs = 35f, maxTargetMs = 100f,
                     upwardSlewMsPerUpdate = 0.5f, downwardSlewMsPerUpdate = 0.2f,
                     deadBandMs = 3f, minDwellPacketsForRecovery = 100,
                     overfilledThresholdSlots = 6, underfilledThresholdSlots = 2
@@ -87,7 +87,7 @@ class AdaptivePlayoutController(
                 ProfilePolicy(
                     minTargetMs = 35f, maxTargetMs = 400f,
                     upwardSlewMsPerUpdate = 2.0f, downwardSlewMsPerUpdate = 0.5f,
-                    deadBandMs = 8f, minDwellPacketsForRecovery = 200,
+                    deadBandMs = 8f, minDwellPacketsForRecovery = 800,
                     overfilledThresholdSlots = 12, underfilledThresholdSlots = 3
                 )
         }
@@ -184,7 +184,7 @@ class AdaptivePlayoutController(
      */
     fun onUnderrun() {
         val emergencyIncrease = when {
-            policy.maxTargetMs <= 60f  -> 5f   // LOW_LATENCY: small bump
+            policy.maxTargetMs <= 100f -> 10f  // LOW_LATENCY: half an Opus packet bump
             policy.maxTargetMs <= 250f -> 20f  // MUSIC
             else                       -> 30f  // AUTO: significant
         }
