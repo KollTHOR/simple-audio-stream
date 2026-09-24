@@ -81,21 +81,47 @@
                         android:backgroundTint="@color/status_green"
                         android:visibility="gone" />
 
-                    <!-- Transport Badge -->
-                    <TextView
-                        android:id="@+id/tv_device_transport_badge"
+                    <!-- Badges Container -->
+                    <LinearLayout
+                        android:id="@+id/layout_device_badges"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
+                        android:orientation="horizontal"
                         android:layout_marginStart="6dp"
-                        android:text="LAN"
-                        android:textSize="9sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/pill_text"
-                        android:background="@drawable/bg_stat_badge"
-                        android:paddingStart="5dp"
-                        android:paddingEnd="5dp"
-                        android:paddingTop="1dp"
-                        android:paddingBottom="1dp" />
+                        android:gravity="center_vertical">
+
+                        <!-- Primary Transport Badge -->
+                        <TextView
+                            android:id="@+id/tv_device_transport_badge"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="LAN"
+                            android:textSize="9sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/pill_text"
+                            android:background="@drawable/bg_stat_badge"
+                            android:paddingStart="5dp"
+                            android:paddingEnd="5dp"
+                            android:paddingTop="1dp"
+                            android:paddingBottom="1dp" />
+
+                        <!-- Secondary Method Badge -->
+                        <TextView
+                            android:id="@+id/tv_badge_secondary"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="4dp"
+                            android:text="BLE"
+                            android:textSize="9sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/status_blue"
+                            android:background="@drawable/bg_stat_badge"
+                            android:paddingStart="5dp"
+                            android:paddingEnd="5dp"
+                            android:paddingTop="1dp"
+                            android:paddingBottom="1dp"
+                            android:visibility="gone" />
+                    </LinearLayout>
                 </LinearLayout>
 
                 <TextView

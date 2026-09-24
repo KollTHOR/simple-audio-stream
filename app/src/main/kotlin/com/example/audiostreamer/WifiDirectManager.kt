@@ -405,6 +405,34 @@ object WifiDirectManager {
     }
 
     @SuppressLint("MissingPermission")
+    fun stopPeerDiscovery(context: Context) {
+        val mgr = wifiP2pManager ?: run {
+            _isScanningPeers.value = false
+            return
+        }
+        val ch = channel ?: run {
+            _isScanningPeers.value = false
+            return
+        }
+        try {
+            mgr.stopPeerDiscovery(ch, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    _isScanningPeers.value = false
+                    Log.i(TAG, "WifiP2pManager.stopPeerDiscovery() succeeded")
+                }
+                override fun onFailure(reason: Int) {
+                    _isScanningPeers.value = false
+                    Log.w(TAG, "WifiP2pManager.stopPeerDiscovery() failed: ${parseReason(reason)}")
+                }
+            })
+        } catch (e: Exception) {
+            _isScanningPeers.value = false
+            Log.w(TAG, "Exception calling stopPeerDiscovery: ${e.message}")
+        }
+    }
+
+
+    @SuppressLint("MissingPermission")
     fun connectWithCredentials(
         context: Context,
         ssid: String,

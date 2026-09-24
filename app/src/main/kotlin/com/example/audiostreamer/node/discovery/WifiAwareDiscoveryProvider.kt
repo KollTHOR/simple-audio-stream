@@ -256,6 +256,11 @@ object WifiAwareDiscoveryProvider {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
+     * Checks if Wi-Fi Aware is supported on this device.
+     */
+    fun isSupported(context: Context): Boolean = probeCapability(context)
+
+    /**
      * Probes for Wi-Fi Aware capability without starting any session.
      * Safe to call unconditionally — returns early and sets state [WifiAwareDiscoveryState.UNSUPPORTED]
      * if the feature is absent, with the exact reason logged.
@@ -367,6 +372,35 @@ object WifiAwareDiscoveryProvider {
         ensureHandlerThread()
         attach(appCtx, afterAttach = { subscribe(appCtx) })
     }
+
+    /** Closes the active subscribe session and resets subscribing state. */
+    fun stopSubscribing() {
+        Log.i(TAG, "stopSubscribing() called")
+        try { subscribeSession?.close() } catch (e: Exception) {
+            Log.e(TAG, "Error closing subscribe session: ${e.message}")
+        }
+        subscribeSession = null
+        _isSubscribing.value = false
+        if (!_isPublishing.value) {
+            _state.value = WifiAwareDiscoveryState.IDLE
+            _statusMessage.value = "Idle"
+        }
+    }
+
+    /** Closes the active publish session and resets publishing state. */
+    fun stopPublishing() {
+        Log.i(TAG, "stopPublishing() called")
+        try { publishSession?.close() } catch (e: Exception) {
+            Log.e(TAG, "Error closing publish session: ${e.message}")
+        }
+        publishSession = null
+        _isPublishing.value = false
+        if (!_isSubscribing.value) {
+            _state.value = WifiAwareDiscoveryState.IDLE
+            _statusMessage.value = "Idle"
+        }
+    }
+
 
     /** Tears down all sessions and stops the provider cleanly. */
     fun stopAll() {
