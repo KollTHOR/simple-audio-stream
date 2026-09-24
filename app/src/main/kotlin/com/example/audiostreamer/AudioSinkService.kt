@@ -151,6 +151,9 @@ class AudioSinkService : Service() {
     private var jitterBuffer = JitterBuffer()
     private val fecDecoder by lazy { FecDecoder(jitterBuffer) }
     private var currentRemoteVolume = 100
+    private var isFirstPacketReceived = false
+    private val isSyncDeviceVolumeEnabled: Boolean
+        get() = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE).getBoolean(AudioConfig.PREF_KEY_SYNC_DEVICE_VOLUME, true)
     private var localVolumeObserver: ContentObserver? = null
     private var lastSentLocalVolume: Int = -1
     @Volatile private var ignoreLocalVolumeUntil: Long = 0L
@@ -538,9 +541,10 @@ class AudioSinkService : Service() {
             } else {
                 AudioConfig.ENCODING
             }
+            isFirstPacketReceived = false
+            registerLocalVolumeObserver()
             configureAudioTrack(AudioConfig.SAMPLE_RATE_48000, initialEncoding, currentProfile, currentRemoteVolume)
             jitterBuffer.reset()
-            registerLocalVolumeObserver()
             startDiagnosticsSession()
 
             // Bind UDP socket via transport abstraction
@@ -672,9 +676,15 @@ class AudioSinkService : Service() {
                                 continue
                             }
 
+                            val senderAddr = packet.address
+                            if (senderAddr != null && (lastSenderAddress == null || senderAddr.hostAddress != lastSenderAddress?.hostAddress)) {
+                                lastSenderAddress = senderAddr
+                                lastSenderHost = senderAddr.hostAddress ?: "Transmitter"
+                                lastSenderPort = packet.port
+                            }
+
                             // Check for Stream Announcement / Control packet
                             if (header.packetType == HatPacket.TYPE_CONTROL) {
-                                val senderAddr = packet.address
                                 val senderHost = senderAddr?.hostAddress ?: lastSenderHost
                                 lastSenderHost = senderHost
 
@@ -715,29 +725,7 @@ class AudioSinkService : Service() {
                                     }
                                 }
 
-                                val volume = (header.volumeOrCaps.toInt() and 0xFF).coerceIn(0, 100)
-                                if (volume != currentRemoteVolume) {
-                                    currentRemoteVolume = volume
-                                    lastSentLocalVolume = volume
-                                    val floatVol = (volume / 100.0f).coerceIn(0.0f, 1.0f)
-                                    audioTrack?.setVolume(floatVol)
-
-                                    if (syncDeviceVolume) {
-                                        try {
-                                            val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                                            val minVol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                                                audioManager.getStreamMinVolume(AudioManager.STREAM_MUSIC)
-                                            } else 0
-                                            val targetStep = minVol + ((maxVol - minVol) * (volume / 100.0f)).roundToInt().coerceIn(minVol, maxVol)
-                                            if (audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) != targetStep) {
-                                                ignoreLocalVolumeUntil = SystemClock.elapsedRealtime() + 500L
-                                                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetStep, 0)
-                                            }
-                                        } catch (e: Exception) {
-                                            Log.w(TAG, "Failed syncing receiver hardware volume: ${e.message}")
-                                        }
-                                    }
-                                }
+                                applyIncomingVolume(header.volumeOrCaps, audioManager)
 
                                 totalPackets++
                                 totalBytes += length
@@ -839,37 +827,7 @@ class AudioSinkService : Service() {
                             )
 
                             // Apply remote volume control if changed -- 0ms software scaling, zero IPC, zero cutouts!
-                            val volume = (header.volumeOrCaps.toInt() and 0xFF).coerceIn(0, 100)
-                            if (volume != currentRemoteVolume) {
-                                currentRemoteVolume = volume
-                                lastSentLocalVolume = volume
-                                val floatVol = (volume / 100.0f).coerceIn(0.0f, 1.0f)
-                                activeTrack.setVolume(floatVol)
-
-                                if (syncDeviceVolume) {
-                                    try {
-                                        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                                        val minVol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                                            audioManager.getStreamMinVolume(AudioManager.STREAM_MUSIC)
-                                        } else 0
-                                        val targetStep = minVol + ((maxVol - minVol) * (volume / 100.0f)).roundToInt().coerceIn(minVol, maxVol)
-                                        if (audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) != targetStep) {
-                                            ignoreLocalVolumeUntil = SystemClock.elapsedRealtime() + 500L
-                                            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetStep, 0)
-                                        }
-                                    } catch (e: Exception) {
-                                        Log.w(TAG, "Failed syncing receiver hardware volume: ${e.message}")
-                                    }
-                                }
-                                Log.d(TAG, "Applied remote volume: $volume%")
-                            }
-
-                            // Cache sender host string -- avoid repeated DNS reverse-lookups
-                            val senderAddr = packet.address
-                            if (senderAddr != null && senderAddr !== lastSenderAddress) {
-                                lastSenderAddress = senderAddr
-                                lastSenderHost = senderAddr.hostAddress ?: "Transmitter"
-                            }
+                            applyIncomingVolume(header.volumeOrCaps, audioManager)
 
                             // Route PCM, Opus, or AAC audio to JitterBuffer
                             val payloadLen = header.payloadLength
@@ -1960,8 +1918,53 @@ class AudioSinkService : Service() {
         if (currentInstance == this) {
             currentInstance = null
         }
+        isFirstPacketReceived = false
+        lastSenderAddress = null
+        lastSenderPort = null
+        lastSentLocalVolume = -1
         super.onDestroy()
         Log.d(TAG, "AudioSinkService destroyed")
+    }
+
+    private fun applyIncomingVolume(headerVolumeByte: Byte, audioManager: AudioManager) {
+        val volume = (headerVolumeByte.toInt() and 0xFF).coerceIn(0, 100)
+        val syncEnabled = isSyncDeviceVolumeEnabled
+        val isFirst = !isFirstPacketReceived
+        if (isFirst) {
+            isFirstPacketReceived = true
+            if (syncEnabled && lastSentLocalVolume >= 0) {
+                // Do not let default packet volume stomp on initial hardware volume
+                currentRemoteVolume = lastSentLocalVolume
+                val floatVol = (lastSentLocalVolume / 100.0f).coerceIn(0.0f, 1.0f)
+                audioTrack?.setVolume(floatVol)
+                sendVolumeSyncDatagram(lastSentLocalVolume)
+                return
+            }
+        }
+
+        if (volume != currentRemoteVolume || isFirst) {
+            currentRemoteVolume = volume
+            lastSentLocalVolume = volume
+            val floatVol = (volume / 100.0f).coerceIn(0.0f, 1.0f)
+            audioTrack?.setVolume(floatVol)
+
+            if (syncEnabled) {
+                try {
+                    val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                    val minVol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        audioManager.getStreamMinVolume(AudioManager.STREAM_MUSIC)
+                    } else 0
+                    val targetStep = minVol + ((maxVol - minVol) * (volume / 100.0f)).roundToInt().coerceIn(minVol, maxVol)
+                    if (audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) != targetStep) {
+                        ignoreLocalVolumeUntil = SystemClock.elapsedRealtime() + 500L
+                        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetStep, 0)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed syncing receiver hardware volume: ${e.message}")
+                }
+            }
+            Log.d(TAG, "Applied remote volume: $volume% (syncEnabled=$syncEnabled)")
+        }
     }
 
     private fun registerLocalVolumeObserver() {
@@ -1977,6 +1980,7 @@ class AudioSinkService : Service() {
                 val range = maxVol - minVol
                 if (range > 0) {
                     lastSentLocalVolume = (((curVol - minVol).toFloat() / range) * 100).roundToInt().coerceIn(0, 100)
+                    currentRemoteVolume = lastSentLocalVolume
                 }
             }
 
@@ -2007,7 +2011,7 @@ class AudioSinkService : Service() {
     }
 
     private fun checkAndSendLocalVolumeSync() {
-        if (!isRunning.get()) return
+        if (!isRunning.get() || !isSyncDeviceVolumeEnabled) return
         try {
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
             val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)

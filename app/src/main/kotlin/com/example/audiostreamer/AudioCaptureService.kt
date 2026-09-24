@@ -82,14 +82,18 @@ class AudioCaptureService : Service() {
         val currentStreamGeneration = java.util.concurrent.atomic.AtomicLong(0L)
 
         fun getReceiverVolume(ip: String, nodeId: String? = null): Int {
-            if (nodeId != null && receiverVolumes.containsKey(nodeId)) {
-                return receiverVolumes[nodeId] ?: remoteVolumePercent.get()
+            val master = remoteVolumePercent.get()
+            val custom = if (nodeId != null && receiverVolumes.containsKey(nodeId)) {
+                receiverVolumes[nodeId]
+            } else {
+                receiverVolumes[ip]
             }
-            return receiverVolumes[ip] ?: remoteVolumePercent.get()
+            return (custom ?: master).coerceIn(0, master)
         }
 
         fun setReceiverVolume(ip: String?, nodeId: String?, volume: Int) {
-            val clamped = volume.coerceIn(0, 100)
+            val master = remoteVolumePercent.get()
+            val clamped = volume.coerceIn(0, master)
             if (!ip.isNullOrBlank()) receiverVolumes[ip] = clamped
             if (!nodeId.isNullOrBlank()) receiverVolumes[nodeId] = clamped
         }
@@ -199,9 +203,10 @@ class AudioCaptureService : Service() {
             ACTION_SET_RECEIVER_VOLUME -> {
                 val ip = intent.getStringExtra(EXTRA_RECEIVER_IP) ?: intent.getStringExtra(EXTRA_TARGET_IP)
                 val nodeId = intent.getStringExtra(EXTRA_RECEIVER_NODE_ID)
-                val newVol = intent.getIntExtra(EXTRA_VOLUME_PERCENT, 100).coerceIn(0, 100)
+                val master = remoteVolumePercent.get()
+                val newVol = intent.getIntExtra(EXTRA_VOLUME_PERCENT, master).coerceIn(0, master)
                 setReceiverVolume(ip, nodeId, newVol)
-                Log.d(TAG, "Set receiver volume: ip=$ip, nodeId=$nodeId, vol=$newVol%")
+                Log.d(TAG, "Set receiver volume: ip=$ip, nodeId=$nodeId, vol=$newVol% (master ceiling=$master%)")
                 publishConnectedReceivers()
                 if (!ip.isNullOrBlank()) {
                     val targetEp = clientRegistry.keys.firstOrNull { it.address.hostAddress == ip }
@@ -278,7 +283,8 @@ class AudioCaptureService : Service() {
                 Log.i(TAG, "Dynamically added multi-unicast client: $ep")
                 val currentConfig = activeNegotiatedConfig
                 if (currentConfig != null) {
-                    sendStreamAnnouncement(currentConfig, remoteVolumePercent.get(), ep)
+                    val targetVol = getReceiverVolume(ip)
+                    sendStreamAnnouncement(currentConfig, targetVol, ep)
                 }
                 publishConnectedReceivers()
             } catch (e: Exception) {
@@ -369,14 +375,33 @@ class AudioCaptureService : Service() {
     private fun updateRemoteVolume(newVolume: Int) {
         val clamped = newVolume.coerceIn(0, 100)
         remoteVolumePercent.set(clamped)
-        receiverVolumes.clear()
+        val clampedReceivers = mutableListOf<ClientEndpoint>()
+        for (entry in receiverVolumes.entries) {
+            if (entry.value > clamped) {
+                entry.setValue(clamped)
+            }
+        }
+        for (ep in clientRegistry.keys) {
+            val host = ep.address.hostAddress ?: ""
+            val knownNode = clientNodeInfo[ep]
+            val currentRecVol = getReceiverVolume(host, knownNode?.id)
+            if (currentRecVol > clamped) {
+                setReceiverVolume(host, knownNode?.id, clamped)
+                clampedReceivers.add(ep)
+            }
+        }
         StreamState.update { it.copy(remoteVolumePercent = clamped) }
-        Log.d(TAG, "Remote volume updated: $clamped%")
+        publishConnectedReceivers()
+        Log.d(TAG, "Remote volume updated: $clamped% (clamped ${clampedReceivers.size} receivers)")
 
-        // If streaming is actively running, streamThread transmits the new volume in the next 5ms audio packet.
-        // Only dispatch out-of-band UDP control packet if streaming is idle.
+        // If streaming is actively running, streamThread transmits destVol in the next 5ms audio packet.
+        // If streaming is idle, broadcast master volume or notify clamped receivers.
         if (streamThread == null || !streamThread!!.isAlive) {
             sendControlPacket(clamped)
+        } else {
+            for (ep in clampedReceivers) {
+                sendControlPacket(clamped, ep)
+            }
         }
     }
 
@@ -1029,7 +1054,8 @@ class AudioCaptureService : Service() {
                                             "activeReceivers" to clientRegistry.size
                                         )
                                     )
-                                    sendStreamAnnouncement(currentConfig, remoteVolumePercent.get(), endpoint)
+                                    val targetVol = getReceiverVolume(endpoint.address.hostAddress ?: "", remoteNodeInfo.id)
+                                    sendStreamAnnouncement(currentConfig, targetVol, endpoint)
                                     publishConnectedReceivers()
                                 }
                             } else {
@@ -1056,14 +1082,21 @@ class AudioCaptureService : Service() {
                         }
                         HatPacket.TYPE_REVERSE_VOLUME_SYNC -> {
                             val incomingVol = byteVal.coerceIn(0, 100)
-                            Log.i(TAG, "Received reverse volume sync: $incomingVol% from $endpoint")
-                            remoteVolumePercent.set(incomingVol)
-                            StreamState.update { it.copy(remoteVolumePercent = incomingVol) }
+                            val clientIp = endpoint.address.hostAddress ?: ""
+                            val knownNode = clientNodeInfo[endpoint]
+                            val masterVol = remoteVolumePercent.get()
+                            val effectiveVol = minOf(incomingVol, masterVol)
+                            setReceiverVolume(clientIp, knownNode?.id, effectiveVol)
+                            Log.i(TAG, "Received reverse volume sync from $endpoint: raw=$incomingVol%, effective=$effectiveVol% (master ceiling=$masterVol%)")
+                            publishConnectedReceivers()
                             if (clientRegistry.containsKey(endpoint)) {
                                 clientRegistry[endpoint] = SystemClock.elapsedRealtime()
                                 Log.d(TAG, "Receiver heartbeat refreshed: $endpoint (via volume sync)")
                             } else {
-                                Log.d(TAG, "Reverse volume sync from non-admitted endpoint $endpoint - volume applied, receiver NOT created")
+                                Log.d(TAG, "Reverse volume sync from non-admitted endpoint $endpoint - receiver volume saved, receiver NOT admitted")
+                            }
+                            if (incomingVol > masterVol) {
+                                sendControlPacket(effectiveVol, endpoint)
                             }
                         }
                         HatPacket.TYPE_DISCONNECT -> {
