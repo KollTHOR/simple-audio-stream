@@ -116,7 +116,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var layoutDiscoverySection: View
     private var layoutAvailableDevicesBody: View? = null
     private var ivAvailableSectionChevron: ImageView? = null
-    private var isAvailableSectionExpanded: Boolean = true
+    private var isAvailableSectionExpanded: Boolean = false
     private lateinit var tvDiscoveryTitle: TextView
     private lateinit var pbDiscoveryScanning: ProgressBar
     private lateinit var tvDiscoveryScanningText: TextView
@@ -502,7 +502,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<View>(R.id.header_available_devices)?.setOnClickListener {
             isAvailableSectionExpanded = !isAvailableSectionExpanded
             layoutAvailableDevicesBody?.visibility = if (isAvailableSectionExpanded) View.VISIBLE else View.GONE
-            ivAvailableSectionChevron?.animate()?.rotation(if (isAvailableSectionExpanded) 0f else 180f)?.setDuration(150)?.start()
+            ivAvailableSectionChevron?.animate()?.rotation(if (isAvailableSectionExpanded) 180f else 0f)?.setDuration(150)?.start()
         }
 
         tvDiscoveryTitle = findViewById(R.id.tv_discovery_title)
@@ -2462,12 +2462,6 @@ class MainActivity : AppCompatActivity() {
                         btnAction.text = getString(R.string.stop_stream)
                         btnAction.setIconResource(R.drawable.ic_stop)
                         btnAction.backgroundTintList = ColorStateList.valueOf(colorRed)
-                        // Auto-collapse available devices body when streaming to keep UI focused on controls
-                        if (layoutAvailableDevicesBody?.visibility == View.VISIBLE && isAvailableSectionExpanded) {
-                            isAvailableSectionExpanded = false
-                            layoutAvailableDevicesBody?.visibility = View.GONE
-                            ivAvailableSectionChevron?.rotation = 180f
-                        }
                     }
                     else -> {
                         btnAction.isEnabled = true
