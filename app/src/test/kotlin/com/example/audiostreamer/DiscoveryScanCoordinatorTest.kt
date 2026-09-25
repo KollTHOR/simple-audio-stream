@@ -39,11 +39,11 @@ class DiscoveryScanCoordinatorTest {
     @Test
     fun testPhaseTimeoutConstants() {
         // Suggested timeouts in specification:
-        // LAN: 3 seconds, Wi-Fi Direct: 4 seconds, Wi-Fi Aware: 4 seconds, BLE: 5 seconds
-        assertEquals(3000L, DiscoveryScanCoordinator.TIMEOUT_LAN_MS)
-        assertEquals(4000L, DiscoveryScanCoordinator.TIMEOUT_WIFI_DIRECT_MS)
-        assertEquals(4000L, DiscoveryScanCoordinator.TIMEOUT_WIFI_AWARE_MS)
-        assertEquals(5000L, DiscoveryScanCoordinator.TIMEOUT_BLE_MS)
+        // LAN: 30 seconds, Wi-Fi Direct: 30 seconds, Wi-Fi Aware: 30 seconds, BLE: 30 seconds
+        assertEquals(30000L, DiscoveryScanCoordinator.TIMEOUT_LAN_MS)
+        assertEquals(30000L, DiscoveryScanCoordinator.TIMEOUT_WIFI_DIRECT_MS)
+        assertEquals(30000L, DiscoveryScanCoordinator.TIMEOUT_WIFI_AWARE_MS)
+        assertEquals(30000L, DiscoveryScanCoordinator.TIMEOUT_BLE_MS)
     }
 
     @Test

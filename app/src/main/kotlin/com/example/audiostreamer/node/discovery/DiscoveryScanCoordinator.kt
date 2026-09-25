@@ -95,14 +95,15 @@ data class DiscoveryScanState(
 object DiscoveryScanCoordinator {
     private const val TAG = "DiscoveryScanCoordinator"
 
-    const val TIMEOUT_LAN_MS = 3_000L
-    const val TIMEOUT_WIFI_DIRECT_MS = 4_000L
-    const val TIMEOUT_WIFI_AWARE_MS = 4_000L
-    const val TIMEOUT_BLE_MS = 5_000L
+    const val TIMEOUT_LAN_MS = 30_000L
+    const val TIMEOUT_WIFI_DIRECT_MS = 30_000L
+    const val TIMEOUT_WIFI_AWARE_MS = 30_000L
+    const val TIMEOUT_BLE_MS = 30_000L
 
-    // When at least one device is found during a phase, allow up to 1000ms for secondary nodes
+    // When at least one device is found during a phase, allow 5000ms for secondary nodes
     // on the same transport to finish DNS-SD TXT / beacon resolution
-    const val SETTLE_WINDOW_MS = 1_000L
+    const val SETTLE_WINDOW_MS = 5_000L
+    const val MIN_SEARCH_MS = 5_000L
 
     private val lock = Any()
     private val isScanActive = AtomicBoolean(false)
@@ -213,18 +214,14 @@ object DiscoveryScanCoordinator {
                 LanDiscoveryProvider.startDiscovery(context)
             },
             stopProvider = {
-                LanDiscoveryProvider.stopDiscovery()
-                DiscoveryManager.stopDiscovery()
+                // Keep LAN listener running cumulatively in background throughout scan;
+                // full cleanup is executed by stopAllProviders() at scan completion.
             },
             countDiscovered = {
                 HatDiscoveryRegistry.discoveredNodes.value.count { it.hasSource(DiscoverySource.LAN) }
             }
         )
-
-        if (lanCompleted) {
-            Log.i(TAG, "LAN phase found device(s); completing scan early")
-            return
-        }
+        Log.i(TAG, "Local Wi-Fi phase complete (found=$lanCompleted); advancing to Wi-Fi Direct")
 
         // ── Phase 2: Wi-Fi Direct ────────────────────────────────────────────
         val directCompleted = runPhase(
@@ -245,11 +242,7 @@ object DiscoveryScanCoordinator {
                 HatDiscoveryRegistry.discoveredNodes.value.count { it.hasSource(DiscoverySource.WIFI_DIRECT) }
             }
         )
-
-        if (directCompleted) {
-            Log.i(TAG, "Wi-Fi Direct phase found device(s); completing scan early")
-            return
-        }
+        Log.i(TAG, "Wi-Fi Direct phase complete (found=$directCompleted); advancing to Wi-Fi Aware")
 
         // ── Phase 3: Wi-Fi Aware ─────────────────────────────────────────────
         val awareCompleted = runPhase(
@@ -269,14 +262,10 @@ object DiscoveryScanCoordinator {
                 HatDiscoveryRegistry.discoveredNodes.value.count { it.hasSource(DiscoverySource.WIFI_AWARE) }
             }
         )
-
-        if (awareCompleted) {
-            Log.i(TAG, "Wi-Fi Aware phase found device(s); completing scan early")
-            return
-        }
+        Log.i(TAG, "Wi-Fi Aware phase complete (found=$awareCompleted); advancing to BLE")
 
         // ── Phase 4: BLE Presence ────────────────────────────────────────────
-        runPhase(
+        val bleCompleted = runPhase(
             context = context,
             phase = DiscoveryScanPhase.BLE,
             timeoutMs = TIMEOUT_BLE_MS,
@@ -294,6 +283,7 @@ object DiscoveryScanCoordinator {
                 HatDiscoveryRegistry.discoveredNodes.value.count { it.hasSource(DiscoverySource.BLE) }
             }
         )
+        Log.i(TAG, "BLE phase complete (found=$bleCompleted); all sequential phases executed")
     }
 
     private suspend fun runPhase(
@@ -362,8 +352,8 @@ object DiscoveryScanCoordinator {
                 if (settleStartMs == 0L) {
                     settleStartMs = System.currentTimeMillis()
                 }
-                // Allow a brief settle window for secondary nodes to resolve
-                if (System.currentTimeMillis() - settleStartMs >= SETTLE_WINDOW_MS || elapsedMs >= timeoutMs) {
+                // Allow a settle window for secondary nodes to resolve, ensuring at least MIN_SEARCH_MS
+                if ((System.currentTimeMillis() - settleStartMs >= SETTLE_WINDOW_MS && elapsedMs >= MIN_SEARCH_MS) || elapsedMs >= timeoutMs) {
                     foundEarly = true
                     break
                 }
