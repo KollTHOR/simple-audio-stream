@@ -1821,7 +1821,12 @@ class AudioSinkService : Service() {
             .setContentIntent(activityIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setCategory(Notification.CATEGORY_TRANSPORT)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
+        }
 
         currentTrackArtwork?.let { builder.setLargeIcon(it) }
 
@@ -1852,7 +1857,11 @@ class AudioSinkService : Service() {
             builder.style = style
         }
 
-        return builder.build()
+        val notification = builder.build()
+
+        Log.i(TAG, "HAT_MEDIA_NOTIFICATION_CREATED: channelId=$CHANNEL_ID, importance=LOW, category=CATEGORY_TRANSPORT, style=MediaStyle, hasMediaSession=${sessionToken != null}, track=\"$currentTrackTitle\", hasArtwork=${currentTrackArtwork != null}")
+
+        return notification
     }
 
     private fun setupMediaSession() {
@@ -2033,9 +2042,12 @@ class AudioSinkService : Service() {
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Receives raw audio over UDP and plays via AudioTrack"
+                setShowBadge(false)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
             val manager = getSystemService(NotificationManager::class.java)
             manager?.createNotificationChannel(channel)
+            Log.i(TAG, "AudioSinkChannel configured: id=$CHANNEL_ID, importance=IMPORTANCE_LOW")
         }
     }
 
