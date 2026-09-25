@@ -255,31 +255,48 @@
                     app:cardBackgroundColor="@color/card_bg"
                     android:visibility="gone">
 
-                    <FrameLayout
+                    <androidx.constraintlayout.widget.ConstraintLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content">
 
-                        <!-- Scaled-up Blurred Artwork Background -->
+                        <!-- Scaled-up Blurred Artwork Background (anchored to content, cannot expand card) -->
                         <ImageView
                             android:id="@+id/iv_media_card_bg"
-                            android:layout_width="match_parent"
-                            android:layout_height="match_parent"
+                            android:layout_width="0dp"
+                            android:layout_height="0dp"
                             android:scaleType="centerCrop"
-                            android:visibility="gone" />
+                            android:visibility="gone"
+                            android:clickable="false"
+                            android:focusable="false"
+                            app:layout_constraintTop_toTopOf="@id/layout_media_card_content"
+                            app:layout_constraintBottom_toBottomOf="@id/layout_media_card_content"
+                            app:layout_constraintStart_toStartOf="@id/layout_media_card_content"
+                            app:layout_constraintEnd_toEndOf="@id/layout_media_card_content" />
 
                         <!-- Dark Scrim Overlay to ensure text readability -->
                         <View
                             android:id="@+id/view_media_card_scrim"
-                            android:layout_width="match_parent"
-                            android:layout_height="match_parent"
+                            android:layout_width="0dp"
+                            android:layout_height="0dp"
                             android:background="#B3121212"
-                            android:visibility="gone" />
+                            android:visibility="gone"
+                            android:clickable="false"
+                            android:focusable="false"
+                            app:layout_constraintTop_toTopOf="@id/layout_media_card_content"
+                            app:layout_constraintBottom_toBottomOf="@id/layout_media_card_content"
+                            app:layout_constraintStart_toStartOf="@id/layout_media_card_content"
+                            app:layout_constraintEnd_toEndOf="@id/layout_media_card_content" />
 
                         <LinearLayout
+                            android:id="@+id/layout_media_card_content"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:orientation="vertical"
-                            android:padding="@dimen/card_inner_padding">
+                            android:padding="@dimen/card_inner_padding"
+                            app:layout_constraintTop_toTopOf="parent"
+                            app:layout_constraintBottom_toBottomOf="parent"
+                            app:layout_constraintStart_toStartOf="parent"
+                            app:layout_constraintEnd_toEndOf="parent">
 
                         <!-- Track Info Row -->
                         <LinearLayout
@@ -380,7 +397,7 @@
                                 app:tint="@color/text_primary" />
                         </LinearLayout>
                     </LinearLayout>
-                </FrameLayout>
+                </androidx.constraintlayout.widget.ConstraintLayout>
             </com.google.android.material.card.MaterialCardView>
 
                 <!-- Standalone Connected Devices Card (Visible when 1+ devices connected) -->
