@@ -93,6 +93,17 @@
                             android:ellipsize="end"
                             android:visibility="gone" />
                     </LinearLayout>
+
+                    <ImageView
+                        android:id="@+id/btn_header_eq"
+                        android:layout_width="32dp"
+                        android:layout_height="32dp"
+                        android:layout_marginStart="8dp"
+                        android:padding="6dp"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:src="@drawable/ic_equalizer"
+                        app:tint="@color/text_primary"
+                        android:contentDescription="12-Band Equalizer" />
                 </LinearLayout>
 
                 <!-- Active Transports Badge Row (Material Chips) -->
@@ -230,6 +241,126 @@
                         app:iconPadding="6dp"
                         app:iconSize="18dp" />
                 </com.google.android.material.button.MaterialButtonToggleGroup>
+
+                <!-- Currently Playing Media & Remote Controls Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/card_media_playback"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
+
+                        <!-- Track Info Row -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical">
+
+                            <ImageView
+                                android:id="@+id/iv_media_art"
+                                android:layout_width="38dp"
+                                android:layout_height="38dp"
+                                android:layout_marginEnd="12dp"
+                                android:src="@drawable/ic_category_audio"
+                                android:background="@drawable/bg_badge"
+                                android:backgroundTint="@color/card_stroke"
+                                android:padding="8dp"
+                                app:tint="@color/text_primary" />
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    android:id="@+id/tv_media_title"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:text="Streaming Audio"
+                                    android:textSize="13sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_primary"
+                                    android:maxLines="1"
+                                    android:ellipsize="end" />
+
+                                <TextView
+                                    android:id="@+id/tv_media_artist"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:text="Transmitter"
+                                    android:textSize="11sp"
+                                    android:textColor="@color/text_secondary"
+                                    android:maxLines="1"
+                                    android:ellipsize="end" />
+                            </LinearLayout>
+
+                            <!-- Sync Permission Prompt Button (hidden if permission granted) -->
+                            <TextView
+                                android:id="@+id/btn_sync_media_permission"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Sync Info"
+                                android:textSize="11sp"
+                                android:textColor="@color/status_green"
+                                android:background="@drawable/bg_badge"
+                                android:backgroundTint="@color/card_stroke"
+                                android:paddingHorizontal="8dp"
+                                android:paddingVertical="4dp"
+                                android:visibility="gone" />
+                        </LinearLayout>
+
+                        <!-- Transport Controls Row -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center"
+                            android:layout_marginTop="8dp">
+
+                            <ImageView
+                                android:id="@+id/btn_media_prev"
+                                android:layout_width="38dp"
+                                android:layout_height="38dp"
+                                android:padding="8dp"
+                                android:background="?attr/selectableItemBackgroundBorderless"
+                                android:src="@drawable/ic_skip_previous"
+                                app:tint="@color/text_primary" />
+
+                            <ImageView
+                                android:id="@+id/btn_media_play_pause"
+                                android:layout_width="44dp"
+                                android:layout_height="44dp"
+                                android:layout_marginHorizontal="20dp"
+                                android:padding="10dp"
+                                android:background="@drawable/bg_badge"
+                                android:backgroundTint="@color/card_stroke"
+                                android:src="@drawable/ic_play"
+                                app:tint="@color/text_primary" />
+
+                            <ImageView
+                                android:id="@+id/btn_media_next"
+                                android:layout_width="38dp"
+                                android:layout_height="38dp"
+                                android:padding="8dp"
+                                android:background="?attr/selectableItemBackgroundBorderless"
+                                android:src="@drawable/ic_skip_next"
+                                app:tint="@color/text_primary" />
+                        </LinearLayout>
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
 
                 <!-- Standalone Connected Devices Card (Visible when 1+ devices connected) -->
                 <com.google.android.material.card.MaterialCardView

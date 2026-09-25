@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -168,6 +169,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var layoutVolumeControl: LinearLayout
     private lateinit var tvRemoteVolLabel: TextView
     private lateinit var sliderRemoteVol: Slider
+
+    // Equalizer & Media Playback Controls
+    private lateinit var btnHeaderEq: ImageView
+    private lateinit var cardMediaPlayback: MaterialCardView
+    private lateinit var tvMediaTitle: TextView
+    private lateinit var tvMediaArtist: TextView
+    private lateinit var btnSyncMediaPermission: TextView
+    private lateinit var btnMediaPrev: ImageView
+    private lateinit var btnMediaPlayPause: ImageView
+    private lateinit var btnMediaNext: ImageView
 
     private var currentMode: Mode = Mode.TRANSMITTER
     private var detectedLocalIp: String? = null
@@ -393,6 +404,60 @@ class MainActivity : AppCompatActivity() {
         }
         layoutTransportBadges.setOnClickListener {
             showNodeDetailsDialog()
+        }
+
+        btnHeaderEq = findViewById(R.id.btn_header_eq)
+        btnHeaderEq.setOnClickListener {
+            EqualizerBottomSheetDialogFragment().show(supportFragmentManager, "EqualizerBottomSheet")
+        }
+
+        cardMediaPlayback = findViewById(R.id.card_media_playback)
+        tvMediaTitle = findViewById(R.id.tv_media_title)
+        tvMediaArtist = findViewById(R.id.tv_media_artist)
+        btnSyncMediaPermission = findViewById(R.id.btn_sync_media_permission)
+        btnMediaPrev = findViewById(R.id.btn_media_prev)
+        btnMediaPlayPause = findViewById(R.id.btn_media_play_pause)
+        btnMediaNext = findViewById(R.id.btn_media_next)
+
+        btnMediaPlayPause.setOnClickListener {
+            if (AudioCaptureService.isRunning.get()) {
+                AudioCaptureService.currentInstance?.handleMediaControlCommand(HatPacket.MEDIA_CMD_PLAY_PAUSE)
+            } else if (AudioSinkService.isRunning.get()) {
+                AudioSinkService.currentInstance?.sendMediaControl(HatPacket.MEDIA_CMD_PLAY_PAUSE)
+            }
+        }
+        btnMediaPrev.setOnClickListener {
+            if (AudioCaptureService.isRunning.get()) {
+                AudioCaptureService.currentInstance?.handleMediaControlCommand(HatPacket.MEDIA_CMD_PREVIOUS)
+            } else if (AudioSinkService.isRunning.get()) {
+                AudioSinkService.currentInstance?.sendMediaControl(HatPacket.MEDIA_CMD_PREVIOUS)
+            }
+        }
+        btnMediaNext.setOnClickListener {
+            if (AudioCaptureService.isRunning.get()) {
+                AudioCaptureService.currentInstance?.handleMediaControlCommand(HatPacket.MEDIA_CMD_NEXT)
+            } else if (AudioSinkService.isRunning.get()) {
+                AudioSinkService.currentInstance?.sendMediaControl(HatPacket.MEDIA_CMD_NEXT)
+            }
+        }
+        btnSyncMediaPermission.setOnClickListener {
+            try {
+                val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS).apply {
+                        putExtra(
+                            Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME,
+                            ComponentName(this@MainActivity, MediaNotificationListenerService::class.java).flattenToString()
+                        )
+                    }
+                } else {
+                    Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                }
+                startActivity(intent)
+            } catch (e: Exception) {
+                try {
+                    startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                } catch (ignored: Exception) {}
+            }
         }
 
         cardNfcTap = findViewById(R.id.card_nfc_tap)
@@ -2218,6 +2283,35 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        updateMediaPlaybackUi()
+    }
+
+    private fun updateMediaPlaybackUi() {
+        val isSenderRunning = AudioCaptureService.isRunning.get()
+        val isSinkRunning = AudioSinkService.isRunning.get()
+
+        if (!isSenderRunning && !isSinkRunning) {
+            cardMediaPlayback.visibility = View.GONE
+            return
+        }
+
+        cardMediaPlayback.visibility = View.VISIBLE
+
+        if (isSenderRunning) {
+            val meta = AudioCaptureService.currentTrackMetadata
+            tvMediaTitle.text = meta?.title?.ifBlank { "Streaming Audio" } ?: "Streaming Audio"
+            tvMediaArtist.text = meta?.artist?.ifBlank { "Transmitter" } ?: "Transmitter"
+            val isPlaying = meta?.isPlaying ?: true
+            btnMediaPlayPause.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
+            btnSyncMediaPermission.visibility = if (MediaNotificationListenerService.isServiceConnected) View.GONE else View.VISIBLE
+        } else {
+            val sink = AudioSinkService.currentInstance
+            tvMediaTitle.text = sink?.currentTrackTitle?.ifBlank { "Receiving Audio" } ?: "Receiving Audio"
+            tvMediaArtist.text = sink?.currentTrackArtist?.ifBlank { "Transmitter" } ?: "Transmitter"
+            val isPlaying = sink?.isTrackPlaying ?: true
+            btnMediaPlayPause.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
+            btnSyncMediaPermission.visibility = View.GONE
+        }
     }
 
     private fun startTransmitterWorkflow() {

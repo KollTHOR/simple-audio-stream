@@ -502,6 +502,58 @@ class HatPacketTest {
         assertEquals("DISCOVERY_ANNOUNCE", HatPacket.describePacketType(HatPacket.TYPE_DISCOVERY_ANNOUNCE))
         assertEquals("TRANSMITTER_ANNOUNCE", HatPacket.describePacketType(HatPacket.TYPE_TRANSMITTER_ANNOUNCE))
         assertEquals("STREAM_INVITE", HatPacket.describePacketType(HatPacket.TYPE_STREAM_INVITE))
+        assertEquals("MEDIA_CONTROL", HatPacket.describePacketType(HatPacket.TYPE_MEDIA_CONTROL))
+        assertEquals("MEDIA_METADATA", HatPacket.describePacketType(HatPacket.TYPE_MEDIA_METADATA))
         org.junit.Assert.assertTrue(HatPacket.describePacketType(0x7F).startsWith("UNKNOWN"))
+    }
+
+    @Test
+    fun testMediaMetadataSerializationRoundtrip() {
+        val originalTitle = "Bohemian Rhapsody"
+        val originalArtist = "Queen"
+        val originalAlbum = "A Night at the Opera"
+        val isPlaying = true
+
+        val payload = HatPacket.serializeMediaMetadata(
+            isPlaying = isPlaying,
+            title = originalTitle,
+            artist = originalArtist,
+            album = originalAlbum
+        )
+
+        val header = HatPacket.Header(
+            packetType = HatPacket.TYPE_MEDIA_METADATA,
+            payloadLength = payload.size
+        )
+        val packetBuf = ByteArray(HatPacket.HEADER_SIZE + payload.size)
+        HatPacket.writeHeader(packetBuf, 0, header)
+        System.arraycopy(payload, 0, packetBuf, HatPacket.HEADER_SIZE, payload.size)
+
+        val parsedHeader = HatPacket.parseHeader(packetBuf, 0, packetBuf.size)
+        assertNotNull(parsedHeader)
+        assertEquals(HatPacket.TYPE_MEDIA_METADATA, parsedHeader?.packetType)
+
+        val parsedMeta = HatPacket.parseMediaMetadata(packetBuf, HatPacket.HEADER_SIZE, payload.size)
+        assertNotNull(parsedMeta)
+        assertEquals(isPlaying, parsedMeta?.isPlaying)
+        assertEquals(originalTitle, parsedMeta?.title)
+        assertEquals(originalArtist, parsedMeta?.artist)
+        assertEquals(originalAlbum, parsedMeta?.album)
+    }
+
+    @Test
+    fun testMediaControlPacketRoundtrip() {
+        val header = HatPacket.Header(
+            packetType = HatPacket.TYPE_MEDIA_CONTROL,
+            volumeOrCaps = HatPacket.MEDIA_CMD_PLAY_PAUSE,
+            payloadLength = 0
+        )
+        val buf = ByteArray(HatPacket.HEADER_SIZE)
+        HatPacket.writeHeader(buf, 0, header)
+
+        val parsed = HatPacket.parseHeader(buf, 0, buf.size)
+        assertNotNull(parsed)
+        assertEquals(HatPacket.TYPE_MEDIA_CONTROL, parsed?.packetType)
+        assertEquals(HatPacket.MEDIA_CMD_PLAY_PAUSE, parsed?.volumeOrCaps)
     }
 }
