@@ -69,17 +69,92 @@ object DiscoveryManager {
     private var receiverResponderSocket: DatagramSocket? = null
     private var receiverMulticastLock: WifiManager.MulticastLock? = null
 
+    @Volatile
+    private var applicationContext: Context? = null
+    private val ipToNameCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    fun init(context: Context) {
+        applicationContext = context.applicationContext
+    }
+
+    fun rememberDeviceName(ip: String, name: String) {
+        val normIp = ip.trim()
+        val cleanName = name.trim()
+        if (cleanName.isNotBlank() && cleanName != normIp) {
+            ipToNameCache[normIp] = cleanName
+        }
+    }
+
     fun getLocalDeviceName(): String {
-        val manufacturer = Build.MANUFACTURER.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+        // 1. Try Xiaomi / Android system property for market name: ro.product.marketname
+        try {
+            val clazz = Class.forName("android.os.SystemProperties")
+            val getMethod = clazz.getMethod("get", String::class.java)
+            val marketName = (getMethod.invoke(null, "ro.product.marketname") as? String)?.trim()
+            if (!marketName.isNullOrBlank()) {
+                return marketName
+            }
+        } catch (ignored: Exception) {}
+
+        // 2. Try Settings.Global.DEVICE_NAME or "device_name"
+        applicationContext?.let { ctx ->
+            try {
+                val name = android.provider.Settings.Global.getString(ctx.contentResolver, android.provider.Settings.Global.DEVICE_NAME)?.trim()
+                if (!name.isNullOrBlank()) return name
+            } catch (ignored: Exception) {}
+            try {
+                val name = android.provider.Settings.Global.getString(ctx.contentResolver, "device_name")?.trim()
+                if (!name.isNullOrBlank()) return name
+            } catch (ignored: Exception) {}
+        }
+
+        // 3. Known model mapping fallback
         val model = Build.MODEL
+        val friendly = getFriendlyDeviceModel(model)
+        if (friendly != null) {
+            return friendly
+        }
+
+        // 4. Default: Manufacturer + Model
+        val manufacturer = Build.MANUFACTURER.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
         return if (model.startsWith(manufacturer, ignoreCase = true)) model else "$manufacturer $model"
+    }
+
+    private fun getFriendlyDeviceModel(model: String): String? {
+        val m = model.trim().uppercase()
+        return when {
+            m.startsWith("25091RP04") -> "Xiaomi Pad 8 Pro"
+            m.startsWith("24018RPAC") || m.startsWith("24018RPACC") -> "Xiaomi Pad 6S Pro"
+            m.startsWith("23046PNC9G") || m.startsWith("23043RP34G") -> "Xiaomi Pad 6"
+            m.startsWith("23078PND5G") -> "Xiaomi 13T Pro"
+            m.startsWith("24129PN74G") -> "Xiaomi 15"
+            m.startsWith("2410DPN6CG") -> "Xiaomi 15 Pro"
+            else -> null
+        }
     }
 
     fun getDeviceNameForIp(ip: String): String? {
         val normIp = ip.trim()
-        val foundDev = _discoveredDevices.value.firstOrNull { it.ip == normIp }
-            ?: _discoveredTransmitters.value.firstOrNull { it.ip == normIp }
-        return foundDev?.name
+        val fromNode = try {
+            com.example.audiostreamer.node.discovery.HatDiscoveryRegistry.discoveredNodes.value.firstOrNull { node ->
+                node.resolvedEndpoints.any { it.address == normIp }
+            }?.name
+        } catch (ignored: Exception) { null }
+
+        val fromLink = try {
+            com.example.audiostreamer.node.HatLinkManager.activeLinks.value.firstOrNull { link ->
+                link.metadata.remoteAddress == normIp
+            }?.remoteNode?.name
+        } catch (ignored: Exception) { null }
+
+        return ipToNameCache[normIp]
+            ?: fromNode
+            ?: fromLink
+            ?: _discoveredDevices.value.firstOrNull { it.ip == normIp }?.name
+            ?: _discoveredTransmitters.value.firstOrNull { it.ip == normIp }?.name
+            ?: applicationContext?.let { ctx ->
+                SavedDevicesManager.getSavedDevices(ctx).firstOrNull { it.ip == normIp }?.name
+            }
     }
 
     // -------------------------------------------------------------------------
@@ -429,6 +504,8 @@ object DiscoveryManager {
             }
         }
 
+        rememberDeviceName(senderIp, txName)
+
         // Update active connected transmitter in StreamState
         StreamState.update { current ->
             current.copy(
@@ -753,6 +830,7 @@ object DiscoveryManager {
             current.add(device)
             Log.i(TAG, "Discovered new receiver: ${device.name} at ${device.ip}")
         }
+        rememberDeviceName(device.ip, device.name)
         _discoveredDevices.value = current
     }
 
@@ -766,6 +844,7 @@ object DiscoveryManager {
             current.add(device)
             Log.i(TAG, "Discovered new transmitter: ${device.name} at ${device.ip}")
         }
+        rememberDeviceName(device.ip, device.name)
         _discoveredTransmitters.value = current
     }
 

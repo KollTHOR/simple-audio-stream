@@ -33,6 +33,20 @@
         <item name="android:windowBackground">@color/bg_screen</item>
         <item name="android:statusBarColor">@color/bg_screen</item>
         <item name="android:navigationBarColor">@color/bg_screen</item>
+
+        <!-- Custom Slider Style: Small Circular Draggable Knobs -->
+        <item name="sliderStyle">@style/Widget.AudioStreamer.Slider</item>
+    </style>
+
+    <style name="Widget.AudioStreamer.Slider" parent="Widget.Material3.Slider">
+        <item name="thumbWidth">14dp</item>
+        <item name="thumbHeight">14dp</item>
+        <item name="thumbRadius">7dp</item>
+        <item name="trackHeight">4dp</item>
+        <item name="haloRadius">14dp</item>
+        <item name="thumbColor">@color/primary</item>
+        <item name="trackColorActive">@color/primary</item>
+        <item name="trackColorInactive">#2A2A38</item>
     </style>
 
     <!-- Light mode variant: dark status bar icons -->

@@ -14,6 +14,7 @@ class AudioStreamerApp : Application() {
         super.onCreate()
         DynamicColors.applyToActivitiesIfAvailable(this) // Material You: wallpaper-adaptive tinting on Android 12+
         NetworkUtils.init(this)
+        DiscoveryManager.init(this)
         LocalNodeManager.init(this)
     }
 }

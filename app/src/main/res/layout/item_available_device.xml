@@ -79,20 +79,44 @@
             </LinearLayout>
         </LinearLayout>
 
-        <!-- Row 2: Full-Width Prominent Connect Button -->
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btn_device_connect"
-            style="@style/Widget.MaterialComponents.Button.UnelevatedButton"
+        <!-- Row 2: Action Buttons (Connect + optional Remove for Saved Devices) -->
+        <LinearLayout
+            android:id="@+id/layout_device_actions"
             android:layout_width="match_parent"
-            android:layout_height="40dp"
-            android:minHeight="40dp"
-            android:layout_marginTop="12dp"
-            android:textSize="13sp"
-            android:textStyle="bold"
-            android:backgroundTint="@color/primary"
-            android:textColor="@color/white"
-            app:cornerRadius="8dp"
-            android:text="CONNECT" />
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="12dp">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_device_connect"
+                style="@style/Widget.MaterialComponents.Button.UnelevatedButton"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:minHeight="40dp"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:backgroundTint="@color/primary"
+                android:textColor="@color/white"
+                app:cornerRadius="8dp"
+                android:text="CONNECT" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_device_remove"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:minHeight="40dp"
+                android:layout_marginStart="8dp"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:textColor="@color/status_red"
+                app:strokeColor="@color/status_red"
+                app:strokeWidth="1dp"
+                app:cornerRadius="8dp"
+                android:text="REMOVE"
+                android:visibility="gone" />
+        </LinearLayout>
 
     </LinearLayout>
 </com.google.android.material.card.MaterialCardView>

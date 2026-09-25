@@ -74,7 +74,7 @@ class AudioCaptureService : Service() {
         const val EXTRA_RECEIVER_NODE_ID = "EXTRA_RECEIVER_NODE_ID"
 
         private const val NOTIFICATION_ID = 1001
-        private const val CHANNEL_ID = "AudioCaptureChannel"
+        private const val CHANNEL_ID = "AudioCaptureChannel_v2"
 
         val isRunning = AtomicBoolean(false)
         val remoteVolumePercent = AtomicInteger(100)

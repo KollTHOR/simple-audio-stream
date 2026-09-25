@@ -25,7 +25,15 @@
         android:valueFrom="-12.0"
         android:valueTo="12.0"
         android:stepSize="0.5"
-        android:value="0.0" />
+        android:value="0.0"
+        app:thumbColor="@color/primary"
+        app:trackColorActive="@color/primary"
+        app:trackColorInactive="#2A2A38"
+        app:trackHeight="4dp"
+        app:thumbWidth="14dp"
+        app:thumbHeight="14dp"
+        app:thumbRadius="7dp"
+        app:haloRadius="14dp" />
 
     <TextView
         android:id="@+id/tv_band_gain_val"
