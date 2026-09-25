@@ -137,7 +137,7 @@ object DiscoveryScanCoordinator {
                 phaseTimeRemainingMs = TIMEOUT_LAN_MS,
                 statusMessage = "Checking Local Wi-Fi...",
                 phaseReports = initialReports,
-                totalDiscoveredNodes = HatDiscoveryRegistry.recomputeRegistry(),
+                totalDiscoveredNodes = HatDiscoveryRegistry.discoveredNodes.value,
                 isScanning = true,
                 scanSummary = null
             )
@@ -149,7 +149,7 @@ object DiscoveryScanCoordinator {
                 mapOf("timestamp" to scanStartTimeMs, "mode" to "sequential")
             )
 
-            scanJob = scope.launch(Dispatchers.Main) {
+            scanJob = scope.launch(Dispatchers.Default) {
                 try {
                     executeSequentialScan(context, scope)
                 } catch (e: Exception) {
@@ -176,7 +176,7 @@ object DiscoveryScanCoordinator {
         stopAllProviders(context)
 
         if (notifyComplete) {
-            val finalNodes = HatDiscoveryRegistry.recomputeRegistry()
+            val finalNodes = HatDiscoveryRegistry.discoveredNodes.value
             val summary = generateCompactSummary(_scanState.value.phaseReports)
             val msg = if (finalNodes.isNotEmpty()) {
                 "Found ${finalNodes.size} nearby device(s)"
@@ -407,7 +407,7 @@ object DiscoveryScanCoordinator {
             stopAllProviders(context)
 
             val totalDurationMs = System.currentTimeMillis() - scanStartTimeMs
-            val finalNodes = HatDiscoveryRegistry.recomputeRegistry()
+            val finalNodes = HatDiscoveryRegistry.discoveredNodes.value
             val totalCount = finalNodes.size
 
             val summary = generateCompactSummary(_scanState.value.phaseReports)
@@ -533,7 +533,7 @@ object DiscoveryScanCoordinator {
             phaseTimeRemainingMs = timeoutMs,
             statusMessage = message,
             phaseReports = currentReports,
-            totalDiscoveredNodes = HatDiscoveryRegistry.recomputeRegistry(),
+            totalDiscoveredNodes = HatDiscoveryRegistry.discoveredNodes.value,
             isScanning = true
         )
     }
@@ -554,7 +554,7 @@ object DiscoveryScanCoordinator {
             phaseTimeRemainingMs = timeRemainingMs,
             statusMessage = message,
             phaseReports = currentReports,
-            totalDiscoveredNodes = HatDiscoveryRegistry.recomputeRegistry()
+            totalDiscoveredNodes = HatDiscoveryRegistry.discoveredNodes.value
         )
     }
 
@@ -576,7 +576,7 @@ object DiscoveryScanCoordinator {
 
         _scanState.value = _scanState.value.copy(
             phaseReports = currentReports,
-            totalDiscoveredNodes = HatDiscoveryRegistry.recomputeRegistry()
+            totalDiscoveredNodes = HatDiscoveryRegistry.discoveredNodes.value
         )
     }
 

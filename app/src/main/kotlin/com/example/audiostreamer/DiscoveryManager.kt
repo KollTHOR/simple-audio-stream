@@ -113,9 +113,22 @@ object DiscoveryManager {
                 activeSocket = socket
                 Log.i(TAG, "Transmitter discovery listening on port ${socket.localPort}")
 
-                // Send initial probe and transmitter announcement
+                // Send initial probe and transmitter announcement (burst for lossy Wi-Fi)
                 sendProbe(socket)
                 sendTransmitterAnnouncement(socket, isStreaming = AudioCaptureService.isRunning.get())
+
+                scope.launch(Dispatchers.IO) {
+                    kotlinx.coroutines.delay(350L)
+                    val s = activeSocket
+                    if (s != null && !s.isClosed) {
+                        sendProbe(s)
+                    }
+                    kotlinx.coroutines.delay(650L)
+                    val s2 = activeSocket
+                    if (s2 != null && !s2.isClosed) {
+                        sendProbe(s2)
+                    }
+                }
 
                 val buffer = ByteArray(2048)
                 val packet = DatagramPacket(buffer, buffer.size)
@@ -244,6 +257,11 @@ object DiscoveryManager {
                     sendProbe(sock)
                     sendTransmitterAnnouncement(sock, isStreaming = AudioCaptureService.isRunning.get())
                 }
+                kotlinx.coroutines.delay(350L)
+                val sock2 = activeSocket
+                if (sock2 != null && !sock2.isClosed) {
+                    sendProbe(sock2)
+                }
             }
         }
         scope.launch {
@@ -321,6 +339,19 @@ object DiscoveryManager {
                                 HatPacket.TYPE_TRANSMITTER_ANNOUNCE -> {
                                     // Received announcement from a broadcasting transmitter
                                     handleTransmitterAnnouncement(packet, data, header)
+                                    // Fast-track: reply directly to transmitter with receiver announce so transmitter discovers receiver immediately
+                                    try {
+                                        val announceBuf = buildAnnouncePacket()
+                                        val replyPacket1 = DatagramPacket(announceBuf, announceBuf.size, packet.address, AudioConfig.DISCOVERY_PORT)
+                                        socket.send(replyPacket1)
+                                        if (packet.port != AudioConfig.DISCOVERY_PORT) {
+                                            val replyPacket2 = DatagramPacket(announceBuf, announceBuf.size, packet.address, packet.port)
+                                            try { socket.send(replyPacket2) } catch (ignored: Exception) {}
+                                        }
+                                        Log.d(TAG, "Sent fast-track discovery announce reply to transmitter at ${packet.address}")
+                                    } catch (e: Exception) {
+                                        Log.w(TAG, "Failed sending fast-track announce reply: ${e.message}")
+                                    }
                                 }
                             }
                         }
