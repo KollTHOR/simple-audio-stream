@@ -1546,6 +1546,306 @@
                     </LinearLayout>
                 </com.google.android.material.card.MaterialCardView>
 
+                <!-- Discovery Providers & Discovery Diagnostics Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/card_diag_discovery"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
+
+                        <!-- Header Row -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="10dp">
+
+                            <TextView
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="DISCOVERY PROVIDERS"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_hint"
+                                android:letterSpacing="0.05" />
+
+                            <TextView
+                                android:id="@+id/tv_diag_discovery_overall_status"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Idle"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_hint" />
+                        </LinearLayout>
+
+                        <!-- Local Wi-Fi Provider -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:background="@drawable/bg_stat_badge"
+                            android:padding="10dp"
+                            android:layout_marginBottom="8dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="horizontal"
+                                android:gravity="center_vertical">
+
+                                <TextView
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="Local Wi-Fi"
+                                    android:textSize="13sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_primary" />
+
+                                <TextView
+                                    android:id="@+id/tv_diag_lan_support"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Supported"
+                                    android:textSize="10sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/status_green"
+                                    android:layout_marginEnd="8dp" />
+
+                                <TextView
+                                    android:id="@+id/tv_diag_lan_state"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Idle"
+                                    android:textSize="11sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_secondary" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:id="@+id/tv_diag_lan_details"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:text="0 devices • 30s timeout"
+                                android:textSize="11sp"
+                                android:textColor="@color/text_secondary"
+                                android:layout_marginTop="4dp" />
+                        </LinearLayout>
+
+                        <!-- Wi-Fi Direct Provider -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:background="@drawable/bg_stat_badge"
+                            android:padding="10dp"
+                            android:layout_marginBottom="8dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="horizontal"
+                                android:gravity="center_vertical">
+
+                                <TextView
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="Wi-Fi Direct"
+                                    android:textSize="13sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_primary" />
+
+                                <TextView
+                                    android:id="@+id/tv_diag_direct_support"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Supported"
+                                    android:textSize="10sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/status_green"
+                                    android:layout_marginEnd="8dp" />
+
+                                <TextView
+                                    android:id="@+id/tv_diag_direct_state"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Idle"
+                                    android:textSize="11sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_secondary" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:id="@+id/tv_diag_direct_details"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:text="0 devices • 30s timeout"
+                                android:textSize="11sp"
+                                android:textColor="@color/text_secondary"
+                                android:layout_marginTop="4dp" />
+                        </LinearLayout>
+
+                        <!-- Wi-Fi Aware Provider -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:background="@drawable/bg_stat_badge"
+                            android:padding="10dp"
+                            android:layout_marginBottom="8dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="horizontal"
+                                android:gravity="center_vertical">
+
+                                <TextView
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="Wi-Fi Aware"
+                                    android:textSize="13sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_primary" />
+
+                                <TextView
+                                    android:id="@+id/tv_diag_aware_support"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Supported"
+                                    android:textSize="10sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/status_green"
+                                    android:layout_marginEnd="8dp" />
+
+                                <TextView
+                                    android:id="@+id/tv_diag_aware_state"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Idle"
+                                    android:textSize="11sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_secondary" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:id="@+id/tv_diag_aware_details"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:text="0 devices • 30s timeout"
+                                android:textSize="11sp"
+                                android:textColor="@color/text_secondary"
+                                android:layout_marginTop="4dp" />
+                        </LinearLayout>
+
+                        <!-- Bluetooth (BLE) Provider -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:background="@drawable/bg_stat_badge"
+                            android:padding="10dp"
+                            android:layout_marginBottom="10dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="horizontal"
+                                android:gravity="center_vertical">
+
+                                <TextView
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="Bluetooth"
+                                    android:textSize="13sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_primary" />
+
+                                <TextView
+                                    android:id="@+id/tv_diag_ble_support"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Supported"
+                                    android:textSize="10sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/status_green"
+                                    android:layout_marginEnd="8dp" />
+
+                                <TextView
+                                    android:id="@+id/tv_diag_ble_state"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Idle"
+                                    android:textSize="11sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_secondary" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:id="@+id/tv_diag_ble_details"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:text="0 devices • 30s timeout"
+                                android:textSize="11sp"
+                                android:textColor="@color/text_secondary"
+                                android:layout_marginTop="4dp" />
+                        </LinearLayout>
+
+                        <!-- Quick Actions for Diagnostics -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal">
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_diag_scan"
+                                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                                android:layout_width="0dp"
+                                android:layout_height="38dp"
+                                android:layout_weight="1"
+                                android:minHeight="0dp"
+                                android:text="Test Discovery Scan"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/primary"
+                                app:strokeColor="@color/primary"
+                                app:cornerRadius="6dp"
+                                android:layout_marginEnd="6dp" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_diag_discovery_logs"
+                                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                                android:layout_width="0dp"
+                                android:layout_height="38dp"
+                                android:layout_weight="1"
+                                android:minHeight="0dp"
+                                android:text="Discovery Logs"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_secondary"
+                                app:strokeColor="@color/card_stroke"
+                                app:cornerRadius="6dp" />
+                        </LinearLayout>
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
                 <!-- Audio Pipeline & HAL Status Card (Moved from Audio Category to Diagnostics) -->
                 <com.google.android.material.card.MaterialCardView
                     android:id="@+id/card_audio_stats"
