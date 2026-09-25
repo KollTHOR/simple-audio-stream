@@ -1961,6 +1961,7 @@ class AudioSinkService : Service() {
             currentTrackArtwork?.let {
                 metaBuilder.putBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART, it)
                 metaBuilder.putBitmap(android.media.MediaMetadata.METADATA_KEY_ART, it)
+                metaBuilder.putBitmap(android.media.MediaMetadata.METADATA_KEY_DISPLAY_ICON, it)
             }
             mediaSession?.setMetadata(metaBuilder.build())
 

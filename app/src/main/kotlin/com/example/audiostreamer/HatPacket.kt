@@ -486,7 +486,7 @@ object HatPacket {
         val titleBytes = title.toByteArray(Charsets.UTF_8).take(255).toByteArray()
         val artistBytes = artist.toByteArray(Charsets.UTF_8).take(255).toByteArray()
         val albumBytes = album.toByteArray(Charsets.UTF_8).take(255).toByteArray()
-        val artSafeBytes = artworkBytes?.take(1500)?.toByteArray()
+        val artSafeBytes = if (artworkBytes != null && artworkBytes.size <= 65535) artworkBytes else null
 
         val artLen = artSafeBytes?.size ?: 0
         // 1 (flags) + 8 (seq) + (2+N)*4 + 2 (artLen) + artLen

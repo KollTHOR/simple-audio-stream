@@ -419,7 +419,7 @@ object MediaSessionTracker {
         val isPlaying = ps?.state == PlaybackState.STATE_PLAYING
         val seq    = sequence.incrementAndGet()
 
-        val artBitmap: Bitmap? = try {
+        var artBitmap: Bitmap? = try {
             meta?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
                 ?: meta?.getBitmap(MediaMetadata.METADATA_KEY_ART)
                 ?: meta?.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
@@ -427,20 +427,13 @@ object MediaSessionTracker {
             null
         }
 
+        // Fallback: extract from active notification for this package
+        if (artBitmap == null) {
+            artBitmap = MediaNotificationListenerService.getArtworkForPackage(ctrl.packageName)
+        }
+
         val artBytes: ByteArray? = artBitmap?.let { bmp ->
-            try {
-                val maxDim = 96
-                val scaled = if (bmp.width > maxDim || bmp.height > maxDim) {
-                    val scale = maxDim.toFloat() / maxOf(bmp.width, bmp.height)
-                    Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt().coerceAtLeast(1), (bmp.height * scale).toInt().coerceAtLeast(1), true)
-                } else bmp
-                val baos = ByteArrayOutputStream()
-                scaled.compress(Bitmap.CompressFormat.JPEG, 70, baos)
-                val bytes = baos.toByteArray()
-                if (bytes.size <= 1400) bytes else null
-            } catch (ignored: Exception) {
-                null
-            }
+            compressArtwork(bmp, maxBytes = 4096)
         }
 
         val state = MediaState(
@@ -462,6 +455,38 @@ object MediaSessionTracker {
             "title=\"$title\" artist=\"$artist\" album=\"$album\" seq=$seq artLen=${artBytes?.size ?: 0}")
 
         notifyListener(state)
+    }
+
+    private fun compressArtwork(bitmap: Bitmap, maxBytes: Int = 4096): ByteArray? {
+        try {
+            var currentBmp = bitmap
+            val maxDim = 140
+            if (currentBmp.width > maxDim || currentBmp.height > maxDim) {
+                val scale = maxDim.toFloat() / maxOf(currentBmp.width, currentBmp.height)
+                currentBmp = Bitmap.createScaledBitmap(
+                    currentBmp,
+                    (currentBmp.width * scale).toInt().coerceAtLeast(1),
+                    (currentBmp.height * scale).toInt().coerceAtLeast(1),
+                    true
+                )
+            }
+
+            for (q in intArrayOf(75, 55, 40, 25)) {
+                val baos = ByteArrayOutputStream()
+                currentBmp.compress(Bitmap.CompressFormat.JPEG, q, baos)
+                val bytes = baos.toByteArray()
+                if (bytes.size <= maxBytes) {
+                    return bytes
+                }
+            }
+
+            val small = Bitmap.createScaledBitmap(currentBmp, 96, 96, true)
+            val baos = ByteArrayOutputStream()
+            small.compress(Bitmap.CompressFormat.JPEG, 35, baos)
+            return baos.toByteArray()
+        } catch (e: Exception) {
+            return null
+        }
     }
 
     private fun notifyListener(state: MediaState?) {

@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.media.AudioManager
 import android.media.projection.MediaProjectionManager
@@ -176,6 +177,8 @@ class MainActivity : AppCompatActivity() {
     // Equalizer & Media Playback Controls
     private lateinit var btnHeaderEq: ImageView
     private lateinit var cardMediaPlayback: MaterialCardView
+    private lateinit var ivMediaCardBg: ImageView
+    private lateinit var viewMediaCardScrim: View
     private lateinit var ivMediaArt: ImageView
     private lateinit var tvMediaTitle: TextView
     private lateinit var tvMediaArtist: TextView
@@ -416,6 +419,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         cardMediaPlayback = findViewById(R.id.card_media_playback)
+        ivMediaCardBg = findViewById(R.id.iv_media_card_bg)
+        viewMediaCardScrim = findViewById(R.id.view_media_card_scrim)
         ivMediaArt = findViewById(R.id.iv_media_art)
         tvMediaTitle = findViewById(R.id.tv_media_title)
         tvMediaArtist = findViewById(R.id.tv_media_artist)
@@ -2309,6 +2314,36 @@ class MainActivity : AppCompatActivity() {
 
         cardMediaPlayback.visibility = View.VISIBLE
 
+        val art = if (isSenderRunning) {
+            MediaSessionTracker.currentState?.artwork
+        } else {
+            AudioSinkService.currentInstance?.currentTrackArtwork
+        }
+
+        if (art != null) {
+            ivMediaArt.setImageBitmap(art)
+            ivMediaArt.setPadding(0, 0, 0, 0)
+            ivMediaArt.imageTintList = null
+
+            val blurred = createBlurredArtwork(art)
+            ivMediaCardBg.setImageBitmap(blurred)
+            ivMediaCardBg.visibility = View.VISIBLE
+            viewMediaCardScrim.visibility = View.VISIBLE
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                try {
+                    ivMediaCardBg.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(35f, 35f, android.graphics.Shader.TileMode.CLAMP))
+                } catch (ignored: Exception) {}
+            }
+        } else {
+            ivMediaArt.setImageResource(R.drawable.ic_category_audio)
+            val pad = (8 * resources.displayMetrics.density).toInt()
+            ivMediaArt.setPadding(pad, pad, pad, pad)
+            ivMediaArt.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.text_primary))
+
+            ivMediaCardBg.visibility = View.GONE
+            viewMediaCardScrim.visibility = View.GONE
+        }
+
         if (isSenderRunning) {
             val meta = AudioCaptureService.currentTrackMetadata
             tvMediaTitle.text = meta?.title?.ifBlank { "Streaming Audio" } ?: "Streaming Audio"
@@ -2316,17 +2351,6 @@ class MainActivity : AppCompatActivity() {
             val isPlaying = meta?.isPlaying ?: true
             btnMediaPlayPause.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
             btnSyncMediaPermission.visibility = if (MediaNotificationListenerService.isServiceConnected) View.GONE else View.VISIBLE
-            val art = MediaSessionTracker.currentState?.artwork
-            if (art != null) {
-                ivMediaArt.setImageBitmap(art)
-                ivMediaArt.setPadding(0, 0, 0, 0)
-                ivMediaArt.imageTintList = null
-            } else {
-                ivMediaArt.setImageResource(R.drawable.ic_category_audio)
-                val pad = (8 * resources.displayMetrics.density).toInt()
-                ivMediaArt.setPadding(pad, pad, pad, pad)
-                ivMediaArt.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.text_primary))
-            }
         } else {
             val sink = AudioSinkService.currentInstance
             tvMediaTitle.text = sink?.currentTrackTitle?.ifBlank { "Receiving Audio" } ?: "Receiving Audio"
@@ -2334,18 +2358,69 @@ class MainActivity : AppCompatActivity() {
             val isPlaying = sink?.isTrackPlaying ?: true
             btnMediaPlayPause.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
             btnSyncMediaPermission.visibility = View.GONE
-            val art = sink?.currentTrackArtwork
-            if (art != null) {
-                ivMediaArt.setImageBitmap(art)
-                ivMediaArt.setPadding(0, 0, 0, 0)
-                ivMediaArt.imageTintList = null
-            } else {
-                ivMediaArt.setImageResource(R.drawable.ic_category_audio)
-                val pad = (8 * resources.displayMetrics.density).toInt()
-                ivMediaArt.setPadding(pad, pad, pad, pad)
-                ivMediaArt.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.text_primary))
+        }
+    }
+
+    private fun createBlurredArtwork(source: Bitmap): Bitmap {
+        return try {
+            val width = 36
+            val height = 36
+            val small = Bitmap.createScaledBitmap(source, width, height, true)
+            fastBoxBlur(small, 6)
+        } catch (e: Exception) {
+            source
+        }
+    }
+
+    private fun fastBoxBlur(bitmap: Bitmap, radius: Int): Bitmap {
+        val w = bitmap.width
+        val h = bitmap.height
+        val pix = IntArray(w * h)
+        bitmap.getPixels(pix, 0, w, 0, 0, w, h)
+
+        val r = radius.coerceAtLeast(1)
+        val div = 2 * r + 1
+
+        val temp = IntArray(w * h)
+        for (y in 0 until h) {
+            var rSum = 0; var gSum = 0; var bSum = 0
+            for (i in -r..r) {
+                val p = pix[y * w + i.coerceIn(0, w - 1)]
+                rSum += (p shr 16) and 0xFF
+                gSum += (p shr 8) and 0xFF
+                bSum += p and 0xFF
+            }
+            for (x in 0 until w) {
+                temp[y * w + x] = (0xFF shl 24) or ((rSum / div) shl 16) or ((gSum / div) shl 8) or (bSum / div)
+                val pOut = pix[y * w + (x - r).coerceIn(0, w - 1)]
+                val pIn = pix[y * w + (x + r + 1).coerceIn(0, w - 1)]
+                rSum += ((pIn shr 16) and 0xFF) - ((pOut shr 16) and 0xFF)
+                gSum += ((pIn shr 8) and 0xFF) - ((pOut shr 8) and 0xFF)
+                bSum += (pIn and 0xFF) - (pOut and 0xFF)
             }
         }
+
+        val result = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val finalPix = IntArray(w * h)
+        for (x in 0 until w) {
+            var rSum = 0; var gSum = 0; var bSum = 0
+            for (i in -r..r) {
+                val p = temp[i.coerceIn(0, h - 1) * w + x]
+                rSum += (p shr 16) and 0xFF
+                gSum += (p shr 8) and 0xFF
+                bSum += p and 0xFF
+            }
+            for (y in 0 until h) {
+                finalPix[y * w + x] = (0xFF shl 24) or ((rSum / div) shl 16) or ((gSum / div) shl 8) or (bSum / div)
+                val pOut = temp[(y - r).coerceIn(0, h - 1) * w + x]
+                val pIn = temp[(y + r + 1).coerceIn(0, h - 1) * w + x]
+                rSum += ((pIn shr 16) and 0xFF) - ((pOut shr 16) and 0xFF)
+                gSum += ((pIn shr 8) and 0xFF) - ((pOut shr 8) and 0xFF)
+                bSum += (pIn and 0xFF) - (pOut and 0xFF)
+            }
+        }
+        result.setPixels(finalPix, 0, w, 0, 0, w, h)
+        return result
     }
 
     private fun startTransmitterWorkflow() {

@@ -255,11 +255,31 @@
                     app:cardBackgroundColor="@color/card_bg"
                     android:visibility="gone">
 
-                    <LinearLayout
+                    <FrameLayout
                         android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:padding="@dimen/card_inner_padding">
+                        android:layout_height="wrap_content">
+
+                        <!-- Scaled-up Blurred Artwork Background -->
+                        <ImageView
+                            android:id="@+id/iv_media_card_bg"
+                            android:layout_width="match_parent"
+                            android:layout_height="match_parent"
+                            android:scaleType="centerCrop"
+                            android:visibility="gone" />
+
+                        <!-- Dark Scrim Overlay to ensure text readability -->
+                        <View
+                            android:id="@+id/view_media_card_scrim"
+                            android:layout_width="match_parent"
+                            android:layout_height="match_parent"
+                            android:background="#B3121212"
+                            android:visibility="gone" />
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:padding="@dimen/card_inner_padding">
 
                         <!-- Track Info Row -->
                         <LinearLayout
@@ -360,7 +380,8 @@
                                 app:tint="@color/text_primary" />
                         </LinearLayout>
                     </LinearLayout>
-                </com.google.android.material.card.MaterialCardView>
+                </FrameLayout>
+            </com.google.android.material.card.MaterialCardView>
 
                 <!-- Standalone Connected Devices Card (Visible when 1+ devices connected) -->
                 <com.google.android.material.card.MaterialCardView
