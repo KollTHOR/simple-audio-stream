@@ -98,8 +98,9 @@
                 <!-- Active Transports Badge Row (Material Chips) -->
                 <com.google.android.material.chip.ChipGroup
                     android:id="@+id/layout_transport_badges"
-                    android:layout_width="match_parent"
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:layout_gravity="center_horizontal"
                     android:layout_marginBottom="@dimen/card_spacing"
                     app:chipSpacingHorizontal="4dp"
                     app:singleLine="true">
@@ -230,9 +231,77 @@
                         app:iconSize="18dp" />
                 </com.google.android.material.button.MaterialButtonToggleGroup>
 
-                <!-- Configuration & Action Card -->
+                <!-- Standalone Connected Devices Card (Visible when 1+ devices connected) -->
                 <com.google.android.material.card.MaterialCardView
-                    android:id="@+id/card_config"
+                    android:id="@+id/layout_connected_devices_section"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
+
+                        <!-- Header Row (Clickable to collapse/expand) -->
+                        <LinearLayout
+                            android:id="@+id/header_connected_devices"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:clickable="true"
+                            android:focusable="true">
+
+                            <TextView
+                                android:id="@+id/tv_connected_devices_title"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="CONNECTED RECEIVERS"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/status_green"
+                                android:letterSpacing="0.05" />
+
+                            <TextView
+                                android:id="@+id/tv_connected_count_badge"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="0 active"
+                                android:textSize="11sp"
+                                android:textColor="@color/status_green"
+                                android:textStyle="bold"
+                                android:layout_marginEnd="6dp" />
+
+                            <ImageView
+                                android:id="@+id/iv_connected_chevron"
+                                android:layout_width="18dp"
+                                android:layout_height="18dp"
+                                android:src="@drawable/ic_expand_more"
+                                app:tint="@color/text_secondary" />
+                        </LinearLayout>
+
+                        <!-- Dynamic List Container for Connected Devices -->
+                        <LinearLayout
+                            android:id="@+id/layout_connected_devices_container"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:layout_marginTop="8dp" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- Standalone Available Discovered Devices Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/layout_discovery_section"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="@dimen/card_spacing"
@@ -248,320 +317,59 @@
                         android:orientation="vertical"
                         android:padding="@dimen/card_inner_padding">
 
-                        <TextView
-                            android:id="@+id/tv_mode_guide"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:text="Stream this device's audio over local Wi-Fi"
-                            android:textSize="13sp"
-                            android:textColor="@color/text_secondary"
-                            android:layout_marginBottom="12dp" />
-
-                        <!-- Receiver Mode: Persistent Discoverable Status Banner -->
-                        <com.google.android.material.card.MaterialCardView
-                            android:id="@+id/card_receiver_discoverable"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginBottom="12dp"
-                            app:cardCornerRadius="12dp"
-                            app:cardElevation="0dp"
-                            app:strokeColor="@color/card_stroke"
-                            app:strokeWidth="1dp"
-                            app:cardBackgroundColor="@color/input_bg"
-                            android:visibility="gone">
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:orientation="vertical"
-                                android:padding="12dp">
-
-                                <LinearLayout
-                                    android:layout_width="match_parent"
-                                    android:layout_height="wrap_content"
-                                    android:orientation="horizontal"
-                                    android:gravity="center_vertical"
-                                    android:layout_marginBottom="4dp">
-
-                                    <View
-                                        android:layout_width="8dp"
-                                        android:layout_height="8dp"
-                                        android:background="@drawable/bg_badge"
-                                        android:backgroundTint="@color/status_green"
-                                        android:layout_marginEnd="6dp" />
-
-                                    <TextView
-                                        android:layout_width="wrap_content"
-                                        android:layout_height="wrap_content"
-                                        android:text="READY TO RECEIVE"
-                                        android:textSize="10sp"
-                                        android:textStyle="bold"
-                                        android:textColor="@color/status_green"
-                                        android:letterSpacing="0.05" />
-                                </LinearLayout>
-
-                                <TextView
-                                    android:id="@+id/tv_receiver_headline"
-                                    android:layout_width="match_parent"
-                                    android:layout_height="wrap_content"
-                                    android:text="Discoverable nearby"
-                                    android:textSize="15sp"
-                                    android:textStyle="bold"
-                                    android:textColor="@color/text_primary" />
-
-                                <TextView
-                                    android:id="@+id/tv_receiver_transports_list"
-                                    android:layout_width="match_parent"
-                                    android:layout_height="wrap_content"
-                                    android:text="Discoverable on Local Wi-Fi, Wi-Fi Direct, Aware, and Bluetooth"
-                                    android:textSize="12sp"
-                                    android:textColor="@color/text_secondary"
-                                    android:layout_marginTop="2dp" />
-
-                                <TextView
-                                    android:id="@+id/tv_receiver_endpoint_pill"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:text="0.0.0.0:50005"
-                                    android:textSize="11sp"
-                                    android:textStyle="bold"
-                                    android:textColor="@color/pill_text"
-                                    android:background="@drawable/bg_ip_pill"
-                                    android:paddingHorizontal="8dp"
-                                    android:paddingVertical="4dp"
-                                    android:layout_marginTop="8dp" />
-                            </LinearLayout>
-                        </com.google.android.material.card.MaterialCardView>
-
-                        <!-- Receiver Mode: Auto-Tune / Tune-In Prompt Banner -->
-                        <com.google.android.material.card.MaterialCardView
-                            android:id="@+id/layout_tune_in_banner"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginBottom="12dp"
-                            app:cardCornerRadius="12dp"
-                            app:cardElevation="2dp"
-                            app:strokeColor="@color/primary"
-                            app:strokeWidth="1.5dp"
-                            app:cardBackgroundColor="@color/card_bg"
-                            android:visibility="gone">
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:orientation="vertical"
-                                android:padding="12dp">
-
-                                <LinearLayout
-                                    android:layout_width="match_parent"
-                                    android:layout_height="wrap_content"
-                                    android:orientation="horizontal"
-                                    android:gravity="center_vertical"
-                                    android:layout_marginBottom="6dp">
-
-                                    <ImageView
-                                        android:layout_width="20dp"
-                                        android:layout_height="20dp"
-                                        android:src="@drawable/ic_transmitter"
-                                        app:tint="@color/primary"
-                                        android:layout_marginEnd="8dp" />
-
-                                    <TextView
-                                        android:layout_width="0dp"
-                                        android:layout_height="wrap_content"
-                                        android:layout_weight="1"
-                                        android:text="Transmitter Broadcasting"
-                                        android:textSize="12sp"
-                                        android:textStyle="bold"
-                                        android:textColor="@color/primary" />
-
-                                    <TextView
-                                        android:id="@+id/btn_dismiss_tune_in"
-                                        android:layout_width="wrap_content"
-                                        android:layout_height="wrap_content"
-                                        android:text="✕"
-                                        android:textSize="14sp"
-                                        android:textColor="@color/text_hint"
-                                        android:padding="4dp"
-                                        android:clickable="true"
-                                        android:focusable="true" />
-                                </LinearLayout>
-
-                                <TextView
-                                    android:id="@+id/tv_tune_in_message"
-                                    android:layout_width="match_parent"
-                                    android:layout_height="wrap_content"
-                                    android:text="A transmitter is broadcasting on your local network."
-                                    android:textSize="13sp"
-                                    android:textColor="@color/text_primary"
-                                    android:layout_marginBottom="10dp" />
-
-                                <com.google.android.material.button.MaterialButton
-                                    android:id="@+id/btn_tune_in"
-                                    style="@style/Widget.MaterialComponents.Button.UnelevatedButton"
-                                    android:layout_width="match_parent"
-                                    android:layout_height="36dp"
-                                    android:minHeight="0dp"
-                                    android:textSize="12sp"
-                                    android:textStyle="bold"
-                                    android:backgroundTint="@color/primary"
-                                    android:textColor="@color/white"
-                                    app:cornerRadius="8dp"
-                                    android:text="Tune In Now" />
-                            </LinearLayout>
-                        </com.google.android.material.card.MaterialCardView>
-
-                        <!-- Interactive NFC Tap-to-Pair Card -->
-                        <com.google.android.material.card.MaterialCardView
-                            android:id="@+id/card_nfc_tap"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginBottom="12dp"
-                            android:visibility="gone"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:foreground="?attr/selectableItemBackground"
-                            app:cardCornerRadius="10dp"
-                            app:cardElevation="0dp"
-                            app:strokeColor="@color/card_stroke"
-                            app:strokeWidth="1dp"
-                            app:cardBackgroundColor="@color/input_bg">
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:orientation="horizontal"
-                                android:gravity="center_vertical"
-                                android:padding="10dp">
-
-                                <ImageView
-                                    android:id="@+id/iv_nfc_icon"
-                                    android:layout_width="24dp"
-                                    android:layout_height="24dp"
-                                    android:src="@drawable/ic_nfc"
-                                    app:tint="@color/primary"
-                                    android:layout_marginEnd="10dp" />
-
-                                <LinearLayout
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_weight="1"
-                                    android:orientation="vertical">
-
-                                    <TextView
-                                        android:id="@+id/tv_nfc_title"
-                                        android:layout_width="wrap_content"
-                                        android:layout_height="wrap_content"
-                                        android:text="NFC Tap-to-Pair Ready"
-                                        android:textSize="12sp"
-                                        android:textStyle="bold"
-                                        android:textColor="@color/text_primary" />
-
-                                    <TextView
-                                        android:id="@+id/tv_nfc_subtitle"
-                                        android:layout_width="wrap_content"
-                                        android:layout_height="wrap_content"
-                                        android:text="Touch devices back-to-back to pair instantly"
-                                        android:textSize="11sp"
-                                        android:textColor="@color/text_secondary"
-                                        android:layout_marginTop="1dp" />
-                                </LinearLayout>
-
-                                <ImageView
-                                    android:layout_width="14dp"
-                                    android:layout_height="14dp"
-                                    android:src="@drawable/ic_chevron_right"
-                                    app:tint="@color/text_hint" />
-                            </LinearLayout>
-                        </com.google.android.material.card.MaterialCardView>
-
-                        <!-- Connected Devices Section (Visible when 1+ devices connected) -->
+                        <!-- Header Row -->
                         <LinearLayout
-                            android:id="@+id/layout_connected_devices_section"
+                            android:id="@+id/header_available_devices"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:orientation="vertical"
-                            android:layout_marginBottom="12dp"
-                            android:visibility="gone">
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:clickable="true"
+                            android:focusable="true">
 
-                            <LinearLayout
-                                android:layout_width="match_parent"
+                            <TextView
+                                android:id="@+id/tv_discovery_title"
+                                android:layout_width="0dp"
                                 android:layout_height="wrap_content"
-                                android:orientation="horizontal"
-                                android:gravity="center_vertical"
-                                android:layout_marginBottom="6dp">
+                                android:layout_weight="1"
+                                android:text="AVAILABLE DEVICES"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_hint"
+                                android:letterSpacing="0.05" />
 
-                                <TextView
-                                    android:id="@+id/tv_connected_devices_title"
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_weight="1"
-                                    android:text="CONNECTED DEVICES"
-                                    android:textSize="11sp"
-                                    android:textStyle="bold"
-                                    android:textColor="@color/status_green"
-                                    android:letterSpacing="0.05" />
-
-                                <TextView
-                                    android:id="@+id/tv_connected_count_badge"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:text="1 active"
-                                    android:textSize="11sp"
-                                    android:textColor="@color/status_green"
-                                    android:textStyle="bold" />
-                            </LinearLayout>
-
-                            <!-- Dynamic List Container for Connected Devices -->
-                            <LinearLayout
-                                android:id="@+id/layout_connected_devices_container"
-                                android:layout_width="match_parent"
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_scan_receivers"
+                                style="@style/Widget.MaterialComponents.Button.TextButton"
+                                android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:orientation="vertical" />
+                                android:minHeight="0dp"
+                                android:minWidth="0dp"
+                                android:paddingLeft="8dp"
+                                android:paddingRight="8dp"
+                                android:paddingTop="2dp"
+                                android:paddingBottom="2dp"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/primary"
+                                android:text="Scan"
+                                android:layout_marginEnd="4dp" />
+
+                            <ImageView
+                                android:id="@+id/iv_available_chevron"
+                                android:layout_width="18dp"
+                                android:layout_height="18dp"
+                                android:src="@drawable/ic_expand_more"
+                                app:tint="@color/text_secondary" />
                         </LinearLayout>
 
-                        <!-- Available Discovered Devices Section (Phone-style list) -->
+                        <!-- Collapsible Body Content -->
                         <LinearLayout
-                            android:id="@+id/layout_discovery_section"
+                            android:id="@+id/layout_available_devices_body"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:orientation="vertical"
-                            android:layout_marginBottom="12dp">
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:orientation="horizontal"
-                                android:gravity="center_vertical"
-                                android:layout_marginBottom="6dp">
-
-                                <TextView
-                                    android:id="@+id/tv_discovery_title"
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_weight="1"
-                                    android:text="AVAILABLE DEVICES"
-                                    android:textSize="11sp"
-                                    android:textStyle="bold"
-                                    android:textColor="@color/text_hint"
-                                    android:letterSpacing="0.05" />
-
-                                <com.google.android.material.button.MaterialButton
-                                    android:id="@+id/btn_scan_receivers"
-                                    style="@style/Widget.MaterialComponents.Button.TextButton"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:minHeight="0dp"
-                                    android:minWidth="0dp"
-                                    android:paddingLeft="8dp"
-                                    android:paddingRight="8dp"
-                                    android:paddingTop="2dp"
-                                    android:paddingBottom="2dp"
-                                    android:textSize="11sp"
-                                    android:textStyle="bold"
-                                    android:textColor="@color/primary"
-                                    android:text="Scan" />
-                            </LinearLayout>
+                            android:layout_marginTop="8dp">
 
                             <!-- Scan Process Dashboard / Feedback Card -->
                             <com.google.android.material.card.MaterialCardView
@@ -579,7 +387,7 @@
                                     android:layout_width="match_parent"
                                     android:layout_height="wrap_content"
                                     android:orientation="vertical"
-                                    android:padding="10dp">
+                                    android:padding="8dp">
 
                                     <!-- Top Status Row: Spinner, Live Status Banner, Timer Countdown -->
                                     <LinearLayout
@@ -630,7 +438,7 @@
                                         android:layout_width="match_parent"
                                         android:layout_height="wrap_content"
                                         android:layout_marginTop="6dp"
-                                        android:layout_marginBottom="8dp"
+                                        android:layout_marginBottom="6dp"
                                         android:max="100"
                                         android:progress="0"
                                         app:trackColor="@color/input_bg"
@@ -644,8 +452,7 @@
                                         android:layout_width="match_parent"
                                         android:layout_height="wrap_content"
                                         android:orientation="horizontal"
-                                        android:baselineAligned="false"
-                                        android:layout_marginTop="2dp">
+                                        android:baselineAligned="false">
 
                                         <!-- LAN Status Badge -->
                                         <LinearLayout
@@ -777,19 +584,14 @@
                                         android:layout_marginTop="6dp"
                                         android:visibility="gone" />
 
-                                    <!-- Offline Helper Tip (Visible when offline / disconnected from router) -->
+                                    <!-- Hidden dummy views -->
                                     <TextView
                                         android:id="@+id/tv_offline_direct_hint"
-                                        android:layout_width="match_parent"
-                                        android:layout_height="wrap_content"
-                                        android:layout_marginTop="8dp"
-                                        android:text="💡 Direct Mode (No Router): Make sure Receiver phone is in 'Receiver' mode with Wi-Fi &amp; Bluetooth ON."
-                                        android:textSize="11sp"
-                                        android:textColor="@color/text_hint"
+                                        android:layout_width="0dp"
+                                        android:layout_height="0dp"
                                         android:visibility="gone" />
                                 </LinearLayout>
                             </com.google.android.material.card.MaterialCardView>
-
 
                             <!-- Vertical List Container for Available Devices -->
                             <LinearLayout
@@ -803,13 +605,233 @@
                                 android:id="@+id/tv_available_empty"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:text="Searching for nearby devices..."
+                                android:text="No nearby devices found"
                                 android:textSize="12sp"
                                 android:textColor="@color/text_hint"
                                 android:background="@color/input_bg"
-                                android:padding="12dp"
+                                android:padding="10dp"
                                 android:layout_marginBottom="4dp" />
                         </LinearLayout>
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- Configuration & Controls Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/card_config"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
+
+                        <!-- Receiver Mode: Persistent Discoverable Status Banner -->
+                        <com.google.android.material.card.MaterialCardView
+                            android:id="@+id/card_receiver_discoverable"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginBottom="12dp"
+                            app:cardCornerRadius="12dp"
+                            app:cardElevation="0dp"
+                            app:strokeColor="@color/card_stroke"
+                            app:strokeWidth="1dp"
+                            app:cardBackgroundColor="@color/input_bg"
+                            android:visibility="gone">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="vertical"
+                                android:padding="10dp">
+
+                                <LinearLayout
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:orientation="horizontal"
+                                    android:gravity="center_vertical">
+
+                                    <View
+                                        android:layout_width="8dp"
+                                        android:layout_height="8dp"
+                                        android:background="@drawable/bg_badge"
+                                        android:backgroundTint="@color/status_green"
+                                        android:layout_marginEnd="6dp" />
+
+                                    <TextView
+                                        android:id="@+id/tv_receiver_headline"
+                                        android:layout_width="0dp"
+                                        android:layout_height="wrap_content"
+                                        android:layout_weight="1"
+                                        android:text="READY TO RECEIVE"
+                                        android:textSize="11sp"
+                                        android:textStyle="bold"
+                                        android:textColor="@color/status_green"
+                                        android:letterSpacing="0.05" />
+
+                                    <TextView
+                                        android:id="@+id/tv_receiver_endpoint_pill"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:text="0.0.0.0:50005"
+                                        android:textSize="10sp"
+                                        android:textStyle="bold"
+                                        android:textColor="@color/pill_text"
+                                        android:background="@drawable/bg_ip_pill"
+                                        android:paddingHorizontal="6dp"
+                                        android:paddingVertical="3dp" />
+                                </LinearLayout>
+                            </LinearLayout>
+                        </com.google.android.material.card.MaterialCardView>
+
+                        <!-- Receiver Mode: Auto-Tune / Tune-In Prompt Banner -->
+                        <com.google.android.material.card.MaterialCardView
+                            android:id="@+id/layout_tune_in_banner"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginBottom="12dp"
+                            app:cardCornerRadius="12dp"
+                            app:cardElevation="2dp"
+                            app:strokeColor="@color/primary"
+                            app:strokeWidth="1.5dp"
+                            app:cardBackgroundColor="@color/card_bg"
+                            android:visibility="gone">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="vertical"
+                                android:padding="12dp">
+
+                                <LinearLayout
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:orientation="horizontal"
+                                    android:gravity="center_vertical"
+                                    android:layout_marginBottom="6dp">
+
+                                    <ImageView
+                                        android:layout_width="20dp"
+                                        android:layout_height="20dp"
+                                        android:src="@drawable/ic_transmitter"
+                                        app:tint="@color/primary"
+                                        android:layout_marginEnd="8dp" />
+
+                                    <TextView
+                                        android:layout_width="0dp"
+                                        android:layout_height="wrap_content"
+                                        android:layout_weight="1"
+                                        android:text="Transmitter Broadcasting"
+                                        android:textSize="12sp"
+                                        android:textStyle="bold"
+                                        android:textColor="@color/primary" />
+
+                                    <TextView
+                                        android:id="@+id/btn_dismiss_tune_in"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:text="✕"
+                                        android:textSize="14sp"
+                                        android:textColor="@color/text_hint"
+                                        android:padding="4dp"
+                                        android:clickable="true"
+                                        android:focusable="true" />
+                                </LinearLayout>
+
+                                <TextView
+                                    android:id="@+id/tv_tune_in_message"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:text="A transmitter is broadcasting on your local network."
+                                    android:textSize="13sp"
+                                    android:textColor="@color/text_primary"
+                                    android:layout_marginBottom="10dp" />
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/btn_tune_in"
+                                    style="@style/Widget.MaterialComponents.Button.UnelevatedButton"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="36dp"
+                                    android:minHeight="0dp"
+                                    android:textSize="12sp"
+                                    android:textStyle="bold"
+                                    android:backgroundTint="@color/primary"
+                                    android:textColor="@color/white"
+                                    app:cornerRadius="8dp"
+                                    android:text="Tune In Now" />
+                            </LinearLayout>
+                        </com.google.android.material.card.MaterialCardView>
+
+                        <!-- Interactive NFC Tap-to-Pair Card -->
+                        <com.google.android.material.card.MaterialCardView
+                            android:id="@+id/card_nfc_tap"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginBottom="12dp"
+                            android:visibility="gone"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:foreground="?attr/selectableItemBackground"
+                            app:cardCornerRadius="10dp"
+                            app:cardElevation="0dp"
+                            app:strokeColor="@color/card_stroke"
+                            app:strokeWidth="1dp"
+                            app:cardBackgroundColor="@color/input_bg">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="horizontal"
+                                android:gravity="center_vertical"
+                                android:padding="10dp">
+
+                                <ImageView
+                                    android:id="@+id/iv_nfc_icon"
+                                    android:layout_width="24dp"
+                                    android:layout_height="24dp"
+                                    android:src="@drawable/ic_nfc"
+                                    app:tint="@color/primary"
+                                    android:layout_marginEnd="10dp" />
+
+                                <LinearLayout
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:orientation="vertical">
+
+                                    <TextView
+                                        android:id="@+id/tv_nfc_title"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:text="NFC Tap-to-Pair"
+                                        android:textSize="12sp"
+                                        android:textStyle="bold"
+                                        android:textColor="@color/text_primary" />
+
+                                    <TextView
+                                        android:id="@+id/tv_nfc_subtitle"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:text="Touch devices to pair"
+                                        android:textSize="11sp"
+                                        android:textColor="@color/text_secondary"
+                                        android:layout_marginTop="1dp" />
+                                </LinearLayout>
+
+                                <ImageView
+                                    android:layout_width="14dp"
+                                    android:layout_height="14dp"
+                                    android:src="@drawable/ic_chevron_right"
+                                    app:tint="@color/text_hint" />
+                            </LinearLayout>
+                        </com.google.android.material.card.MaterialCardView>
 
                         <!-- Target Profiles Section (Transmitter Only) -->
                         <LinearLayout
@@ -854,23 +876,21 @@
                                     android:text="+ Add Profile" />
                             </LinearLayout>
 
-                            <!-- Dynamic Saved Profiles List Container -->
                             <LinearLayout
                                 android:id="@+id/layout_saved_profiles_container"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
                                 android:orientation="vertical" />
 
-                            <!-- Empty State for Profiles -->
                             <TextView
                                 android:id="@+id/layout_saved_empty"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:text="No profiles saved. Tap '+ Add Profile' to bookmark a target."
+                                android:text="No profiles saved"
                                 android:textSize="12sp"
                                 android:textColor="@color/text_hint"
                                 android:background="@color/input_bg"
-                                android:padding="12dp"
+                                android:padding="10dp"
                                 android:layout_marginBottom="4dp" />
                         </LinearLayout>
 
@@ -881,7 +901,7 @@
                             android:layout_height="wrap_content"
                             android:orientation="vertical"
                             android:background="@color/input_bg"
-                            android:padding="12dp"
+                            android:padding="10dp"
                             android:layout_marginBottom="12dp"
                             android:visibility="gone">
 
@@ -895,8 +915,8 @@
                                     android:layout_width="0dp"
                                     android:layout_height="wrap_content"
                                     android:layout_weight="1"
-                                    android:text="Autonomous Wi-Fi Direct"
-                                    android:textSize="14sp"
+                                    android:text="Wi-Fi Direct P2P Group"
+                                    android:textSize="13sp"
                                     android:textStyle="bold"
                                     android:textColor="@color/text_primary" />
 
@@ -906,21 +926,13 @@
                                     android:layout_height="wrap_content" />
                             </LinearLayout>
 
-                            <TextView
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:text="Hosts a private P2P link so transmitters can connect without a router or mobile hotspot."
-                                android:textSize="12sp"
-                                android:textColor="@color/text_secondary"
-                                android:layout_marginTop="2dp" />
-
                             <LinearLayout
                                 android:id="@+id/layout_receiver_p2p_info"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
                                 android:orientation="vertical"
                                 android:background="@drawable/bg_stat_badge"
-                                android:padding="10dp"
+                                android:padding="8dp"
                                 android:layout_marginTop="8dp"
                                 android:visibility="gone">
 
@@ -929,7 +941,7 @@
                                     android:layout_width="wrap_content"
                                     android:layout_height="wrap_content"
                                     android:text="Group SSID: DIRECT-SimpleAudioStream"
-                                    android:textSize="12sp"
+                                    android:textSize="11sp"
                                     android:textStyle="bold"
                                     android:textColor="@color/pill_text" />
 
@@ -955,7 +967,7 @@
                                     android:id="@+id/tv_receiver_p2p_status"
                                     android:layout_width="match_parent"
                                     android:layout_height="wrap_content"
-                                    android:text="Broadcasting &amp; Listening for Transmitter Connections"
+                                    android:text="Ready for Direct connection"
                                     android:textSize="11sp"
                                     android:textColor="@color/text_hint"
                                     android:layout_marginTop="4dp" />
@@ -969,25 +981,24 @@
                             android:layout_height="wrap_content"
                             android:orientation="vertical"
                             android:background="@color/input_bg"
-                            android:padding="10dp"
-                            android:layout_marginBottom="14dp">
+                            android:padding="8dp"
+                            android:layout_marginBottom="12dp">
 
                             <LinearLayout
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
                                 android:orientation="horizontal"
                                 android:gravity="center_vertical"
-                                android:layout_marginBottom="4dp">
+                                android:layout_marginBottom="2dp">
 
                                 <TextView
                                     android:layout_width="0dp"
                                     android:layout_height="wrap_content"
                                     android:layout_weight="1"
-                                    android:text="MASTER BROADCAST VOLUME"
+                                    android:text="Master Volume"
                                     android:textSize="11sp"
                                     android:textStyle="bold"
-                                    android:textColor="@color/text_hint"
-                                    android:letterSpacing="0.05" />
+                                    android:textColor="@color/text_hint" />
 
                                 <TextView
                                     android:id="@+id/tv_remote_vol_label"
@@ -1010,7 +1021,9 @@
                                 android:value="100.0"
                                 app:thumbColor="@color/primary"
                                 app:trackColorActive="@color/primary"
-                                app:trackColorInactive="#2A2A38" />
+                                app:trackColorInactive="#2A2A38"
+                                app:trackHeight="3dp"
+                                app:thumbRadius="5dp" />
                         </LinearLayout>
 
                         <!-- Action Button -->
@@ -1019,7 +1032,7 @@
                             android:layout_width="match_parent"
                             android:layout_height="@dimen/btn_height"
                             android:text="@string/start_stream"
-                            android:textSize="15sp"
+                            android:textSize="14sp"
                             android:textStyle="bold"
                             android:textColor="@color/white"
                             app:cornerRadius="10dp"
@@ -1029,7 +1042,7 @@
                             app:iconPadding="8dp"
                             app:iconSize="20dp" />
 
-                        <!-- Legacy Direct IP Fallback (Collapsed at the Bottom) -->
+                        <!-- Legacy Direct IP Fallback (Manual Connection) -->
                         <LinearLayout
                             android:id="@+id/layout_advanced_header"
                             android:layout_width="match_parent"
@@ -1039,22 +1052,22 @@
                             android:visibility="gone"
                             android:clickable="true"
                             android:focusable="true"
-                            android:paddingTop="10dp"
-                            android:paddingBottom="6dp"
-                            android:layout_marginTop="8dp">
+                            android:paddingTop="8dp"
+                            android:paddingBottom="4dp"
+                            android:layout_marginTop="6dp">
 
                             <TextView
                                 android:id="@+id/tv_advanced_toggle"
                                 android:layout_width="0dp"
                                 android:layout_height="wrap_content"
                                 android:layout_weight="1"
-                                android:text="Legacy Direct IP Fallback (Manual IP &amp; Port) ▾"
-                                android:textSize="12sp"
+                                android:text="Manual Connection ▾"
+                                android:textSize="11sp"
                                 android:textStyle="bold"
                                 android:textColor="@color/text_hint" />
                         </LinearLayout>
 
-                        <!-- Legacy Direct IP Fallback Content (Hidden by Default) -->
+                        <!-- Legacy Direct IP Fallback Content -->
                         <LinearLayout
                             android:id="@+id/layout_advanced_content"
                             android:layout_width="match_parent"
@@ -1117,270 +1130,6 @@
                                     android:textColorHint="@color/text_hint"
                                     android:text="50005" />
                             </com.google.android.material.textfield.TextInputLayout>
-                        </LinearLayout>
-
-                    </LinearLayout>
-                </com.google.android.material.card.MaterialCardView>
-
-                <!-- Live Monitor / Telemetry Card -->
-                <com.google.android.material.card.MaterialCardView
-                    android:id="@+id/card_telemetry"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    app:cardCornerRadius="14dp"
-                    app:cardElevation="1dp"
-                    app:strokeColor="@color/card_stroke"
-                    app:strokeWidth="1dp"
-                    app:cardBackgroundColor="@color/card_bg">
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:padding="@dimen/card_inner_padding">
-
-                        <!-- Monitor Header + Status Badge -->
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="horizontal"
-                            android:gravity="center_vertical"
-                            android:layout_marginBottom="8dp">
-
-                            <TextView
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:text="STREAM MONITOR"
-                                android:textSize="11sp"
-                                android:textStyle="bold"
-                                android:textColor="@color/text_hint"
-                                android:letterSpacing="0.05" />
-
-                            <TextView
-                                android:id="@+id/tv_badge_status"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="IDLE"
-                                android:textSize="10sp"
-                                android:textStyle="bold"
-                                android:paddingStart="8dp"
-                                android:paddingEnd="8dp"
-                                android:paddingTop="3dp"
-                                android:paddingBottom="3dp"
-                                android:textColor="@color/white"
-                                android:background="@drawable/bg_badge"
-                                android:backgroundTint="@color/status_gray" />
-                        </LinearLayout>
-
-                        <!-- Endpoint Target/Sender Info -->
-                        <TextView
-                            android:id="@+id/tv_endpoint_info"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:text="Not connected"
-                            android:textSize="13sp"
-                            android:textStyle="bold"
-                            android:textColor="@color/text_primary"
-                            android:layout_marginBottom="3dp" />
-
-                        <!-- Packets and Data Rate -->
-                        <TextView
-                            android:id="@+id/tv_packets_stat"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:text="Packets: 0 (0 pkts/s • 0 KB/s)"
-                            android:textSize="12sp"
-                            android:textColor="@color/text_secondary"
-                            android:layout_marginBottom="10dp" />
-
-                        <!-- Live VU Meter Section -->
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="horizontal"
-                            android:gravity="center_vertical"
-                            android:layout_marginBottom="4dp">
-
-                            <TextView
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:text="Audio Signal"
-                                android:textSize="11sp"
-                                android:textColor="@color/text_secondary" />
-
-                            <TextView
-                                android:id="@+id/tv_audio_level_val"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="0%"
-                                android:textSize="11sp"
-                                android:textStyle="bold"
-                                android:textColor="@color/text_primary" />
-                        </LinearLayout>
-
-                        <com.google.android.material.progressindicator.LinearProgressIndicator
-                            android:id="@+id/pb_audio_level"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:max="100"
-                            android:progress="0"
-                            app:trackColor="#272732"
-                            app:indicatorColor="@color/status_green"
-                            app:trackCornerRadius="4dp"
-                            app:trackThickness="8dp"
-                            android:layout_marginBottom="10dp" />
-
-                        <!-- Audio Pipeline & Buffer Monitor (Available in Diagnostics) -->
-                        <LinearLayout
-                            android:id="@+id/layout_pipeline_details"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="vertical"
-                            android:visibility="gone"
-                            android:background="@color/input_bg"
-                            android:padding="10dp"
-                            android:layout_marginBottom="10dp">
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:orientation="horizontal"
-                                android:gravity="center_vertical"
-                                android:layout_marginBottom="4dp">
-
-                                <TextView
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_weight="1"
-                                    android:text="AUDIO PIPELINE"
-                                    android:textSize="11sp"
-                                    android:textStyle="bold"
-                                    android:textColor="@color/text_hint"
-                                    android:letterSpacing="0.05" />
-
-                                <TextView
-                                    android:id="@+id/tv_pipeline_profile"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:text="Music Mode"
-                                    android:textSize="10sp"
-                                    android:textStyle="bold"
-                                    android:paddingStart="6dp"
-                                    android:paddingEnd="6dp"
-                                    android:paddingTop="2dp"
-                                    android:paddingBottom="2dp"
-                                    android:textColor="@color/primary"
-                                    android:background="@drawable/bg_badge"
-                                    android:backgroundTint="#242436" />
-                            </LinearLayout>
-
-                            <TextView
-                                android:id="@+id/tv_pipeline_format"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:text="48.0 kHz • 24-bit Stereo PCM • 2304 kbps"
-                                android:textSize="12sp"
-                                android:textStyle="bold"
-                                android:textColor="@color/text_primary"
-                                android:layout_marginBottom="4dp" />
-
-                            <TextView
-                                android:id="@+id/tv_pipeline_node_info"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:text="Node: Ready • Links: 0 active"
-                                android:textSize="11sp"
-                                android:textColor="@color/text_secondary"
-                                android:layout_marginBottom="8dp" />
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:orientation="horizontal"
-                                android:gravity="center_vertical"
-                                android:layout_marginBottom="4dp">
-
-                                <TextView
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_weight="1"
-                                    android:text="Jitter Buffer Health"
-                                    android:textSize="11sp"
-                                    android:textColor="@color/text_secondary" />
-
-                                <TextView
-                                    android:id="@+id/tv_buffer_health_val"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:text="0% (0 slots)"
-                                    android:textSize="11sp"
-                                    android:textStyle="bold"
-                                    android:textColor="@color/primary" />
-                            </LinearLayout>
-
-                            <com.google.android.material.progressindicator.LinearProgressIndicator
-                                android:id="@+id/pb_buffer_health"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:max="100"
-                                android:progress="0"
-                                app:trackColor="#272732"
-                                app:indicatorColor="@color/primary"
-                                app:trackCornerRadius="4dp"
-                                app:trackThickness="8dp" />
-                        </LinearLayout>
-
-                        <!-- Diagnostic Hint -->
-                        <TextView
-                            android:id="@+id/tv_diagnostic_tip"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:text="Select mode and start streaming."
-                            android:textSize="12sp"
-                            android:textColor="@color/text_secondary"
-                            android:lineSpacingMultiplier="1.15" />
-
-                        <!-- Diagnostics Action Buttons (Hidden from Stream Monitor) -->
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="horizontal"
-                            android:visibility="gone"
-                            android:layout_marginTop="12dp">
-
-                            <com.google.android.material.button.MaterialButton
-                                android:id="@+id/btn_main_view_logs"
-                                style="?attr/materialButtonOutlinedStyle"
-                                android:layout_width="0dp"
-                                android:layout_height="36dp"
-                                android:layout_weight="1"
-                                android:text="View Logs"
-                                android:textSize="12sp"
-                                android:textStyle="bold"
-                                android:textColor="@color/text_primary"
-                                android:layout_marginEnd="6dp"
-                                android:insetTop="0dp"
-                                android:insetBottom="0dp"
-                                app:strokeColor="@color/card_stroke"
-                                app:cornerRadius="6dp" />
-
-                            <com.google.android.material.button.MaterialButton
-                                android:id="@+id/btn_main_copy_logs"
-                                style="?attr/materialButtonOutlinedStyle"
-                                android:layout_width="0dp"
-                                android:layout_height="36dp"
-                                android:layout_weight="1"
-                                android:text="Copy Logs"
-                                android:textSize="12sp"
-                                android:textStyle="bold"
-                                android:textColor="@color/pill_text"
-                                android:layout_marginStart="6dp"
-                                android:insetTop="0dp"
-                                android:insetBottom="0dp"
-                                app:strokeColor="@color/pill_stroke"
-                                app:cornerRadius="6dp" />
                         </LinearLayout>
 
                     </LinearLayout>

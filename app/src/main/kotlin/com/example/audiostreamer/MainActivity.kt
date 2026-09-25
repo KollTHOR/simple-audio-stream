@@ -90,7 +90,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var toggleModeGroup: MaterialButtonToggleGroup
     private lateinit var btnModeTransmitter: MaterialButton
     private lateinit var btnModeReceiver: MaterialButton
-    private lateinit var tvModeGuide: TextView
+    private var tvModeGuide: TextView? = null
 
     // Redesigned Connection Setup & Profiles
     private lateinit var layoutSavedProfilesSection: LinearLayout
@@ -105,12 +105,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnTuneIn: MaterialButton
     private lateinit var btnDismissTuneIn: TextView
 
-    private lateinit var layoutConnectedDevicesSection: LinearLayout
+    private lateinit var layoutConnectedDevicesSection: View
     private lateinit var tvConnectedDevicesTitle: TextView
     private lateinit var tvConnectedCountBadge: TextView
     private lateinit var layoutConnectedDevicesContainer: LinearLayout
+    private var ivConnectedSectionChevron: ImageView? = null
+    private var isConnectedSectionExpanded: Boolean = true
 
-    private lateinit var layoutDiscoverySection: LinearLayout
+    private lateinit var layoutDiscoverySection: View
+    private var layoutAvailableDevicesBody: View? = null
+    private var ivAvailableSectionChevron: ImageView? = null
+    private var isAvailableSectionExpanded: Boolean = true
     private lateinit var tvDiscoveryTitle: TextView
     private lateinit var pbDiscoveryScanning: ProgressBar
     private lateinit var tvDiscoveryScanningText: TextView
@@ -131,7 +136,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvOfflineDirectHint: TextView
     private lateinit var cardReceiverDiscoverable: MaterialCardView
     private lateinit var tvReceiverHeadline: TextView
-    private lateinit var tvReceiverTransportsList: TextView
+    private var tvReceiverTransportsList: TextView? = null
     private lateinit var tvReceiverEndpointPill: TextView
     private var activeScanJob: Job? = null
     private lateinit var layoutDiscoveredDevicesContainer: LinearLayout
@@ -163,19 +168,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var layoutVolumeControl: LinearLayout
     private lateinit var tvRemoteVolLabel: TextView
     private lateinit var sliderRemoteVol: Slider
-
-    private lateinit var tvBadgeStatus: TextView
-    private lateinit var tvEndpointInfo: TextView
-    private lateinit var tvPacketsStat: TextView
-    private lateinit var pbAudioLevel: LinearProgressIndicator
-    private lateinit var tvAudioLevelVal: TextView
-    private lateinit var tvDiagnosticTip: TextView
-    private lateinit var layoutPipelineDetails: LinearLayout
-    private lateinit var tvPipelineProfile: TextView
-    private lateinit var tvPipelineFormat: TextView
-    private lateinit var tvPipelineNodeInfo: TextView
-    private lateinit var tvBufferHealthVal: TextView
-    private lateinit var pbBufferHealth: LinearProgressIndicator
 
     private var currentMode: Mode = Mode.TRANSMITTER
     private var detectedLocalIp: String? = null
@@ -414,7 +406,6 @@ class MainActivity : AppCompatActivity() {
         toggleModeGroup = findViewById(R.id.toggle_mode_group)
         btnModeTransmitter = findViewById(R.id.btn_mode_transmitter)
         btnModeReceiver = findViewById(R.id.btn_mode_receiver)
-        tvModeGuide = findViewById(R.id.tv_mode_guide)
 
         layoutSavedProfilesSection = findViewById(R.id.layout_saved_profiles_section)
         tvSavedProfilesTitle = findViewById(R.id.tv_saved_profiles_title)
@@ -431,8 +422,24 @@ class MainActivity : AppCompatActivity() {
         tvConnectedDevicesTitle = findViewById(R.id.tv_connected_devices_title)
         tvConnectedCountBadge = findViewById(R.id.tv_connected_count_badge)
         layoutConnectedDevicesContainer = findViewById(R.id.layout_connected_devices_container)
+        ivConnectedSectionChevron = findViewById(R.id.iv_connected_chevron)
+
+        findViewById<View>(R.id.header_connected_devices)?.setOnClickListener {
+            isConnectedSectionExpanded = !isConnectedSectionExpanded
+            layoutConnectedDevicesContainer.visibility = if (isConnectedSectionExpanded) View.VISIBLE else View.GONE
+            ivConnectedSectionChevron?.animate()?.rotation(if (isConnectedSectionExpanded) 0f else 180f)?.setDuration(150)?.start()
+        }
 
         layoutDiscoverySection = findViewById(R.id.layout_discovery_section)
+        layoutAvailableDevicesBody = findViewById(R.id.layout_available_devices_body)
+        ivAvailableSectionChevron = findViewById(R.id.iv_available_chevron)
+
+        findViewById<View>(R.id.header_available_devices)?.setOnClickListener {
+            isAvailableSectionExpanded = !isAvailableSectionExpanded
+            layoutAvailableDevicesBody?.visibility = if (isAvailableSectionExpanded) View.VISIBLE else View.GONE
+            ivAvailableSectionChevron?.animate()?.rotation(if (isAvailableSectionExpanded) 0f else 180f)?.setDuration(150)?.start()
+        }
+
         tvDiscoveryTitle = findViewById(R.id.tv_discovery_title)
         pbDiscoveryScanning = findViewById(R.id.pb_discovery_scanning)
         tvDiscoveryScanningText = findViewById(R.id.tv_discovery_scanning_text)
@@ -453,7 +460,6 @@ class MainActivity : AppCompatActivity() {
         tvOfflineDirectHint = findViewById(R.id.tv_offline_direct_hint)
         cardReceiverDiscoverable = findViewById(R.id.card_receiver_discoverable)
         tvReceiverHeadline = findViewById(R.id.tv_receiver_headline)
-        tvReceiverTransportsList = findViewById(R.id.tv_receiver_transports_list)
         tvReceiverEndpointPill = findViewById(R.id.tv_receiver_endpoint_pill)
         layoutDiscoveredDevicesContainer = findViewById(R.id.layout_discovered_devices_container)
         tvAvailableEmpty = findViewById(R.id.tv_available_empty)
@@ -668,19 +674,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        tvBadgeStatus = findViewById(R.id.tv_badge_status)
-        tvEndpointInfo = findViewById(R.id.tv_endpoint_info)
-        tvPacketsStat = findViewById(R.id.tv_packets_stat)
-        pbAudioLevel = findViewById(R.id.pb_audio_level)
-        tvAudioLevelVal = findViewById(R.id.tv_audio_level_val)
-        tvDiagnosticTip = findViewById(R.id.tv_diagnostic_tip)
-        layoutPipelineDetails = findViewById(R.id.layout_pipeline_details)
-        tvPipelineProfile = findViewById(R.id.tv_pipeline_profile)
-        tvPipelineFormat = findViewById(R.id.tv_pipeline_format)
-        tvPipelineNodeInfo = findViewById(R.id.tv_pipeline_node_info)
-        tvBufferHealthVal = findViewById(R.id.tv_buffer_health_val)
-        pbBufferHealth = findViewById(R.id.pb_buffer_health)
-
         refreshLocalIp()
 
         layoutIpPill.setOnClickListener {
@@ -716,21 +709,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 .setNegativeButton("Close", null)
                 .show()
-        }
-
-        layoutPipelineDetails.setOnClickListener {
-            val intent = Intent(this, SettingsActivity::class.java).apply {
-                putExtra(SettingsActivity.EXTRA_CATEGORY, SettingsActivity.CATEGORY_DIAGNOSTICS)
-            }
-            startActivity(intent)
-        }
-
-        findViewById<com.google.android.material.button.MaterialButton>(R.id.btn_main_view_logs)?.setOnClickListener {
-            AppLogger.showLogViewerDialog(this)
-        }
-
-        findViewById<com.google.android.material.button.MaterialButton>(R.id.btn_main_copy_logs)?.setOnClickListener {
-            AppLogger.copyToClipboard(this)
         }
 
         fabSettings.setOnClickListener {
@@ -941,7 +919,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             "No active discovery transports"
         }
-        tvReceiverTransportsList.text = transportsStr
+        tvReceiverTransportsList?.text = transportsStr
 
         val localIp = NetworkUtils.getLocalIpAddress() ?: "0.0.0.0"
         val port = etPort.text.toString().toIntOrNull() ?: AudioConfig.DEFAULT_PORT
@@ -1342,6 +1320,16 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     if (isNew) {
+                        val layoutConnectedHeader = itemView.findViewById<View>(R.id.layout_connected_header)
+                        val layoutExpandedDetails = itemView.findViewById<View>(R.id.layout_connected_expanded_details)
+                        val ivChevron = itemView.findViewById<ImageView>(R.id.iv_connected_chevron)
+
+                        layoutConnectedHeader?.setOnClickListener {
+                            val isExp = layoutExpandedDetails?.visibility == View.VISIBLE
+                            layoutExpandedDetails?.visibility = if (isExp) View.GONE else View.VISIBLE
+                            ivChevron?.animate()?.rotation(if (isExp) 0f else 90f)?.setDuration(150)?.start()
+                        }
+
                         sliderDeviceVol.clearOnChangeListeners()
                         sliderDeviceVol.addOnChangeListener { _, value, fromUser ->
                             if (fromUser) {
@@ -2230,135 +2218,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
-        val savedProfile = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_AUTO) ?: AudioConfig.PROFILE_AUTO
-        val activeProfileName = if (isSinkRunning || isSenderRunning) {
-            t.streamProfileName
-        } else {
-            when (savedProfile) {
-                AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> "Low Latency (Opus/AAC)"
-                AudioConfig.PROFILE_AUTO -> "Auto Adaptive (35-400ms)"
-                else -> "Uncapped Music Mode"
-            }
-        }
-        tvPipelineProfile.text = activeProfileName
-        if (isSinkRunning || isSenderRunning) {
-            tvPipelineFormat.text = "${t.negotiatedFormatDesc} • ${t.bitrateKbps} kbps"
-        } else {
-            val bitStr = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) "24-bit" else "16-bit"
-            val defaultBitrate = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) 2304 else 1536
-            tvPipelineFormat.text = "48.0 kHz • $bitStr Stereo PCM • $defaultBitrate kbps"
-        }
-
-        val localNode = com.example.audiostreamer.node.LocalNodeManager.getLocalNode()
-        if (isSenderRunning || isSinkRunning) {
-            val linkCount = t.activeLinks.size
-            val streamCount = t.activeStreams.size
-            val fanOutCount = com.example.audiostreamer.node.HatMultiStreamManager.countActiveDestinations()
-            val fanOutStr = if (isSenderRunning && fanOutCount > 0) " • Fan-Out: $fanOutCount" else ""
-            val negStr = t.lastNegotiatedCapabilities?.let { " • ${it.summary()}" } ?: ""
-            tvPipelineNodeInfo.text = "Node: ${localNode.name} • Links: $linkCount • Streams: $streamCount$fanOutStr$negStr"
-        } else {
-            tvPipelineNodeInfo.text = "Node: ${localNode.name} (${localNode.id}) • Ready"
-        }
-
-        if (!isSenderRunning && !isSinkRunning) {
-            tvBadgeStatus.text = "IDLE"
-            tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_gray))
-            tvEndpointInfo.text = "Not connected"
-            tvPacketsStat.text = "Packets: 0 (0 pkts/s • 0 KB/s)"
-            pbAudioLevel.progress = 0
-            tvAudioLevelVal.text = "0%"
-            pbBufferHealth.progress = 0
-            tvBufferHealthVal.text = "0% (0/${AudioConfig.getJitterBufferSlots(savedProfile)} slots)"
-
-            tvDiagnosticTip.text = if (currentMode == Mode.RECEIVER) {
-                "On receiver: Tap 'Start Listening'. Then enter ${detectedLocalIp ?: "this IP"} on your transmitter phone."
-            } else {
-                "On transmitter: Enter the receiver's IP (displayed on receiver screen) and tap 'Start Streaming'."
-            }
-            return
-        }
-
-        if (isSinkRunning) {
-            pbBufferHealth.progress = t.bufferFillPercent
-            val bufferMs = t.bufferSlotsUsed * AudioConfig.FRAME_SIZE_MS
-            tvBufferHealthVal.text = "${t.bufferFillPercent}% (${t.bufferSlotsUsed}/${t.bufferSlotsTotal} slots • ~${bufferMs}ms)"
-        } else {
-            pbBufferHealth.progress = if (t.audioPeakPercent > 0) 100 else 0
-            tvBufferHealthVal.text = if (t.audioPeakPercent > 0) "Capture active (500ms buffer)" else "Idle"
-        }
-
-        if (isSenderRunning) {
-            val activeDests = com.example.audiostreamer.node.HatMultiStreamManager.countActiveDestinations()
-            if (t.isSilenceSuppressed) {
-                tvBadgeStatus.text = "STANDBY"
-                tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_gray))
-                tvDiagnosticTip.text = "Silence suppression active (Battery saver: 2 pkts/s). Instant wake-up (<5ms) when audio resumes."
-            } else {
-                if (activeDests > 1) {
-                    tvBadgeStatus.text = "FAN-OUT ($activeDests)"
-                    tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
-                    tvDiagnosticTip.text = "Fan-out active to $activeDests receivers. Synchronous playback with per-destination telemetry."
-                } else if (t.activeReceiversCount > 1) {
-                    tvBadgeStatus.text = "MULTI-CAST"
-                    tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
-                    tvDiagnosticTip.text = "Multi-unicast active to ${t.activeReceiversCount} receivers. Synchronous silent disco listening."
-                } else {
-                    tvBadgeStatus.text = "TRANSMITTING"
-                    tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
-                    tvDiagnosticTip.text = if (t.audioPeakPercent > 1) {
-                        "Audio signal detected. Sending live system audio to target."
-                    } else {
-                        "Capturing system audio, but signal is currently silent. Start playing media on this device."
-                    }
-                }
-            }
-            tvEndpointInfo.text = if (activeDests > 1) {
-                "Fan-Out: $activeDests destinations (${t.streamProfileName})"
-            } else if (t.activeReceiversCount > 1) {
-                "Targets: Multi-Unicast (${t.activeReceiversCount} devices)"
-            } else {
-                "Target: ${t.remoteEndpoint ?: "Configuring..."}"
-            }
-            tvPacketsStat.text = "Sent: ${t.packetsTotal} pkts (${t.packetsPerSec} pkts/s • ${t.bitrateKbps} kbps)"
-            pbAudioLevel.progress = t.audioPeakPercent
-            tvAudioLevelVal.text = "${t.audioPeakPercent}%"
-        } else if (isSinkRunning) {
-            val hasReceivedPackets = t.packetsTotal > 0
-            if (hasReceivedPackets) {
-                if (t.isSilenceSuppressed) {
-                    tvBadgeStatus.text = "STANDBY"
-                    tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_gray))
-                    tvDiagnosticTip.text = "Transmitter in silence standby mode. Ready to play instantly."
-                } else {
-                    tvBadgeStatus.text = "PLAYING"
-                    tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_green))
-                    tvDiagnosticTip.text = if (t.audioPeakPercent > 1) {
-                        "Audio playing through AudioTrack. Adjust device volume if needed."
-                    } else {
-                        "Packets arriving, but audio data is silent. Ensure transmitter phone is playing media."
-                    }
-                }
-                tvEndpointInfo.text = "From: ${t.remoteEndpoint ?: "Unknown"}"
-                val fecText = if (t.fecRecoveredTotal > 0) " • FEC: ${t.fecRecoveredTotal} recovered" else ""
-                tvPacketsStat.text = "Received: ${t.packetsTotal} pkts (${t.packetsPerSec} pkts/s • ${t.bitrateKbps} kbps)$fecText"
-                pbAudioLevel.progress = t.audioPeakPercent
-                tvAudioLevelVal.text = "${t.audioPeakPercent}%"
-            } else {
-                tvBadgeStatus.text = "WAITING"
-                tvBadgeStatus.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_orange))
-                tvEndpointInfo.text = "Listening on ${detectedLocalIp ?: "0.0.0.0"}:${etPort.text}"
-                tvPacketsStat.text = "Packets: 0 (Waiting for transmitter...)"
-                pbAudioLevel.progress = 0
-                tvAudioLevelVal.text = "0%"
-
-                tvDiagnosticTip.text = "Waiting for audio packets...\n" +
-                        "1. Ensure both devices are on the same Wi-Fi.\n" +
-                        "2. On your phone, set Target IP to: ${detectedLocalIp ?: "this device IP"}\n" +
-                        "3. Port: ${etPort.text}"
-            }
-        }
     }
 
     private fun startTransmitterWorkflow() {
@@ -2480,7 +2339,7 @@ class MainActivity : AppCompatActivity() {
                 btnModeReceiver.setTextColor(colorTextSecondary)
                 btnModeReceiver.iconTint = ColorStateList.valueOf(colorTextSecondary)
 
-                tvModeGuide.text = "Broadcast audio to nearby speakers, receivers, or devices"
+                tvModeGuide?.text = "Broadcast audio to nearby speakers, receivers, or devices"
                 cardReceiverDiscoverable.visibility = View.GONE
                 layoutSavedProfilesSection.visibility = View.GONE
                 layoutDiscoverySection.visibility = View.VISIBLE
@@ -2509,6 +2368,12 @@ class MainActivity : AppCompatActivity() {
                         btnAction.text = getString(R.string.stop_stream)
                         btnAction.setIconResource(R.drawable.ic_stop)
                         btnAction.backgroundTintList = ColorStateList.valueOf(colorRed)
+                        // Auto-collapse available devices body when streaming to keep UI focused on controls
+                        if (layoutAvailableDevicesBody?.visibility == View.VISIBLE && isAvailableSectionExpanded) {
+                            isAvailableSectionExpanded = false
+                            layoutAvailableDevicesBody?.visibility = View.GONE
+                            ivAvailableSectionChevron?.rotation = 180f
+                        }
                     }
                     else -> {
                         btnAction.isEnabled = true
@@ -2527,7 +2392,7 @@ class MainActivity : AppCompatActivity() {
                 btnModeTransmitter.setTextColor(colorTextSecondary)
                 btnModeTransmitter.iconTint = ColorStateList.valueOf(colorTextSecondary)
 
-                tvModeGuide.text = "Accept and play audio streams from nearby transmitters"
+                tvModeGuide?.text = "Accept and play audio streams from nearby transmitters"
                 cardReceiverDiscoverable.visibility = View.VISIBLE
                 updateReceiverDiscoverableBanner()
                 layoutDiscoverySection.visibility = View.GONE
