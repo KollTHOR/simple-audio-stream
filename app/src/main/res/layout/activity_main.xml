@@ -500,7 +500,8 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:orientation="vertical"
-                            android:layout_marginTop="8dp">
+                            android:layout_marginTop="8dp"
+                            android:visibility="gone">
 
                             <!-- Scan Process Dashboard / Feedback Card -->
                             <com.google.android.material.card.MaterialCardView
@@ -518,7 +519,10 @@
                                     android:layout_width="match_parent"
                                     android:layout_height="wrap_content"
                                     android:orientation="vertical"
-                                    android:padding="8dp">
+                                    android:paddingStart="12dp"
+                                    android:paddingEnd="12dp"
+                                    android:paddingTop="8dp"
+                                    android:paddingBottom="8dp">
 
                                     <!-- Top Status Row: Spinner, Live Status Banner, Timer Countdown -->
                                     <LinearLayout
@@ -729,7 +733,8 @@
                                 android:id="@+id/layout_discovered_devices_container"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:orientation="vertical" />
+                                android:orientation="vertical"
+                                android:layout_marginTop="4dp" />
 
                             <!-- Empty State for Available Devices -->
                             <TextView
