@@ -2,6 +2,7 @@ package com.example.audiostreamer
 
 import android.app.Application
 import com.example.audiostreamer.node.LocalNodeManager
+import com.google.android.material.color.DynamicColors
 
 /**
  * Custom Application class for HAT AudioStreamer.
@@ -11,6 +12,7 @@ class AudioStreamerApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        DynamicColors.applyToActivitiesIfAvailable(this) // Material You: wallpaper-adaptive tinting on Android 12+
         NetworkUtils.init(this)
         LocalNodeManager.init(this)
     }

@@ -31,16 +31,14 @@
                 android:gravity="center_vertical"
                 android:layout_marginBottom="16dp">
 
-                <ImageView
+                <com.google.android.material.button.MaterialButton
                     android:id="@+id/btn_back"
-                    android:layout_width="38dp"
-                    android:layout_height="38dp"
-                    android:padding="7dp"
-                    android:src="@drawable/ic_back"
-                    app:tint="@color/white"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:clickable="true"
-                    android:focusable="true"
+                    style="@style/Widget.Material3.Button.IconButton"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    app:icon="@drawable/ic_back"
+                    app:iconTint="@color/text_primary"
+                    app:iconSize="20dp"
                     android:contentDescription="Back" />
 
                 <LinearLayout
@@ -407,6 +405,76 @@
                             android:contentDescription="Open" />
                     </LinearLayout>
                 </com.google.android.material.card.MaterialCardView>
+
+                <!-- Category 5: Appearance -->
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/card_menu_appearance"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="10dp"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:foreground="?attr/selectableItemBackground"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:padding="14dp">
+
+                        <FrameLayout
+                            android:layout_width="42dp"
+                            android:layout_height="42dp"
+                            android:background="@drawable/bg_ip_pill">
+
+                            <ImageView
+                                android:layout_width="22dp"
+                                android:layout_height="22dp"
+                                android:layout_gravity="center"
+                                android:src="@drawable/ic_settings"
+                                app:tint="@color/pill_text"
+                                android:contentDescription="Appearance" />
+                        </FrameLayout>
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:orientation="vertical"
+                            android:layout_marginStart="12dp"
+                            android:layout_marginEnd="8dp">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Appearance"
+                                android:textSize="16sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Theme: Dark, Light, or Follow System"
+                                android:textSize="12sp"
+                                android:textColor="@color/text_secondary"
+                                android:layout_marginTop="2dp" />
+                        </LinearLayout>
+
+                        <ImageView
+                            android:layout_width="20dp"
+                            android:layout_height="20dp"
+                            android:src="@drawable/ic_chevron_right"
+                            app:tint="@color/text_hint"
+                            android:contentDescription="Open" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
             </LinearLayout>
 
             <!-- ================================================================= -->
@@ -749,7 +817,7 @@
                                     android:layout_marginTop="2dp" />
                             </LinearLayout>
 
-                            <com.google.android.material.switchmaterial.SwitchMaterial
+                            <com.google.android.material.materialswitch.MaterialSwitch
                                 android:id="@+id/switch_sync_device_volume"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
@@ -1037,16 +1105,17 @@
                                 android:textColor="@color/primary" />
                         </LinearLayout>
 
-                        <ProgressBar
+                        <com.google.android.material.progressindicator.LinearProgressIndicator
                             android:id="@+id/pb_diag_buffer_health"
-                            style="?android:attr/progressBarStyleHorizontal"
                             android:layout_width="match_parent"
-                            android:layout_height="@dimen/progress_height"
+                            android:layout_height="wrap_content"
                             android:layout_marginBottom="10dp"
                             android:max="100"
                             android:progress="0"
-                            android:progressBackgroundTint="#272732"
-                            android:progressTint="@color/primary" />
+                            app:trackColor="#272732"
+                            app:indicatorColor="@color/primary"
+                            app:trackCornerRadius="4dp"
+                            app:trackThickness="8dp" />
 
                         <LinearLayout
                             android:layout_width="match_parent"
@@ -1806,17 +1875,18 @@
                             android:layout_marginBottom="10dp"
                             android:lineSpacingMultiplier="1.2" />
 
-                        <ProgressBar
+                        <com.google.android.material.progressindicator.LinearProgressIndicator
                             android:id="@+id/pb_download"
-                            style="?android:attr/progressBarStyleHorizontal"
                             android:layout_width="match_parent"
-                            android:layout_height="@dimen/progress_height"
+                            android:layout_height="wrap_content"
                             android:layout_marginBottom="6dp"
                             android:max="100"
                             android:progress="0"
                             android:visibility="gone"
-                            android:progressBackgroundTint="#272732"
-                            android:progressTint="@color/primary" />
+                            app:trackColor="#272732"
+                            app:indicatorColor="@color/primary"
+                            app:trackCornerRadius="4dp"
+                            app:trackThickness="8dp" />
 
                         <TextView
                             android:id="@+id/tv_download_progress"
@@ -2092,6 +2162,110 @@
                             app:cornerRadius="8dp" />
                     </LinearLayout>
                 </com.google.android.material.card.MaterialCardView>
+            </LinearLayout>
+
+            <!-- ================================================================= -->
+            <!-- 5. CATEGORY: APPEARANCE                                            -->
+            <!-- ================================================================= -->
+            <LinearLayout
+                android:id="@+id/layout_category_appearance"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <!-- Theme Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/card_spacing"
+                    app:cardCornerRadius="14dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cardBackgroundColor="@color/card_bg">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="@dimen/card_inner_padding">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="THEME"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/text_hint"
+                            android:letterSpacing="0.05"
+                            android:layout_marginBottom="6dp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Choose the app colour scheme. Changes take effect immediately."
+                            android:textSize="12sp"
+                            android:textColor="@color/text_secondary"
+                            android:lineSpacingMultiplier="1.2"
+                            android:layout_marginBottom="14dp" />
+
+                        <!-- System / Light / Dark toggle -->
+                        <com.google.android.material.button.MaterialButtonToggleGroup
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginBottom="8dp"
+                            app:singleSelection="true"
+                            app:selectionRequired="true">
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_theme_system"
+                                style="?attr/materialButtonOutlinedStyle"
+                                android:layout_width="0dp"
+                                android:layout_height="@dimen/btn_height"
+                                android:layout_weight="1"
+                                android:text="System"
+                                android:textSize="12sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary"
+                                app:strokeColor="@color/card_stroke" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_theme_light"
+                                style="?attr/materialButtonOutlinedStyle"
+                                android:layout_width="0dp"
+                                android:layout_height="@dimen/btn_height"
+                                android:layout_weight="1"
+                                android:text="Light"
+                                android:textSize="12sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary"
+                                app:strokeColor="@color/card_stroke" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_theme_dark"
+                                style="?attr/materialButtonOutlinedStyle"
+                                android:layout_width="0dp"
+                                android:layout_height="@dimen/btn_height"
+                                android:layout_weight="1"
+                                android:text="Dark"
+                                android:textSize="12sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/text_primary"
+                                app:strokeColor="@color/card_stroke" />
+                        </com.google.android.material.button.MaterialButtonToggleGroup>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Dynamic Color (Android 12+): App tints adapt to your wallpaper palette automatically."
+                            android:textSize="11sp"
+                            android:textColor="@color/text_hint"
+                            android:lineSpacingMultiplier="1.3"
+                            android:layout_marginTop="8dp" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
             </LinearLayout>
 
         </LinearLayout>

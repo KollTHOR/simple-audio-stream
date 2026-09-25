@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Night-mode override: status bar icons should be light (white) against dark bar -->
+    <style name="Theme.AudioStreamer" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

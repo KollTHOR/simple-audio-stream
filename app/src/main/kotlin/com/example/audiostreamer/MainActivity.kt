@@ -356,7 +356,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
+        val prefs = getSharedPreferences("stream_prefs", android.content.Context.MODE_PRIVATE)
+        val themeMode = prefs.getInt("theme_mode", AppCompatDelegate.MODE_NIGHT_YES) // default: dark
+        AppCompatDelegate.setDefaultNightMode(themeMode)
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
