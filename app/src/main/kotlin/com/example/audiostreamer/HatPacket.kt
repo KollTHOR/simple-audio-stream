@@ -440,8 +440,38 @@ object HatPacket {
         /** Monotonically increasing counter. Receiver rejects older values. */
         val mediaStateSequence: Long = 0L,
         /** Package name of the source media app, e.g. "com.aspiro.tidal". */
-        val packageName: String = ""
-    )
+        val packageName: String = "",
+        /** Optional JPEG/WebP compressed album art thumbnail (<= 1400 bytes). */
+        val artworkBytes: ByteArray? = null
+    ) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+            other as MediaMetadataPayload
+            if (isPlaying != other.isPlaying) return false
+            if (title != other.title) return false
+            if (artist != other.artist) return false
+            if (album != other.album) return false
+            if (mediaStateSequence != other.mediaStateSequence) return false
+            if (packageName != other.packageName) return false
+            if (artworkBytes != null) {
+                if (other.artworkBytes == null) return false
+                if (!artworkBytes.contentEquals(other.artworkBytes)) return false
+            } else if (other.artworkBytes != null) return false
+            return true
+        }
+
+        override fun hashCode(): Int {
+            var result = isPlaying.hashCode()
+            result = 31 * result + title.hashCode()
+            result = 31 * result + artist.hashCode()
+            result = 31 * result + album.hashCode()
+            result = 31 * result + mediaStateSequence.hashCode()
+            result = 31 * result + packageName.hashCode()
+            result = 31 * result + (artworkBytes?.contentHashCode() ?: 0)
+            return result
+        }
+    }
 
     fun serializeMediaMetadata(
         isPlaying: Boolean,
@@ -449,19 +479,23 @@ object HatPacket {
         artist: String,
         album: String,
         mediaStateSequence: Long = 0L,
-        packageName: String = ""
+        packageName: String = "",
+        artworkBytes: ByteArray? = null
     ): ByteArray {
         val pkgBytes   = packageName.toByteArray(Charsets.UTF_8).take(255).toByteArray()
         val titleBytes = title.toByteArray(Charsets.UTF_8).take(255).toByteArray()
         val artistBytes = artist.toByteArray(Charsets.UTF_8).take(255).toByteArray()
         val albumBytes = album.toByteArray(Charsets.UTF_8).take(255).toByteArray()
+        val artSafeBytes = artworkBytes?.take(1500)?.toByteArray()
 
-        // 1 (flags) + 8 (seq) + (2+N)*4
+        val artLen = artSafeBytes?.size ?: 0
+        // 1 (flags) + 8 (seq) + (2+N)*4 + 2 (artLen) + artLen
         val totalLen = 1 + 8 +
             2 + pkgBytes.size +
             2 + titleBytes.size +
             2 + artistBytes.size +
-            2 + albumBytes.size
+            2 + albumBytes.size +
+            2 + artLen
         val buf = ByteArray(totalLen)
         var pos = 0
 
@@ -496,7 +530,14 @@ object HatPacket {
         // album
         buf[pos++] = ((albumBytes.size shr 8) and 0xFF).toByte()
         buf[pos++] = (albumBytes.size and 0xFF).toByte()
-        System.arraycopy(albumBytes, 0, buf, pos, albumBytes.size)
+        System.arraycopy(albumBytes, 0, buf, pos, albumBytes.size); pos += albumBytes.size
+
+        // artworkBytes
+        buf[pos++] = ((artLen shr 8) and 0xFF).toByte()
+        buf[pos++] = (artLen and 0xFF).toByte()
+        if (artLen > 0 && artSafeBytes != null) {
+            System.arraycopy(artSafeBytes, 0, buf, pos, artLen)
+        }
 
         return buf
     }
@@ -525,13 +566,24 @@ object HatPacket {
         val artist = readField() ?: return null
         val album  = readField() ?: return null
 
+        var artBytes: ByteArray? = null
+        if (pos + 2 <= offset + length) {
+            val artLen = readUInt16BE(buffer, pos); pos += 2
+            if (artLen > 0 && pos + artLen <= offset + length) {
+                artBytes = ByteArray(artLen)
+                System.arraycopy(buffer, pos, artBytes, 0, artLen)
+                pos += artLen
+            }
+        }
+
         return MediaMetadataPayload(
             isPlaying = isPlaying,
             title = title,
             artist = artist,
             album = album,
             mediaStateSequence = seq,
-            packageName = pkg
+            packageName = pkg,
+            artworkBytes = artBytes
         )
     }
 }

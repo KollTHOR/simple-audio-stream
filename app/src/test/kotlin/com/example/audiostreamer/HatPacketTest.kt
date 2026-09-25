@@ -597,6 +597,30 @@ class HatPacketTest {
     }
 
     @Test
+    fun testMediaMetadataWithArtwork() {
+        val fakeArtwork = ByteArray(500) { it.toByte() }
+        val payload = HatPacket.serializeMediaMetadata(
+            isPlaying = true,
+            title = "Starboy",
+            artist = "The Weeknd",
+            album = "Starboy",
+            mediaStateSequence = 123L,
+            packageName = "com.spotify.music",
+            artworkBytes = fakeArtwork
+        )
+        val parsed = HatPacket.parseMediaMetadata(payload, 0, payload.size)
+        assertNotNull(parsed)
+        assertEquals("Starboy", parsed?.title)
+        assertEquals("The Weeknd", parsed?.artist)
+        assertEquals("Starboy", parsed?.album)
+        assertEquals(123L, parsed?.mediaStateSequence)
+        assertEquals("com.spotify.music", parsed?.packageName)
+        assertNotNull(parsed?.artworkBytes)
+        assertEquals(500, parsed?.artworkBytes?.size)
+        org.junit.Assert.assertArrayEquals(fakeArtwork, parsed?.artworkBytes)
+    }
+
+    @Test
     fun testMediaControlPacketRoundtrip() {
         val header = HatPacket.Header(
             packetType = HatPacket.TYPE_MEDIA_CONTROL,

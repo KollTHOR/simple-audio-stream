@@ -712,21 +712,23 @@ class AudioCaptureService : Service() {
                 artist = initialState.artist,
                 album = initialState.album,
                 mediaStateSequence = initialState.sequence,
-                packageName = initialState.packageName
+                packageName = initialState.packageName,
+                artworkBytes = initialState.artworkBytes
             )
         }
         MediaSessionTracker.onStateChangedListener = { state ->
             if (state != null) {
-                // New or updated session — build payload carrying sequence + packageName
+                // New or updated session — build payload carrying sequence + packageName + artwork
                 currentTrackMetadata = HatPacket.MediaMetadataPayload(
                     isPlaying = state.isPlaying,
                     title = state.title,
                     artist = state.artist,
                     album = state.album,
                     mediaStateSequence = state.sequence,
-                    packageName = state.packageName
+                    packageName = state.packageName,
+                    artworkBytes = state.artworkBytes
                 )
-                Log.i(TAG, "MEDIA_METADATA_TX seq=${state.sequence} package=${state.packageName} title=\"${state.title}\"")
+                Log.i(TAG, "MEDIA_METADATA_TX seq=${state.sequence} package=${state.packageName} title=\"${state.title}\" artLen=${state.artworkBytes?.size ?: 0}")
             } else {
                 // No active session — transmit an explicit clear packet so receivers reset
                 val clearSeq = MediaSessionTracker.currentState?.sequence?.plus(1) ?: 0L
@@ -736,7 +738,8 @@ class AudioCaptureService : Service() {
                     artist = "",
                     album = "",
                     mediaStateSequence = clearSeq,
-                    packageName = ""
+                    packageName = "",
+                    artworkBytes = null
                 )
                 Log.i(TAG, "MEDIA_METADATA_TX seq=$clearSeq [CLEAR — no active session]")
             }
@@ -1026,6 +1029,7 @@ class AudioCaptureService : Service() {
         try { socket.trafficClass = 0xB8 } catch (ignored: Exception) {}
         udpSocket = socket
         activeTransport = transport
+        sendMediaMetadata()
 
         val listenerSocket = socket
         controlListenerThread = Thread({
@@ -1146,8 +1150,8 @@ class AudioCaptureService : Service() {
                                     val capsDesc = if (byteVal != 0) AudioCapabilities.describeCapabilitiesMask(byteVal) else "default"
                                     Log.i(TAG, "Receiver registered: $endpoint (pre-config, caps: $capsDesc)")
                                     publishConnectedReceivers()
-                                    sendMediaMetadata(endpoint)
                                 }
+                                sendMediaMetadata(endpoint)
                             }
                         }
                         HatPacket.TYPE_REVERSE_VOLUME_SYNC -> {
@@ -2489,7 +2493,8 @@ class AudioCaptureService : Service() {
                 artist = meta.artist,
                 album = meta.album,
                 mediaStateSequence = meta.mediaStateSequence,
-                packageName = meta.packageName
+                packageName = meta.packageName,
+                artworkBytes = meta.artworkBytes
             )
             val header = HatPacket.Header(
                 packetType = HatPacket.TYPE_MEDIA_METADATA,
@@ -2499,12 +2504,21 @@ class AudioCaptureService : Service() {
             HatPacket.writeHeader(sendBuf, 0, header)
             System.arraycopy(payload, 0, sendBuf, HatPacket.HEADER_SIZE, payload.size)
 
-            val targets = if (endpoint != null) listOf(endpoint) else clientRegistry.keys.toList()
+            val targets = if (endpoint != null) {
+                listOf(endpoint)
+            } else if (clientRegistry.isNotEmpty()) {
+                clientRegistry.keys.toList()
+            } else {
+                configuredEndpoints.toList()
+            }
+
             for (target in targets) {
                 val packet = DatagramPacket(sendBuf, sendBuf.size, target.address, target.port)
                 sock.send(packet)
+                // 2x burst to ensure reliable delivery over UDP
+                try { sock.send(packet) } catch (ignored: Exception) {}
             }
-            Log.d(TAG, "MEDIA_METADATA_TX seq=${meta.mediaStateSequence} package=${meta.packageName} title='${meta.title}' → ${targets.size} endpoints")
+            Log.d(TAG, "MEDIA_METADATA_TX seq=${meta.mediaStateSequence} package=${meta.packageName} title='${meta.title}' artLen=${meta.artworkBytes?.size ?: 0} → ${targets.size} endpoints")
         } catch (e: Exception) {
             Log.w(TAG, "Failed sending media metadata: ${e.message}")
         }

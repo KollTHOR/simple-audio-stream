@@ -7,9 +7,12 @@ import android.media.session.MediaController
 import android.media.session.MediaSession
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
+import android.graphics.Bitmap
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.view.KeyEvent
+import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 import com.example.audiostreamer.AppLogger as Log
@@ -47,7 +50,11 @@ object MediaSessionTracker {
         val album: String,
         val isPlaying: Boolean,
         /** Monotonically increasing. Receiver rejects packets with seq <= lastReceivedSeq. */
-        val sequence: Long
+        val sequence: Long,
+        /** Local bitmap of album art (if available). */
+        val artwork: android.graphics.Bitmap? = null,
+        /** Compressed JPEG thumbnail (<= 1400 bytes) suitable for network transit. */
+        val artworkBytes: ByteArray? = null
     )
 
     /**
@@ -62,6 +69,16 @@ object MediaSessionTracker {
      * AudioCaptureService wires this to [AudioCaptureService.sendMediaMetadata].
      */
     var onStateChangedListener: ((MediaState?) -> Unit)? = null
+
+    private val stateListeners = java.util.concurrent.CopyOnWriteArrayList<(MediaState?) -> Unit>()
+
+    fun addOnStateChangedListener(listener: (MediaState?) -> Unit) {
+        stateListeners.add(listener)
+    }
+
+    fun removeOnStateChangedListener(listener: (MediaState?) -> Unit) {
+        stateListeners.remove(listener)
+    }
 
     // ──────────────────────────────────────────────────────────────────────────
     // Private internals
@@ -175,12 +192,48 @@ object MediaSessionTracker {
             when (command) {
                 HatPacket.MEDIA_CMD_PLAY_PAUSE -> {
                     val state = ctrl.playbackState?.state
-                    if (state == PlaybackState.STATE_PLAYING) tc.pause() else tc.play()
+                    if (state == PlaybackState.STATE_PLAYING) {
+                        try { tc.pause() } catch (ignored: Exception) {}
+                        try {
+                            ctrl.dispatchMediaButtonEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PAUSE))
+                            ctrl.dispatchMediaButtonEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PAUSE))
+                        } catch (ignored: Exception) {}
+                    } else {
+                        try { tc.play() } catch (ignored: Exception) {}
+                        try {
+                            ctrl.dispatchMediaButtonEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY))
+                            ctrl.dispatchMediaButtonEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY))
+                        } catch (ignored: Exception) {}
+                    }
                 }
-                HatPacket.MEDIA_CMD_PLAY     -> tc.play()
-                HatPacket.MEDIA_CMD_PAUSE    -> tc.pause()
-                HatPacket.MEDIA_CMD_NEXT     -> tc.skipToNext()
-                HatPacket.MEDIA_CMD_PREVIOUS -> tc.skipToPrevious()
+                HatPacket.MEDIA_CMD_PLAY -> {
+                    try { tc.play() } catch (ignored: Exception) {}
+                    try {
+                        ctrl.dispatchMediaButtonEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY))
+                        ctrl.dispatchMediaButtonEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY))
+                    } catch (ignored: Exception) {}
+                }
+                HatPacket.MEDIA_CMD_PAUSE -> {
+                    try { tc.pause() } catch (ignored: Exception) {}
+                    try {
+                        ctrl.dispatchMediaButtonEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PAUSE))
+                        ctrl.dispatchMediaButtonEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PAUSE))
+                    } catch (ignored: Exception) {}
+                }
+                HatPacket.MEDIA_CMD_NEXT -> {
+                    try { tc.skipToNext() } catch (ignored: Exception) {}
+                    try {
+                        ctrl.dispatchMediaButtonEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_NEXT))
+                        ctrl.dispatchMediaButtonEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_NEXT))
+                    } catch (ignored: Exception) {}
+                }
+                HatPacket.MEDIA_CMD_PREVIOUS -> {
+                    try { tc.skipToPrevious() } catch (ignored: Exception) {}
+                    try {
+                        ctrl.dispatchMediaButtonEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PREVIOUS))
+                        ctrl.dispatchMediaButtonEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PREVIOUS))
+                    } catch (ignored: Exception) {}
+                }
                 else -> return false
             }
             Log.i(TAG, "MEDIA_COMMAND command=$command targetPackage=$pkg")
@@ -278,9 +331,39 @@ object MediaSessionTracker {
 
     private fun selectBestController(controllers: List<MediaController>): MediaController? {
         if (controllers.isEmpty()) return null
-        return controllers.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING }
-            ?: controllers.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PAUSED }
-            ?: controllers.firstOrNull()
+
+        val current = registeredController
+        // 1. If currently registered controller is PLAYING, retain it
+        if (current != null) {
+            val matchingCurrent = controllers.firstOrNull { it.sessionToken == current.sessionToken }
+            if (matchingCurrent?.playbackState?.state == PlaybackState.STATE_PLAYING) {
+                return matchingCurrent
+            }
+        }
+
+        // 2. Otherwise, first controller that is PLAYING
+        val playing = controllers.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING }
+        if (playing != null) return playing
+
+        // 3. No controller is playing. Keep current controller if it is PAUSED
+        if (current != null) {
+            val matchingCurrent = controllers.firstOrNull { it.sessionToken == current.sessionToken }
+            if (matchingCurrent?.playbackState?.state == PlaybackState.STATE_PAUSED) {
+                return matchingCurrent
+            }
+        }
+
+        // 4. Any controller that is PAUSED
+        val paused = controllers.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PAUSED }
+        if (paused != null) return paused
+
+        // 5. Fallback to current if still present, else first
+        if (current != null) {
+            val matchingCurrent = controllers.firstOrNull { it.sessionToken == current.sessionToken }
+            if (matchingCurrent != null) return matchingCurrent
+        }
+
+        return controllers.firstOrNull()
     }
 
     private fun switchToController(newController: MediaController, reason: String) {
@@ -336,6 +419,30 @@ object MediaSessionTracker {
         val isPlaying = ps?.state == PlaybackState.STATE_PLAYING
         val seq    = sequence.incrementAndGet()
 
+        val artBitmap: Bitmap? = try {
+            meta?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
+                ?: meta?.getBitmap(MediaMetadata.METADATA_KEY_ART)
+                ?: meta?.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
+        } catch (ignored: Exception) {
+            null
+        }
+
+        val artBytes: ByteArray? = artBitmap?.let { bmp ->
+            try {
+                val maxDim = 96
+                val scaled = if (bmp.width > maxDim || bmp.height > maxDim) {
+                    val scale = maxDim.toFloat() / maxOf(bmp.width, bmp.height)
+                    Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt().coerceAtLeast(1), (bmp.height * scale).toInt().coerceAtLeast(1), true)
+                } else bmp
+                val baos = ByteArrayOutputStream()
+                scaled.compress(Bitmap.CompressFormat.JPEG, 70, baos)
+                val bytes = baos.toByteArray()
+                if (bytes.size <= 1400) bytes else null
+            } catch (ignored: Exception) {
+                null
+            }
+        }
+
         val state = MediaState(
             packageName     = ctrl.packageName,
             sessionIdentity = ctrl.sessionToken.hashCode().toString(),
@@ -343,19 +450,26 @@ object MediaSessionTracker {
             artist          = artist,
             album           = album,
             isPlaying       = isPlaying,
-            sequence        = seq
+            sequence        = seq,
+            artwork         = artBitmap,
+            artworkBytes    = artBytes
         )
         currentState = state
 
         Log.i(TAG,
             "MEDIA_STATE package=${ctrl.packageName} " +
             "state=${if (isPlaying) "PLAYING" else "PAUSED/STOPPED"} " +
-            "title=\"$title\" artist=\"$artist\" album=\"$album\" seq=$seq")
+            "title=\"$title\" artist=\"$artist\" album=\"$album\" seq=$seq artLen=${artBytes?.size ?: 0}")
 
         notifyListener(state)
     }
 
     private fun notifyListener(state: MediaState?) {
-        mainHandler.post { onStateChangedListener?.invoke(state) }
+        mainHandler.post {
+            onStateChangedListener?.invoke(state)
+            for (listener in stateListeners) {
+                try { listener(state) } catch (ignored: Exception) {}
+            }
+        }
     }
 }
