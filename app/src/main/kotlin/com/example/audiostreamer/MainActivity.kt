@@ -915,7 +915,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         cardReceiverDiscoverable.visibility = View.VISIBLE
-        tvReceiverHeadline.text = "Discoverable nearby"
+        tvReceiverHeadline.text = "● Ready to receive"
 
         val availableTransports = mutableListOf<String>()
         if (NetworkUtils.isLanAvailable(this)) {
@@ -1079,7 +1079,7 @@ class MainActivity : AppCompatActivity() {
     private val deviceDirectPreferences = mutableMapOf<String, Boolean>()
 
     private fun getUnifiedDiscoveredDevices(): List<UnifiedDevice> {
-        val registryNodes = HatDiscoveryRegistry.recomputeRegistry()
+        val registryNodes = HatDiscoveryRegistry.discoveredNodes.value
         val localIps = try {
             (NetworkUtils.getAllLocalIpAddresses() + NetworkUtils.getP2pIpAddresses()).toSet()
         } catch (e: Exception) { emptySet() }

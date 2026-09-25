@@ -535,9 +535,11 @@ object HatDiscoveryRegistry {
                 builder.build(connState)
             }.sortedByDescending { it.lastSeenEpochMs }
 
-            _discoveredNodes.value = resultList
-            resultList.forEach { entry ->
-                HatLinkManager.updateCandidatesFromDiscoveredNode(entry)
+            if (_discoveredNodes.value != resultList) {
+                _discoveredNodes.value = resultList
+                resultList.forEach { entry ->
+                    HatLinkManager.updateCandidatesFromDiscoveredNode(entry)
+                }
             }
             return resultList
         }
