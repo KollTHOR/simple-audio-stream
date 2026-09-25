@@ -190,6 +190,8 @@ class AudioSinkService : Service() {
     @Volatile internal var currentTrackArtist: String = "Transmitter"
     @Volatile internal var currentTrackAlbum: String = "HAT Audio Transport"
     @Volatile internal var isTrackPlaying: Boolean = true
+    /** Last accepted media-state sequence. Packets with seq <= this are stale and rejected. */
+    @Volatile private var lastReceivedMediaSequence: Long = -1L
 
     // --- HAT runtime diagnostics ------------------------------------------------------------------
     private val diagRxPackets = java.util.concurrent.atomic.AtomicLong(0L)
@@ -1906,11 +1908,38 @@ class AudioSinkService : Service() {
     }
 
     private fun updateMediaMetadata(metadata: HatPacket.MediaMetadataPayload) {
-        currentTrackTitle = metadata.title.ifBlank { "Streaming Audio" }
-        currentTrackArtist = metadata.artist.ifBlank { "Transmitter" }
-        currentTrackAlbum = metadata.album.ifBlank { "HAT Audio Transport" }
-        isTrackPlaying = metadata.isPlaying
+        val incomingSeq = metadata.mediaStateSequence
 
+        // Reject stale packets — protects against out-of-order or delayed network delivery
+        // when the transmitter has already switched to a new app.
+        if (incomingSeq > 0 && incomingSeq <= lastReceivedMediaSequence) {
+            Log.d(TAG, "MEDIA_METADATA_RX seq=$incomingSeq STALE (last=${lastReceivedMediaSequence}) — dropped")
+            return
+        }
+        lastReceivedMediaSequence = incomingSeq
+
+        // Detect clear packet: all fields empty == transmitter lost its media session
+        val isClearPacket = metadata.title.isEmpty() && metadata.artist.isEmpty() && metadata.album.isEmpty()
+
+        if (isClearPacket) {
+            Log.i(TAG, "MEDIA_SESSION_CLEARED seq=$incomingSeq — resetting to fallback state")
+            currentTrackTitle  = "Streaming Audio"
+            currentTrackArtist = "Transmitter"
+            currentTrackAlbum  = "HAT Audio Transport"
+            isTrackPlaying     = false
+        } else {
+            currentTrackTitle  = metadata.title.ifBlank  { "Streaming Audio" }
+            currentTrackArtist = metadata.artist.ifBlank { "Transmitter" }
+            currentTrackAlbum  = metadata.album.ifBlank  { "HAT Audio Transport" }
+            isTrackPlaying     = metadata.isPlaying
+            Log.i(TAG,
+                "MEDIA_METADATA_RX seq=$incomingSeq package=${metadata.packageName} " +
+                "state=${if (isTrackPlaying) "PLAYING" else "PAUSED"} " +
+                "title=\"$currentTrackTitle\" artist=\"$currentTrackArtist\" album=\"$currentTrackAlbum\"")
+        }
+
+        // Immediately push updated state to Android MediaSession and notification —
+        // no audio packet or track restart required.
         try {
             mediaSession?.setMetadata(
                 android.media.MediaMetadata.Builder()
@@ -1920,7 +1949,10 @@ class AudioSinkService : Service() {
                     .build()
             )
 
-            val state = if (isTrackPlaying) android.media.session.PlaybackState.STATE_PLAYING else android.media.session.PlaybackState.STATE_PAUSED
+            val state = if (isTrackPlaying)
+                android.media.session.PlaybackState.STATE_PLAYING
+            else
+                android.media.session.PlaybackState.STATE_PAUSED
             mediaSession?.setPlaybackState(
                 android.media.session.PlaybackState.Builder()
                     .setActions(
@@ -1941,6 +1973,7 @@ class AudioSinkService : Service() {
             Log.w(TAG, "Error updating MediaSession metadata: ${e.message}")
         }
     }
+
 
     fun sendMediaControl(command: Byte) {
         val targetAddr = lastSenderAddress ?: return
@@ -2043,6 +2076,12 @@ class AudioSinkService : Service() {
             mediaSession?.release()
         } catch (ignored: Exception) {}
         mediaSession = null
+        // Reset sequence gate so the next connection starts fresh
+        lastReceivedMediaSequence = -1L
+        currentTrackTitle  = "Streaming Audio"
+        currentTrackArtist = "Transmitter"
+        currentTrackAlbum  = "HAT Audio Transport"
+        isTrackPlaying     = true
 
         try {
             activeTransport?.close()
