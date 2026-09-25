@@ -47,7 +47,8 @@ import com.example.audiostreamer.diagnostics.ReceiverDiagnosticsState
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.button.MaterialButtonToggleGroup
 import com.google.android.material.card.MaterialCardView
-import com.google.android.material.switchmaterial.SwitchMaterial
+import com.google.android.material.materialswitch.MaterialSwitch
+import com.google.android.material.progressindicator.LinearProgressIndicator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -140,7 +141,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var btnBit16: MaterialButton
     private lateinit var btnBit24: MaterialButton
     private lateinit var tvBitDescription: TextView
-    private lateinit var switchSyncDeviceVolume: SwitchMaterial
+    private lateinit var switchSyncDeviceVolume: MaterialSwitch
     private lateinit var btnAppInfo: MaterialButton
     private lateinit var btnAccessibilitySettings: MaterialButton
     private lateinit var cardAudioStats: MaterialCardView
@@ -160,7 +161,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var tvDiagMinAvgMax: TextView
     private lateinit var tvDiagTimelineBreakdown: TextView
     private lateinit var tvDiagBufferDepth: TextView
-    private lateinit var pbDiagBufferHealth: ProgressBar
+    private lateinit var pbDiagBufferHealth: LinearProgressIndicator
     private lateinit var tvDiagClockDrift: TextView
     private lateinit var tvDiagTrackQueue: TextView
     private lateinit var tvDiagTrackTarget: TextView
@@ -189,7 +190,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var tvLatestTitle: TextView
     private lateinit var tvLatestMeta: TextView
     private lateinit var tvUpdateStatus: TextView
-    private lateinit var pbDownload: ProgressBar
+    private lateinit var pbDownload: LinearProgressIndicator
     private lateinit var tvDownloadProgress: TextView
     private lateinit var btnLatestAction: MaterialButton
     private lateinit var rgHistoryFilter: RadioGroup
