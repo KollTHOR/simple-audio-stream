@@ -419,6 +419,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         cardMediaPlayback = findViewById(R.id.card_media_playback)
+        cardMediaPlayback.clipToOutline = true
         ivMediaCardBg = findViewById(R.id.iv_media_card_bg)
         viewMediaCardScrim = findViewById(R.id.view_media_card_scrim)
         ivMediaArt = findViewById(R.id.iv_media_art)
@@ -2329,11 +2330,6 @@ class MainActivity : AppCompatActivity() {
             ivMediaCardBg.setImageBitmap(blurred)
             ivMediaCardBg.visibility = View.VISIBLE
             viewMediaCardScrim.visibility = View.VISIBLE
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                try {
-                    ivMediaCardBg.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(35f, 35f, android.graphics.Shader.TileMode.CLAMP))
-                } catch (ignored: Exception) {}
-            }
         } else {
             ivMediaArt.setImageResource(R.drawable.ic_category_audio)
             val pad = (8 * resources.displayMetrics.density).toInt()
