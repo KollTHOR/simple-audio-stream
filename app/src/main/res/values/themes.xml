@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.AudioStreamer" parent="Theme.Material3.DayNight.NoActionBar">
+    <style name="Base.Theme.AudioStreamer" parent="Theme.Material3.DayNight.NoActionBar">
 
         <!-- M3 Primary -->
         <item name="colorPrimary">@color/primary</item>
@@ -33,6 +33,10 @@
         <item name="android:windowBackground">@color/bg_screen</item>
         <item name="android:statusBarColor">@color/bg_screen</item>
         <item name="android:navigationBarColor">@color/bg_screen</item>
-        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+    <!-- Light mode variant: dark status bar icons -->
+    <style name="Theme.AudioStreamer" parent="Base.Theme.AudioStreamer">
+        <item name="android:windowLightStatusBar">true</item>
     </style>
 </resources>

@@ -46,7 +46,8 @@ import android.widget.ImageView
 import android.widget.RadioButton
 import androidx.appcompat.widget.PopupMenu
 import com.google.android.material.card.MaterialCardView
-import com.google.android.material.switchmaterial.SwitchMaterial
+import com.google.android.material.materialswitch.MaterialSwitch
+import com.google.android.material.progressindicator.LinearProgressIndicator
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -72,12 +73,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvHeaderIp: TextView
 
     // Active Transport Badges
-    private lateinit var layoutTransportBadges: LinearLayout
-    private lateinit var badgeTransportLan: TextView
-    private lateinit var badgeTransportP2p: TextView
-    private lateinit var badgeTransportNan: TextView
-    private lateinit var badgeTransportBle: TextView
-    private lateinit var badgeTransportNfc: TextView
+    private lateinit var layoutTransportBadges: ChipGroup
+    private lateinit var badgeTransportLan: Chip
+    private lateinit var badgeTransportP2p: Chip
+    private lateinit var badgeTransportNan: Chip
+    private lateinit var badgeTransportBle: Chip
+    private lateinit var badgeTransportNfc: Chip
 
     // Interactive NFC Tap-to-Pair Card
     private lateinit var cardNfcTap: MaterialCardView
@@ -116,7 +117,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cardScanDashboard: MaterialCardView
     private lateinit var tvDiscoveryStatusBanner: TextView
     private lateinit var tvDiscoveryTimer: TextView
-    private lateinit var pbDiscoveryProgressBar: ProgressBar
+    private lateinit var pbDiscoveryProgressBar: LinearProgressIndicator
     private lateinit var tvChipLanStatus: TextView
     private lateinit var tvChipDirectStatus: TextView
     private lateinit var tvChipBleStatus: TextView
@@ -127,7 +128,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvAvailableEmpty: TextView
 
     private lateinit var layoutReceiverP2p: LinearLayout
-    private lateinit var switchReceiverP2p: SwitchMaterial
+    private lateinit var switchReceiverP2p: MaterialSwitch
     private lateinit var layoutReceiverP2pInfo: LinearLayout
     private lateinit var tvP2pSsid: TextView
     private lateinit var tvP2pPassphrase: TextView
@@ -156,7 +157,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvBadgeStatus: TextView
     private lateinit var tvEndpointInfo: TextView
     private lateinit var tvPacketsStat: TextView
-    private lateinit var pbAudioLevel: ProgressBar
+    private lateinit var pbAudioLevel: LinearProgressIndicator
     private lateinit var tvAudioLevelVal: TextView
     private lateinit var tvDiagnosticTip: TextView
     private lateinit var layoutPipelineDetails: LinearLayout
@@ -164,7 +165,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvPipelineFormat: TextView
     private lateinit var tvPipelineNodeInfo: TextView
     private lateinit var tvBufferHealthVal: TextView
-    private lateinit var pbBufferHealth: ProgressBar
+    private lateinit var pbBufferHealth: LinearProgressIndicator
 
     private var currentMode: Mode = Mode.TRANSMITTER
     private var detectedLocalIp: String? = null
