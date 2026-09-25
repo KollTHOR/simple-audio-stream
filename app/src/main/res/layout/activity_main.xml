@@ -95,106 +95,95 @@
                     </LinearLayout>
                 </LinearLayout>
 
-                <!-- Active Transports Badge Row (Interactive & Expandable) -->
-                <LinearLayout
+                <!-- Active Transports Badge Row (Material Chips) -->
+                <com.google.android.material.chip.ChipGroup
                     android:id="@+id/layout_transport_badges"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
                     android:layout_marginBottom="@dimen/card_spacing"
-                    android:clickable="true"
-                    android:focusable="true">
+                    app:chipSpacingHorizontal="4dp"
+                    app:singleLine="true">
 
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="TRANSPORTS:"
-                        android:textSize="10sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/text_hint"
-                        android:letterSpacing="0.05"
-                        android:layout_marginEnd="6dp" />
-
-                    <!-- LAN Badge -->
-                    <TextView
+                    <com.google.android.material.chip.Chip
                         android:id="@+id/badge_transport_lan"
+                        style="@style/Widget.Material3.Chip.Assist"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="LAN"
                         android:textSize="10sp"
-                        android:textStyle="bold"
-                        android:paddingStart="6dp"
-                        android:paddingEnd="6dp"
-                        android:paddingTop="2dp"
-                        android:paddingBottom="2dp"
-                        android:layout_marginEnd="4dp"
-                        android:background="@drawable/bg_stat_badge"
-                        android:textColor="@color/status_green" />
+                        android:textColor="@color/status_green"
+                        app:chipBackgroundColor="@color/input_bg"
+                        app:chipStrokeColor="@color/card_stroke"
+                        app:chipStrokeWidth="1dp"
+                        app:chipMinHeight="26dp"
+                        android:clickable="false"
+                        android:focusable="false"
+                        app:ensureMinTouchTargetSize="false" />
 
-                    <!-- P2P Badge -->
-                    <TextView
+                    <com.google.android.material.chip.Chip
                         android:id="@+id/badge_transport_p2p"
+                        style="@style/Widget.Material3.Chip.Assist"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="Wi-Fi Direct"
                         android:textSize="10sp"
-                        android:textStyle="bold"
-                        android:paddingStart="6dp"
-                        android:paddingEnd="6dp"
-                        android:paddingTop="2dp"
-                        android:paddingBottom="2dp"
-                        android:layout_marginEnd="4dp"
-                        android:background="@drawable/bg_stat_badge"
-                        android:textColor="@color/text_hint" />
+                        android:textColor="@color/text_hint"
+                        app:chipBackgroundColor="@color/input_bg"
+                        app:chipStrokeColor="@color/card_stroke"
+                        app:chipStrokeWidth="1dp"
+                        app:chipMinHeight="26dp"
+                        android:clickable="false"
+                        android:focusable="false"
+                        app:ensureMinTouchTargetSize="false" />
 
-                    <!-- NAN Badge -->
-                    <TextView
+                    <com.google.android.material.chip.Chip
                         android:id="@+id/badge_transport_nan"
+                        style="@style/Widget.Material3.Chip.Assist"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="Aware"
                         android:textSize="10sp"
-                        android:textStyle="bold"
-                        android:paddingStart="6dp"
-                        android:paddingEnd="6dp"
-                        android:paddingTop="2dp"
-                        android:paddingBottom="2dp"
-                        android:layout_marginEnd="4dp"
-                        android:background="@drawable/bg_stat_badge"
-                        android:textColor="@color/text_hint" />
+                        android:textColor="@color/text_hint"
+                        app:chipBackgroundColor="@color/input_bg"
+                        app:chipStrokeColor="@color/card_stroke"
+                        app:chipStrokeWidth="1dp"
+                        app:chipMinHeight="26dp"
+                        android:clickable="false"
+                        android:focusable="false"
+                        app:ensureMinTouchTargetSize="false" />
 
-                    <!-- BLE Badge -->
-                    <TextView
+                    <com.google.android.material.chip.Chip
                         android:id="@+id/badge_transport_ble"
+                        style="@style/Widget.Material3.Chip.Assist"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="BLE"
                         android:textSize="10sp"
-                        android:textStyle="bold"
-                        android:paddingStart="6dp"
-                        android:paddingEnd="6dp"
-                        android:paddingTop="2dp"
-                        android:paddingBottom="2dp"
-                        android:layout_marginEnd="4dp"
-                        android:background="@drawable/bg_stat_badge"
-                        android:textColor="@color/text_hint" />
+                        android:textColor="@color/text_hint"
+                        app:chipBackgroundColor="@color/input_bg"
+                        app:chipStrokeColor="@color/card_stroke"
+                        app:chipStrokeWidth="1dp"
+                        app:chipMinHeight="26dp"
+                        android:clickable="false"
+                        android:focusable="false"
+                        app:ensureMinTouchTargetSize="false" />
 
-                    <!-- NFC Badge -->
-                    <TextView
+                    <com.google.android.material.chip.Chip
                         android:id="@+id/badge_transport_nfc"
+                        style="@style/Widget.Material3.Chip.Assist"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="NFC"
                         android:textSize="10sp"
-                        android:textStyle="bold"
-                        android:paddingStart="6dp"
-                        android:paddingEnd="6dp"
-                        android:paddingTop="2dp"
-                        android:paddingBottom="2dp"
-                        android:background="@drawable/bg_stat_badge"
-                        android:textColor="@color/text_hint" />
-                </LinearLayout>
+                        android:textColor="@color/text_hint"
+                        app:chipBackgroundColor="@color/input_bg"
+                        app:chipStrokeColor="@color/card_stroke"
+                        app:chipStrokeWidth="1dp"
+                        app:chipMinHeight="26dp"
+                        android:clickable="false"
+                        android:focusable="false"
+                        app:ensureMinTouchTargetSize="false" />
+                </com.google.android.material.chip.ChipGroup>
 
                 <!-- Mode Selector (Material Segmented Control) -->
                 <com.google.android.material.button.MaterialButtonToggleGroup
@@ -559,18 +548,19 @@
                                         android:layout_height="wrap_content"
                                         android:visibility="gone" />
 
-                                    <!-- Horizontal Linear Progress Bar for scan countdown -->
-                                    <ProgressBar
+                                    <!-- Linear Progress Indicator for scan countdown -->
+                                    <com.google.android.material.progressindicator.LinearProgressIndicator
                                         android:id="@+id/pb_discovery_progress_bar"
-                                        style="?android:attr/progressBarStyleHorizontal"
                                         android:layout_width="match_parent"
-                                        android:layout_height="3dp"
+                                        android:layout_height="wrap_content"
                                         android:layout_marginTop="6dp"
                                         android:layout_marginBottom="8dp"
                                         android:max="100"
                                         android:progress="0"
-                                        android:progressTint="@color/primary"
-                                        android:progressBackgroundTint="@color/input_bg"
+                                        app:trackColor="@color/input_bg"
+                                        app:indicatorColor="@color/primary"
+                                        app:trackCornerRadius="4dp"
+                                        app:trackThickness="3dp"
                                         android:visibility="gone" />
 
                                     <!-- Discovery Methods Status Chips Row -->
@@ -824,7 +814,7 @@
                                     android:textStyle="bold"
                                     android:textColor="@color/text_primary" />
 
-                                <com.google.android.material.switchmaterial.SwitchMaterial
+                                <com.google.android.material.materialswitch.MaterialSwitch
                                     android:id="@+id/switch_receiver_p2p"
                                     android:layout_width="wrap_content"
                                     android:layout_height="wrap_content" />
@@ -1002,7 +992,7 @@
                                 app:boxCornerRadiusBottomStart="8dp"
                                 app:boxCornerRadiusTopEnd="8dp"
                                 app:boxCornerRadiusTopStart="8dp"
-                                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+                                style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
 
                                 <com.google.android.material.textfield.TextInputEditText
                                     android:id="@+id/et_target_ip"
@@ -1029,7 +1019,7 @@
                                 app:boxCornerRadiusBottomStart="8dp"
                                 app:boxCornerRadiusTopEnd="8dp"
                                 app:boxCornerRadiusTopStart="8dp"
-                                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+                                style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
 
                                 <com.google.android.material.textfield.TextInputEditText
                                     android:id="@+id/et_port"
@@ -1144,15 +1134,16 @@
                                 android:textColor="@color/text_primary" />
                         </LinearLayout>
 
-                        <ProgressBar
+                        <com.google.android.material.progressindicator.LinearProgressIndicator
                             android:id="@+id/pb_audio_level"
-                            style="?android:attr/progressBarStyleHorizontal"
                             android:layout_width="match_parent"
-                            android:layout_height="@dimen/progress_height"
+                            android:layout_height="wrap_content"
                             android:max="100"
                             android:progress="0"
-                            android:progressBackgroundTint="#272732"
-                            android:progressTint="@color/status_green"
+                            app:trackColor="#272732"
+                            app:indicatorColor="@color/status_green"
+                            app:trackCornerRadius="4dp"
+                            app:trackThickness="8dp"
                             android:layout_marginBottom="10dp" />
 
                         <!-- Audio Pipeline & Buffer Monitor (Available in Diagnostics) -->
@@ -1243,15 +1234,16 @@
                                     android:textColor="@color/primary" />
                             </LinearLayout>
 
-                            <ProgressBar
+                            <com.google.android.material.progressindicator.LinearProgressIndicator
                                 android:id="@+id/pb_buffer_health"
-                                style="?android:attr/progressBarStyleHorizontal"
                                 android:layout_width="match_parent"
-                                android:layout_height="@dimen/progress_height"
+                                android:layout_height="wrap_content"
                                 android:max="100"
                                 android:progress="0"
-                                android:progressBackgroundTint="#272732"
-                                android:progressTint="@color/primary" />
+                                app:trackColor="#272732"
+                                app:indicatorColor="@color/primary"
+                                app:trackCornerRadius="4dp"
+                                app:trackThickness="8dp" />
                         </LinearLayout>
 
                         <!-- Diagnostic Hint -->
@@ -1324,8 +1316,7 @@
         app:tint="@color/white"
         app:backgroundTint="@color/card_bg"
         app:rippleColor="@color/primary"
-        app:borderWidth="1dp"
-        app:elevation="4dp"
+        app:elevation="6dp"
         android:contentDescription="Settings" />
 
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

@@ -1,34 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Core Dark Surfaces -->
-    <color name="bg_screen">#101014</color>
-    <color name="card_bg">#1A1A22</color>
-    <color name="card_stroke">#2E2E3E</color>
-    <color name="input_bg">#14141B</color>
+    <!-- Core Light Surfaces -->
+    <color name="bg_screen">#F6F8FA</color>
+    <color name="card_bg">#FFFFFF</color>
+    <color name="card_stroke">#E1E4E8</color>
+    <color name="input_bg">#EFF1F3</color>
 
-    <!-- Accents & Brands -->
+    <!-- Accents & Brands (same as dark) -->
     <color name="primary">#2563EB</color>
     <color name="primary_variant">#1D4ED8</color>
     <color name="secondary">#0D9488</color>
     <color name="secondary_variant">#0F766E</color>
 
-    <!-- Status Colors -->
+    <!-- Status Colors (same as dark) -->
     <color name="status_green">#10B981</color>
     <color name="status_blue">#3B82F6</color>
     <color name="status_orange">#F59E0B</color>
     <color name="status_red">#EF4444</color>
-    <color name="status_gray">#4B5563</color>
+    <color name="status_gray">#9CA3AF</color>
 
-    <!-- Typography in Dark Mode -->
-    <color name="text_primary">#F4F4F5</color>
-    <color name="text_secondary">#A1A1AA</color>
-    <color name="text_hint">#71717A</color>
+    <!-- Typography in Light Mode -->
+    <color name="text_primary">#111827</color>
+    <color name="text_secondary">#6B7280</color>
+    <color name="text_hint">#9CA3AF</color>
 
     <!-- IP Pill / Chips -->
-    <color name="pill_bg">#1E293B</color>
-    <color name="pill_stroke">#334155</color>
-    <color name="pill_text">#60A5FA</color>
+    <color name="pill_bg">#EFF6FF</color>
+    <color name="pill_stroke">#BFDBFE</color>
+    <color name="pill_text">#2563EB</color>
 
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
 </resources>
+

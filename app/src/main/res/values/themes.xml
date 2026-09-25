@@ -1,12 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.AudioStreamer" parent="Theme.MaterialComponents.NoActionBar">
+    <style name="Theme.AudioStreamer" parent="Theme.Material3.DayNight.NoActionBar">
+
+        <!-- M3 Primary -->
         <item name="colorPrimary">@color/primary</item>
-        <item name="colorPrimaryVariant">@color/primary_variant</item>
         <item name="colorOnPrimary">@color/white</item>
+        <item name="colorPrimaryContainer">@color/primary_variant</item>
+        <item name="colorOnPrimaryContainer">@color/text_primary</item>
+
+        <!-- M3 Secondary -->
         <item name="colorSecondary">@color/secondary</item>
-        <item name="colorSecondaryVariant">@color/secondary_variant</item>
         <item name="colorOnSecondary">@color/white</item>
+        <item name="colorSecondaryContainer">@color/secondary_variant</item>
+        <item name="colorOnSecondaryContainer">@color/text_primary</item>
+
+        <!-- M3 Surface Roles -->
+        <item name="colorSurface">@color/card_bg</item>
+        <item name="colorOnSurface">@color/text_primary</item>
+        <item name="colorSurfaceVariant">@color/input_bg</item>
+        <item name="colorOnSurfaceVariant">@color/text_secondary</item>
+        <item name="colorOutline">@color/card_stroke</item>
+        <item name="colorOutlineVariant">@color/card_stroke</item>
+
+        <!-- M3 Background -->
+        <item name="android:colorBackground">@color/bg_screen</item>
+
+        <!-- M3 Error -->
+        <item name="colorError">@color/status_red</item>
+        <item name="colorOnError">@color/white</item>
+
+        <!-- System bars -->
         <item name="android:windowBackground">@color/bg_screen</item>
         <item name="android:statusBarColor">@color/bg_screen</item>
         <item name="android:navigationBarColor">@color/bg_screen</item>

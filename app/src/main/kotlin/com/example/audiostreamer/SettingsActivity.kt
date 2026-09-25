@@ -82,7 +82,8 @@ class SettingsActivity : AppCompatActivity() {
         AUDIO,
         DIAGNOSTICS,
         UPDATES,
-        ABOUT
+        ABOUT,
+        APPEARANCE
     }
 
     enum class UpdateState {
@@ -92,7 +93,7 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     // Top Header
-    private lateinit var btnBack: ImageView
+    private lateinit var btnBack: com.google.android.material.button.MaterialButton
     private lateinit var tvSettingsTitle: TextView
     private lateinit var tvSettingsSubtitle: TextView
 
@@ -102,6 +103,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var cardMenuDiagnostics: MaterialCardView
     private lateinit var cardMenuUpdates: MaterialCardView
     private lateinit var cardMenuAbout: MaterialCardView
+    private lateinit var cardMenuAppearance: MaterialCardView
     private lateinit var tvMenuAudioBadge: TextView
     private lateinit var tvMenuDiagBadge: TextView
     private lateinit var tvMenuUpdatesBadge: TextView
@@ -111,6 +113,12 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var layoutCategoryDiagnostics: LinearLayout
     private lateinit var layoutCategoryUpdates: LinearLayout
     private lateinit var layoutCategoryAbout: LinearLayout
+    private lateinit var layoutCategoryAppearance: LinearLayout
+
+    // Appearance Category Views
+    private lateinit var btnThemeSystem: com.google.android.material.button.MaterialButton
+    private lateinit var btnThemeLight: com.google.android.material.button.MaterialButton
+    private lateinit var btnThemeDark: com.google.android.material.button.MaterialButton
 
     // Audio Category Views
     private lateinit var toggleProfileGroup: MaterialButtonToggleGroup
@@ -232,7 +240,9 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
+        val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+        val themeMode = prefs.getInt("theme_mode", AppCompatDelegate.MODE_NIGHT_YES) // default: dark
+        AppCompatDelegate.setDefaultNightMode(themeMode)
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)
 
@@ -250,6 +260,7 @@ class SettingsActivity : AppCompatActivity() {
         setupDiagnosticsCategory()
         setupUpdatesCategory()
         setupAboutCategory()
+        setupAppearanceCategory()
 
         // Handle initial category from Intent extra (e.g. from MainActivity receiver shortcut)
         val targetCategoryStr = intent.getStringExtra(EXTRA_CATEGORY)
@@ -276,6 +287,7 @@ class SettingsActivity : AppCompatActivity() {
         cardMenuDiagnostics = findViewById(R.id.card_menu_diagnostics)
         cardMenuUpdates = findViewById(R.id.card_menu_updates)
         cardMenuAbout = findViewById(R.id.card_menu_about)
+        cardMenuAppearance = findViewById(R.id.card_menu_appearance)
         tvMenuAudioBadge = findViewById(R.id.tv_menu_audio_badge)
         tvMenuDiagBadge = findViewById(R.id.tv_menu_diag_badge)
         tvMenuUpdatesBadge = findViewById(R.id.tv_menu_updates_badge)
@@ -285,6 +297,12 @@ class SettingsActivity : AppCompatActivity() {
         layoutCategoryDiagnostics = findViewById(R.id.layout_category_diagnostics)
         layoutCategoryUpdates = findViewById(R.id.layout_category_updates)
         layoutCategoryAbout = findViewById(R.id.layout_category_about)
+        layoutCategoryAppearance = findViewById(R.id.layout_category_appearance)
+
+        // Appearance Views
+        btnThemeSystem = findViewById(R.id.btn_theme_system)
+        btnThemeLight = findViewById(R.id.btn_theme_light)
+        btnThemeDark = findViewById(R.id.btn_theme_dark)
 
         // Audio Views
         toggleProfileGroup = findViewById(R.id.toggle_profile_group)
@@ -401,6 +419,7 @@ class SettingsActivity : AppCompatActivity() {
         cardMenuDiagnostics.setOnClickListener { showCategory(Category.DIAGNOSTICS) }
         cardMenuUpdates.setOnClickListener { showCategory(Category.UPDATES) }
         cardMenuAbout.setOnClickListener { showCategory(Category.ABOUT) }
+        cardMenuAppearance.setOnClickListener { showCategory(Category.APPEARANCE) }
     }
 
     fun showCategory(category: Category) {
@@ -411,6 +430,7 @@ class SettingsActivity : AppCompatActivity() {
         layoutCategoryDiagnostics.visibility = if (category == Category.DIAGNOSTICS) View.VISIBLE else View.GONE
         layoutCategoryUpdates.visibility = if (category == Category.UPDATES) View.VISIBLE else View.GONE
         layoutCategoryAbout.visibility = if (category == Category.ABOUT) View.VISIBLE else View.GONE
+        layoutCategoryAppearance.visibility = if (category == Category.APPEARANCE) View.VISIBLE else View.GONE
 
         when (category) {
             Category.MENU -> {
@@ -440,6 +460,11 @@ class SettingsActivity : AppCompatActivity() {
                 tvSettingsTitle.text = "About"
                 tvSettingsSubtitle.text = "App Overview & Setup"
                 updateAccessibilityButton()
+                diagnosticsViewModel.stopSampling()
+            }
+            Category.APPEARANCE -> {
+                tvSettingsTitle.text = "Appearance"
+                tvSettingsSubtitle.text = "Theme & Display Preferences"
                 diagnosticsViewModel.stopSampling()
             }
         }
@@ -1335,6 +1360,44 @@ class SettingsActivity : AppCompatActivity() {
             btnAboutAppInfo.setTextColor(colorText)
             btnAboutAppInfo.strokeColor = ColorStateList.valueOf(colorStroke)
         }
+    }
+
+    private fun setupAppearanceCategory() {
+        val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+
+        fun highlightThemeButton(selected: com.google.android.material.button.MaterialButton) {
+            val colorPrimary = ContextCompat.getColor(this, R.color.primary)
+            val colorCard = ContextCompat.getColor(this, R.color.card_bg)
+            val colorWhite = ContextCompat.getColor(this, R.color.white)
+            val colorText = ContextCompat.getColor(this, R.color.text_primary)
+            listOf(btnThemeSystem, btnThemeLight, btnThemeDark).forEach { btn ->
+                if (btn == selected) {
+                    btn.backgroundTintList = ColorStateList.valueOf(colorPrimary)
+                    btn.setTextColor(colorWhite)
+                } else {
+                    btn.backgroundTintList = ColorStateList.valueOf(colorCard)
+                    btn.setTextColor(colorText)
+                }
+            }
+        }
+
+        fun applyTheme(mode: Int, selected: com.google.android.material.button.MaterialButton) {
+            prefs.edit().putInt("theme_mode", mode).apply()
+            highlightThemeButton(selected)
+            AppCompatDelegate.setDefaultNightMode(mode)
+        }
+
+        // Restore current selection visually
+        val current = prefs.getInt("theme_mode", AppCompatDelegate.MODE_NIGHT_YES)
+        when (current) {
+            AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM -> highlightThemeButton(btnThemeSystem)
+            AppCompatDelegate.MODE_NIGHT_NO -> highlightThemeButton(btnThemeLight)
+            else -> highlightThemeButton(btnThemeDark)
+        }
+
+        btnThemeSystem.setOnClickListener { applyTheme(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM, btnThemeSystem) }
+        btnThemeLight.setOnClickListener  { applyTheme(AppCompatDelegate.MODE_NIGHT_NO, btnThemeLight) }
+        btnThemeDark.setOnClickListener   { applyTheme(AppCompatDelegate.MODE_NIGHT_YES, btnThemeDark) }
     }
 
     private fun checkInstallPermissionOnResume() {
