@@ -175,7 +175,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var sliderRemoteVol: Slider
 
     // Equalizer & Media Playback Controls
-    private lateinit var btnHeaderEq: ImageView
+    private lateinit var fabEqualizer: FloatingActionButton
     private lateinit var cardMediaPlayback: MaterialCardView
     private lateinit var ivMediaCardBg: ImageView
     private lateinit var viewMediaCardScrim: View
@@ -413,8 +413,8 @@ class MainActivity : AppCompatActivity() {
             showNodeDetailsDialog()
         }
 
-        btnHeaderEq = findViewById(R.id.btn_header_eq)
-        btnHeaderEq.setOnClickListener {
+        fabEqualizer = findViewById(R.id.fab_equalizer)
+        fabEqualizer.setOnClickListener {
             EqualizerBottomSheetDialogFragment().show(supportFragmentManager, "EqualizerBottomSheet")
         }
 

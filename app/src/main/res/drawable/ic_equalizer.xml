@@ -3,7 +3,16 @@
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
+    <!-- Left vertical fader track and handle -->
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M10,20h4V4h-4v16zm-6,0h4v-8H4v8zM16,9v11h4V9h-4z"/>
+        android:pathData="M6,3h2v2h-2zM6,11h2v10h-2zM4,5h6c0.55,0 1,0.45 1,1v4c0,0.55 -0.45,1 -1,1H4c-0.55,0 -1,-0.45 -1,-1V6c0,-0.55 0.45,-1 1,-1zm1,2v2h4V7H5z"/>
+    <!-- Center vertical fader track and handle -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M11,3h2v9h-2zM11,18h2v3h-2zM9,12h6c0.55,0 1,0.45 1,1v4c0,0.55 -0.45,1 -1,1H9c-0.55,0 -1,-0.45 -1,-1v-4c0,-0.55 0.45,-1 1,-1zm1,2v2h4v-2h-4z"/>
+    <!-- Right vertical fader track and handle -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M16,3h2v4h-2zM16,13h2v8h-2zM14,7h6c0.55,0 1,0.45 1,1v4c0,0.55 -0.45,1 -1,1h-6c-0.55,0 -1,-0.45 -1,-1V8c0,-0.55 0.45,-1 1,-1zm1,2v2h4V9h-4z"/>
 </vector>
