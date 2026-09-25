@@ -117,6 +117,9 @@ class MainActivity : AppCompatActivity() {
     private var layoutAvailableDevicesBody: View? = null
     private var ivAvailableSectionChevron: ImageView? = null
     private var isAvailableSectionExpanded: Boolean = false
+    /** Tracks previous sender-active state so we collapse the section exactly once on transition. */
+    private var wasSenderActive: Boolean = false
+
     private lateinit var tvDiscoveryTitle: TextView
     private lateinit var pbDiscoveryScanning: ProgressBar
     private lateinit var tvDiscoveryScanningText: TextView
@@ -2462,12 +2465,23 @@ class MainActivity : AppCompatActivity() {
                         btnAction.text = getString(R.string.stop_stream)
                         btnAction.setIconResource(R.drawable.ic_stop)
                         btnAction.backgroundTintList = ColorStateList.valueOf(colorRed)
+                        // Collapse available devices exactly once when streaming starts.
+                        // This hides stale device entries during the heartbeat-registration race,
+                        // preventing accidental double-connect. User can re-expand if needed.
+                        if (!wasSenderActive && isAvailableSectionExpanded) {
+                            isAvailableSectionExpanded = false
+                            layoutAvailableDevicesBody?.visibility = View.GONE
+                            ivAvailableSectionChevron?.rotation = 0f
+                        }
+                        wasSenderActive = true
                     }
+
                     else -> {
                         btnAction.isEnabled = true
                         btnAction.text = getString(R.string.start_stream)
                         btnAction.setIconResource(R.drawable.ic_play)
                         btnAction.backgroundTintList = ColorStateList.valueOf(colorPrimary)
+                        wasSenderActive = false
                     }
                 }
             }
