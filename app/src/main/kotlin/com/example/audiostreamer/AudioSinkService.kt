@@ -61,6 +61,7 @@ class AudioSinkService : Service() {
 
         val isRunning = AtomicBoolean(false)
         @Volatile internal var currentInstance: AudioSinkService? = null
+        var onMediaMetadataChanged: ((title: String, artist: String, album: String, isPlaying: Boolean, art: android.graphics.Bitmap?) -> Unit)? = null
 
         /**
          * Obtains an immediate, thread-safe snapshot of the receiver's runtime diagnostics
@@ -190,6 +191,7 @@ class AudioSinkService : Service() {
     @Volatile internal var currentTrackArtist: String = "Transmitter"
     @Volatile internal var currentTrackAlbum: String = "HAT Audio Transport"
     @Volatile internal var isTrackPlaying: Boolean = true
+    @Volatile internal var currentTrackArtwork: android.graphics.Bitmap? = null
     /** Last accepted media-state sequence. Packets with seq <= this are stale and rejected. */
     @Volatile private var lastReceivedMediaSequence: Long = -1L
 
@@ -1820,7 +1822,10 @@ class AudioSinkService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
-            .addAction(
+
+        currentTrackArtwork?.let { builder.setLargeIcon(it) }
+
+        builder.addAction(
                 Notification.Action.Builder(
                     android.graphics.drawable.Icon.createWithResource(this, android.R.drawable.ic_media_previous),
                     "Previous", prevIntent
@@ -1927,27 +1932,37 @@ class AudioSinkService : Service() {
             currentTrackArtist = "Transmitter"
             currentTrackAlbum  = "HAT Audio Transport"
             isTrackPlaying     = false
+            currentTrackArtwork = null
         } else {
             currentTrackTitle  = metadata.title.ifBlank  { "Streaming Audio" }
             currentTrackArtist = metadata.artist.ifBlank { "Transmitter" }
             currentTrackAlbum  = metadata.album.ifBlank  { "HAT Audio Transport" }
             isTrackPlaying     = metadata.isPlaying
+            currentTrackArtwork = metadata.artworkBytes?.let { bytes ->
+                try {
+                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                } catch (ignored: Exception) {
+                    null
+                }
+            }
             Log.i(TAG,
                 "MEDIA_METADATA_RX seq=$incomingSeq package=${metadata.packageName} " +
                 "state=${if (isTrackPlaying) "PLAYING" else "PAUSED"} " +
-                "title=\"$currentTrackTitle\" artist=\"$currentTrackArtist\" album=\"$currentTrackAlbum\"")
+                "title=\"$currentTrackTitle\" artist=\"$currentTrackArtist\" album=\"$currentTrackAlbum\" artLen=${metadata.artworkBytes?.size ?: 0}")
         }
 
         // Immediately push updated state to Android MediaSession and notification —
         // no audio packet or track restart required.
         try {
-            mediaSession?.setMetadata(
-                android.media.MediaMetadata.Builder()
-                    .putString(android.media.MediaMetadata.METADATA_KEY_TITLE, currentTrackTitle)
-                    .putString(android.media.MediaMetadata.METADATA_KEY_ARTIST, currentTrackArtist)
-                    .putString(android.media.MediaMetadata.METADATA_KEY_ALBUM, currentTrackAlbum)
-                    .build()
-            )
+            val metaBuilder = android.media.MediaMetadata.Builder()
+                .putString(android.media.MediaMetadata.METADATA_KEY_TITLE, currentTrackTitle)
+                .putString(android.media.MediaMetadata.METADATA_KEY_ARTIST, currentTrackArtist)
+                .putString(android.media.MediaMetadata.METADATA_KEY_ALBUM, currentTrackAlbum)
+            currentTrackArtwork?.let {
+                metaBuilder.putBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART, it)
+                metaBuilder.putBitmap(android.media.MediaMetadata.METADATA_KEY_ART, it)
+            }
+            mediaSession?.setMetadata(metaBuilder.build())
 
             val state = if (isTrackPlaying)
                 android.media.session.PlaybackState.STATE_PLAYING
@@ -1972,6 +1987,12 @@ class AudioSinkService : Service() {
         } catch (e: Exception) {
             Log.w(TAG, "Error updating MediaSession metadata: ${e.message}")
         }
+
+        try {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                onMediaMetadataChanged?.invoke(currentTrackTitle, currentTrackArtist, currentTrackAlbum, isTrackPlaying, currentTrackArtwork)
+            }
+        } catch (ignored: Exception) {}
     }
 
 
@@ -2082,6 +2103,7 @@ class AudioSinkService : Service() {
         currentTrackArtist = "Transmitter"
         currentTrackAlbum  = "HAT Audio Transport"
         isTrackPlaying     = true
+        currentTrackArtwork = null
 
         try {
             activeTransport?.close()

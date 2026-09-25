@@ -176,6 +176,7 @@ class MainActivity : AppCompatActivity() {
     // Equalizer & Media Playback Controls
     private lateinit var btnHeaderEq: ImageView
     private lateinit var cardMediaPlayback: MaterialCardView
+    private lateinit var ivMediaArt: ImageView
     private lateinit var tvMediaTitle: TextView
     private lateinit var tvMediaArtist: TextView
     private lateinit var btnSyncMediaPermission: TextView
@@ -415,12 +416,20 @@ class MainActivity : AppCompatActivity() {
         }
 
         cardMediaPlayback = findViewById(R.id.card_media_playback)
+        ivMediaArt = findViewById(R.id.iv_media_art)
         tvMediaTitle = findViewById(R.id.tv_media_title)
         tvMediaArtist = findViewById(R.id.tv_media_artist)
         btnSyncMediaPermission = findViewById(R.id.btn_sync_media_permission)
         btnMediaPrev = findViewById(R.id.btn_media_prev)
         btnMediaPlayPause = findViewById(R.id.btn_media_play_pause)
         btnMediaNext = findViewById(R.id.btn_media_next)
+
+        AudioSinkService.onMediaMetadataChanged = { _, _, _, _, _ ->
+            runOnUiThread { updateMediaPlaybackUi() }
+        }
+        MediaSessionTracker.addOnStateChangedListener {
+            runOnUiThread { updateMediaPlaybackUi() }
+        }
 
         btnMediaPlayPause.setOnClickListener {
             if (AudioCaptureService.isRunning.get()) {
@@ -2307,6 +2316,17 @@ class MainActivity : AppCompatActivity() {
             val isPlaying = meta?.isPlaying ?: true
             btnMediaPlayPause.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
             btnSyncMediaPermission.visibility = if (MediaNotificationListenerService.isServiceConnected) View.GONE else View.VISIBLE
+            val art = MediaSessionTracker.currentState?.artwork
+            if (art != null) {
+                ivMediaArt.setImageBitmap(art)
+                ivMediaArt.setPadding(0, 0, 0, 0)
+                ivMediaArt.imageTintList = null
+            } else {
+                ivMediaArt.setImageResource(R.drawable.ic_category_audio)
+                val pad = (8 * resources.displayMetrics.density).toInt()
+                ivMediaArt.setPadding(pad, pad, pad, pad)
+                ivMediaArt.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.text_primary))
+            }
         } else {
             val sink = AudioSinkService.currentInstance
             tvMediaTitle.text = sink?.currentTrackTitle?.ifBlank { "Receiving Audio" } ?: "Receiving Audio"
@@ -2314,6 +2334,17 @@ class MainActivity : AppCompatActivity() {
             val isPlaying = sink?.isTrackPlaying ?: true
             btnMediaPlayPause.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
             btnSyncMediaPermission.visibility = View.GONE
+            val art = sink?.currentTrackArtwork
+            if (art != null) {
+                ivMediaArt.setImageBitmap(art)
+                ivMediaArt.setPadding(0, 0, 0, 0)
+                ivMediaArt.imageTintList = null
+            } else {
+                ivMediaArt.setImageResource(R.drawable.ic_category_audio)
+                val pad = (8 * resources.displayMetrics.density).toInt()
+                ivMediaArt.setPadding(pad, pad, pad, pad)
+                ivMediaArt.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.text_primary))
+            }
         }
     }
 
