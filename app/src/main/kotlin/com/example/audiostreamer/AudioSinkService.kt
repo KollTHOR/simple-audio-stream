@@ -51,6 +51,9 @@ class AudioSinkService : Service() {
         private const val TAG = "AudioSinkService"
         const val ACTION_START = "com.example.audiostreamer.ACTION_START_SINK"
         const val ACTION_STOP = "com.example.audiostreamer.ACTION_STOP_SINK"
+        const val ACTION_MEDIA_PLAY_PAUSE = "com.example.audiostreamer.ACTION_MEDIA_PLAY_PAUSE"
+        const val ACTION_MEDIA_NEXT = "com.example.audiostreamer.ACTION_MEDIA_NEXT"
+        const val ACTION_MEDIA_PREV = "com.example.audiostreamer.ACTION_MEDIA_PREV"
         const val EXTRA_PORT = "EXTRA_PORT"
 
         private const val NOTIFICATION_ID = 2001
@@ -182,6 +185,12 @@ class AudioSinkService : Service() {
     @Volatile private var lastDecodeDurationNs: Long = 0L
     @Volatile private var lastLatencyLogTime: Long = 0L
 
+    private var mediaSession: android.media.session.MediaSession? = null
+    @Volatile internal var currentTrackTitle: String = "Streaming Audio"
+    @Volatile internal var currentTrackArtist: String = "Transmitter"
+    @Volatile internal var currentTrackAlbum: String = "HAT Audio Transport"
+    @Volatile internal var isTrackPlaying: Boolean = true
+
     // --- HAT runtime diagnostics ------------------------------------------------------------------
     private val diagRxPackets = java.util.concurrent.atomic.AtomicLong(0L)
     private val diagRxBytes = java.util.concurrent.atomic.AtomicLong(0L)
@@ -224,6 +233,18 @@ class AudioSinkService : Service() {
             ACTION_START -> {
                 val port = intent.getIntExtra(EXTRA_PORT, AudioConfig.DEFAULT_PORT)
                 startSink(port)
+            }
+            ACTION_MEDIA_PLAY_PAUSE -> {
+                sendMediaControl(HatPacket.MEDIA_CMD_PLAY_PAUSE)
+                return START_NOT_STICKY
+            }
+            ACTION_MEDIA_NEXT -> {
+                sendMediaControl(HatPacket.MEDIA_CMD_NEXT)
+                return START_NOT_STICKY
+            }
+            ACTION_MEDIA_PREV -> {
+                sendMediaControl(HatPacket.MEDIA_CMD_PREVIOUS)
+                return START_NOT_STICKY
             }
         }
         return START_NOT_STICKY
@@ -525,6 +546,7 @@ class AudioSinkService : Service() {
             return
         }
 
+        setupMediaSession()
         startServiceForeground(port)
         acquireLocks()
 
@@ -671,10 +693,26 @@ class AudioSinkService : Service() {
 
                             // Check for Disconnect signal from transmitter
                             if (header.packetType == HatPacket.TYPE_DISCONNECT) {
-                                Log.i(TAG, "Received disconnect signal from transmitter: $lastSenderHost")
-                                configAuthority.reset()
-                                currentStreamConfig = null
-                                jitterBuffer.reset()
+                                Log.i(TAG, "Received disconnect signal from transmitter: $lastSenderHost - stopping sink")
+                                StreamState.update {
+                                    it.copy(
+                                        isActive = false,
+                                        statusDetail = "Disconnected by transmitter",
+                                        audioPeakPercent = 0
+                                    )
+                                }
+                                stopSink()
+                                stopSelf()
+                                break
+                            }
+
+                            // Check for Media Metadata packet
+                            if (header.packetType == HatPacket.TYPE_MEDIA_METADATA) {
+                                val meta = HatPacket.parseMediaMetadata(data, offset + HatPacket.HEADER_SIZE, header.payloadLength)
+                                if (meta != null) {
+                                    Log.i(TAG, "Received TYPE_MEDIA_METADATA: title='${meta.title}', artist='${meta.artist}', playing=${meta.isPlaying}")
+                                    updateMediaMetadata(meta)
+                                }
                                 continue
                             }
 
@@ -1753,16 +1791,183 @@ class AudioSinkService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Simple Audio Stream")
-            .setContentText("Receiving audio")
-            .setSmallIcon(android.R.drawable.ic_media_play)
+        val prevIntent = PendingIntent.getService(
+            this, 1,
+            Intent(this, AudioSinkService::class.java).apply { action = ACTION_MEDIA_PREV },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val playPauseIntent = PendingIntent.getService(
+            this, 2,
+            Intent(this, AudioSinkService::class.java).apply { action = ACTION_MEDIA_PLAY_PAUSE },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val nextIntent = PendingIntent.getService(
+            this, 3,
+            Intent(this, AudioSinkService::class.java).apply { action = ACTION_MEDIA_NEXT },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val playPauseIcon = if (isTrackPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
+
+        val builder = Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle(currentTrackTitle)
+            .setContentText(currentTrackArtist)
+            .setSubText(currentTrackAlbum)
+            .setSmallIcon(R.drawable.ic_receiver)
             .setContentIntent(activityIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .build()
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .addAction(
+                Notification.Action.Builder(
+                    android.graphics.drawable.Icon.createWithResource(this, android.R.drawable.ic_media_previous),
+                    "Previous", prevIntent
+                ).build()
+            )
+            .addAction(
+                Notification.Action.Builder(
+                    android.graphics.drawable.Icon.createWithResource(this, playPauseIcon),
+                    if (isTrackPlaying) "Pause" else "Play", playPauseIntent
+                ).build()
+            )
+            .addAction(
+                Notification.Action.Builder(
+                    android.graphics.drawable.Icon.createWithResource(this, android.R.drawable.ic_media_next),
+                    "Next", nextIntent
+                ).build()
+            )
+
+        val sessionToken = mediaSession?.sessionToken
+        if (sessionToken != null) {
+            val style = Notification.MediaStyle()
+                .setMediaSession(sessionToken)
+                .setShowActionsInCompactView(0, 1, 2)
+            builder.style = style
+        }
+
+        return builder.build()
+    }
+
+    private fun setupMediaSession() {
+        try {
+            mediaSession = android.media.session.MediaSession(this, "HATAudioSinkSession").apply {
+                setCallback(object : android.media.session.MediaSession.Callback() {
+                    override fun onPlay() {
+                        sendMediaControl(HatPacket.MEDIA_CMD_PLAY)
+                    }
+
+                    override fun onPause() {
+                        sendMediaControl(HatPacket.MEDIA_CMD_PAUSE)
+                    }
+
+                    override fun onSkipToNext() {
+                        sendMediaControl(HatPacket.MEDIA_CMD_NEXT)
+                    }
+
+                    override fun onSkipToPrevious() {
+                        sendMediaControl(HatPacket.MEDIA_CMD_PREVIOUS)
+                    }
+
+                    override fun onStop() {
+                        stopSink()
+                        stopSelf()
+                    }
+                })
+
+                val playbackState = android.media.session.PlaybackState.Builder()
+                    .setActions(
+                        android.media.session.PlaybackState.ACTION_PLAY or
+                        android.media.session.PlaybackState.ACTION_PAUSE or
+                        android.media.session.PlaybackState.ACTION_PLAY_PAUSE or
+                        android.media.session.PlaybackState.ACTION_SKIP_TO_NEXT or
+                        android.media.session.PlaybackState.ACTION_SKIP_TO_PREVIOUS or
+                        android.media.session.PlaybackState.ACTION_STOP
+                    )
+                    .setState(
+                        if (isTrackPlaying) android.media.session.PlaybackState.STATE_PLAYING else android.media.session.PlaybackState.STATE_PAUSED,
+                        android.media.session.PlaybackState.PLAYBACK_POSITION_UNKNOWN,
+                        1.0f
+                    )
+                    .build()
+                setPlaybackState(playbackState)
+
+                val metadata = android.media.MediaMetadata.Builder()
+                    .putString(android.media.MediaMetadata.METADATA_KEY_TITLE, currentTrackTitle)
+                    .putString(android.media.MediaMetadata.METADATA_KEY_ARTIST, currentTrackArtist)
+                    .putString(android.media.MediaMetadata.METADATA_KEY_ALBUM, currentTrackAlbum)
+                    .build()
+                setMetadata(metadata)
+
+                isActive = true
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed setting up MediaSession: ${e.message}")
+        }
+    }
+
+    private fun updateMediaMetadata(metadata: HatPacket.MediaMetadataPayload) {
+        currentTrackTitle = metadata.title.ifBlank { "Streaming Audio" }
+        currentTrackArtist = metadata.artist.ifBlank { "Transmitter" }
+        currentTrackAlbum = metadata.album.ifBlank { "HAT Audio Transport" }
+        isTrackPlaying = metadata.isPlaying
+
+        try {
+            mediaSession?.setMetadata(
+                android.media.MediaMetadata.Builder()
+                    .putString(android.media.MediaMetadata.METADATA_KEY_TITLE, currentTrackTitle)
+                    .putString(android.media.MediaMetadata.METADATA_KEY_ARTIST, currentTrackArtist)
+                    .putString(android.media.MediaMetadata.METADATA_KEY_ALBUM, currentTrackAlbum)
+                    .build()
+            )
+
+            val state = if (isTrackPlaying) android.media.session.PlaybackState.STATE_PLAYING else android.media.session.PlaybackState.STATE_PAUSED
+            mediaSession?.setPlaybackState(
+                android.media.session.PlaybackState.Builder()
+                    .setActions(
+                        android.media.session.PlaybackState.ACTION_PLAY or
+                        android.media.session.PlaybackState.ACTION_PAUSE or
+                        android.media.session.PlaybackState.ACTION_PLAY_PAUSE or
+                        android.media.session.PlaybackState.ACTION_SKIP_TO_NEXT or
+                        android.media.session.PlaybackState.ACTION_SKIP_TO_PREVIOUS or
+                        android.media.session.PlaybackState.ACTION_STOP
+                    )
+                    .setState(state, android.media.session.PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1.0f)
+                    .build()
+            )
+
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            nm?.notify(NOTIFICATION_ID, buildNotification())
+        } catch (e: Exception) {
+            Log.w(TAG, "Error updating MediaSession metadata: ${e.message}")
+        }
+    }
+
+    fun sendMediaControl(command: Byte) {
+        val targetAddr = lastSenderAddress ?: return
+        val targetPort = lastSenderPort ?: AudioConfig.DEFAULT_PORT
+        val sock = datagramSocket ?: return
+        if (sock.isClosed) return
+
+        try {
+            val controlBuf = ByteArray(HatPacket.HEADER_SIZE)
+            val header = HatPacket.Header(
+                packetType = HatPacket.TYPE_MEDIA_CONTROL,
+                volumeOrCaps = command,
+                payloadLength = 0
+            )
+            HatPacket.writeHeader(controlBuf, 0, header)
+            val packet = DatagramPacket(controlBuf, controlBuf.size, targetAddr, targetPort)
+            Thread({
+                try {
+                    sock.send(packet)
+                    Log.i(TAG, "Sent TYPE_MEDIA_CONTROL ($command) to $targetAddr:$targetPort")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed sending media control packet: ${e.message}")
+                }
+            }, "AudioSinkMediaControl").start()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed constructing media control packet: ${e.message}")
+        }
     }
 
     private fun createNotificationChannel() {
@@ -1824,12 +2029,20 @@ class AudioSinkService : Service() {
                     )
                 )
                 val packet = DatagramPacket(disconnectBuf, disconnectBuf.size, addr, targetPort)
-                datagramSocket?.send(packet)
-                Log.i(TAG, "Sent disconnect notification to transmitter $addr:$targetPort")
+                repeat(3) {
+                    datagramSocket?.send(packet)
+                }
+                Log.i(TAG, "Sent disconnect notification burst (3x) to transmitter $addr:$targetPort")
             }
         } catch (e: Exception) {
             Log.w(TAG, "Could not send disconnect notification: ${e.message}")
         }
+
+        try {
+            mediaSession?.isActive = false
+            mediaSession?.release()
+        } catch (ignored: Exception) {}
+        mediaSession = null
 
         try {
             activeTransport?.close()

@@ -37,6 +37,15 @@ object HatPacket {
     const val TYPE_DISCOVERY_ANNOUNCE: Byte = 0x09
     const val TYPE_STREAM_INVITE: Byte = 0x0A
     const val TYPE_TRANSMITTER_ANNOUNCE: Byte = 0x0B
+    const val TYPE_MEDIA_CONTROL: Byte = 0x0C
+    const val TYPE_MEDIA_METADATA: Byte = 0x0D
+
+    // Media Control Commands (Byte 18 / volumeOrCaps)
+    const val MEDIA_CMD_PLAY_PAUSE: Byte = 0x01
+    const val MEDIA_CMD_PLAY: Byte = 0x02
+    const val MEDIA_CMD_PAUSE: Byte = 0x03
+    const val MEDIA_CMD_NEXT: Byte = 0x04
+    const val MEDIA_CMD_PREVIOUS: Byte = 0x05
 
     fun describePacketType(type: Byte): String = when (type) {
         TYPE_AUDIO -> "AUDIO"
@@ -50,6 +59,8 @@ object HatPacket {
         TYPE_DISCOVERY_ANNOUNCE -> "DISCOVERY_ANNOUNCE"
         TYPE_STREAM_INVITE -> "STREAM_INVITE"
         TYPE_TRANSMITTER_ANNOUNCE -> "TRANSMITTER_ANNOUNCE"
+        TYPE_MEDIA_CONTROL -> "MEDIA_CONTROL"
+        TYPE_MEDIA_METADATA -> "MEDIA_METADATA"
         else -> "UNKNOWN(0x${(type.toInt() and 0xFF).toString(16)})"
     }
 
@@ -301,7 +312,7 @@ object HatPacket {
 
         // 3. Strict Packet Type Check
         val packetType = buffer[offset + 3]
-        if (packetType !in TYPE_AUDIO..TYPE_TRANSMITTER_ANNOUNCE) {
+        if (packetType !in TYPE_AUDIO..TYPE_MEDIA_METADATA) {
             return null
         }
 
@@ -344,8 +355,12 @@ object HatPacket {
             TYPE_CONTROL,
             TYPE_REVERSE_VOLUME_SYNC,
             TYPE_DISCONNECT,
-            TYPE_DISCOVERY_PROBE -> {
+            TYPE_DISCOVERY_PROBE,
+            TYPE_MEDIA_CONTROL -> {
                 if (payloadLength != 0) return null
+            }
+            TYPE_MEDIA_METADATA -> {
+                if (payloadLength == 0) return null
             }
             TYPE_RECEIVER_HEARTBEAT -> {
                 // Heartbeats may be payload-free or carry NodeCapabilityExchange metadata
@@ -397,6 +412,78 @@ object HatPacket {
             fecBlockSize = fecBlockSize,
             flags = flags,
             generation = generation
+        )
+    }
+
+    data class MediaMetadataPayload(
+        val isPlaying: Boolean,
+        val title: String,
+        val artist: String,
+        val album: String
+    )
+
+    fun serializeMediaMetadata(
+        isPlaying: Boolean,
+        title: String,
+        artist: String,
+        album: String
+    ): ByteArray {
+        val titleBytes = title.toByteArray(Charsets.UTF_8).take(255).toByteArray()
+        val artistBytes = artist.toByteArray(Charsets.UTF_8).take(255).toByteArray()
+        val albumBytes = album.toByteArray(Charsets.UTF_8).take(255).toByteArray()
+
+        val totalLen = 1 + 2 + titleBytes.size + 2 + artistBytes.size + 2 + albumBytes.size
+        val buf = ByteArray(totalLen)
+        var pos = 0
+        buf[pos++] = if (isPlaying) 1 else 0
+
+        buf[pos++] = ((titleBytes.size shr 8) and 0xFF).toByte()
+        buf[pos++] = (titleBytes.size and 0xFF).toByte()
+        System.arraycopy(titleBytes, 0, buf, pos, titleBytes.size)
+        pos += titleBytes.size
+
+        buf[pos++] = ((artistBytes.size shr 8) and 0xFF).toByte()
+        buf[pos++] = (artistBytes.size and 0xFF).toByte()
+        System.arraycopy(artistBytes, 0, buf, pos, artistBytes.size)
+        pos += artistBytes.size
+
+        buf[pos++] = ((albumBytes.size shr 8) and 0xFF).toByte()
+        buf[pos++] = (albumBytes.size and 0xFF).toByte()
+        System.arraycopy(albumBytes, 0, buf, pos, albumBytes.size)
+        pos += albumBytes.size
+
+        return buf
+    }
+
+    fun parseMediaMetadata(buffer: ByteArray, offset: Int, length: Int): MediaMetadataPayload? {
+        if (length < 7 || offset + length > buffer.size) return null
+        var pos = offset
+        val isPlaying = (buffer[pos++].toInt() and 0x01) != 0
+
+        val titleLen = readUInt16BE(buffer, pos)
+        pos += 2
+        if (pos + titleLen > offset + length) return null
+        val title = String(buffer, pos, titleLen, Charsets.UTF_8)
+        pos += titleLen
+
+        if (pos + 2 > offset + length) return null
+        val artistLen = readUInt16BE(buffer, pos)
+        pos += 2
+        if (pos + artistLen > offset + length) return null
+        val artist = String(buffer, pos, artistLen, Charsets.UTF_8)
+        pos += artistLen
+
+        if (pos + 2 > offset + length) return null
+        val albumLen = readUInt16BE(buffer, pos)
+        pos += 2
+        if (pos + albumLen > offset + length) return null
+        val album = String(buffer, pos, albumLen, Charsets.UTF_8)
+
+        return MediaMetadataPayload(
+            isPlaying = isPlaying,
+            title = title,
+            artist = artist,
+            album = album
         )
     }
 }

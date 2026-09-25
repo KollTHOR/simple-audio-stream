@@ -80,6 +80,8 @@ class AudioCaptureService : Service() {
         val remoteVolumePercent = AtomicInteger(100)
         val receiverVolumes = ConcurrentHashMap<String, Int>()
         val currentStreamGeneration = java.util.concurrent.atomic.AtomicLong(0L)
+        val masterEqualizer = Equalizer12Band()
+        @Volatile var currentTrackMetadata: HatPacket.MediaMetadataPayload? = null
 
         fun getReceiverVolume(ip: String, nodeId: String? = null): Int {
             val master = remoteVolumePercent.get()
@@ -310,7 +312,9 @@ class AudioCaptureService : Service() {
                         )
                         HatPacket.writeHeader(discBuf, 0, header)
                         val discPkt = DatagramPacket(discBuf, discBuf.size, ep.address, ep.port)
-                        udpSocket?.send(discPkt)
+                        repeat(3) {
+                            udpSocket?.send(discPkt)
+                        }
                     } catch (ignored: Exception) {}
                     clientRegistry.remove(ep)
                     clientCapabilities.remove(ep)
@@ -689,10 +693,34 @@ class AudioCaptureService : Service() {
         ensureSocketAndControlListener(targetIp, targetPort)
 
         val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+        masterEqualizer.loadFromPreferences(prefs)
         val profileStr = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_AUTO) ?: AudioConfig.PROFILE_AUTO
         val initialTarget = LatencyTarget.fromString(profileStr)
 
         performProfileChange(initialTarget)
+        activeNegotiatedConfig?.sampleRateHz?.let { rate ->
+            masterEqualizer.sampleRate = rate
+        }
+
+        // Initialize media metadata tracking from active notification listener if available
+        val initialTrack = MediaNotificationListenerService.currentTrackInfo
+        if (initialTrack != null) {
+            currentTrackMetadata = HatPacket.MediaMetadataPayload(
+                isPlaying = initialTrack.isPlaying,
+                title = initialTrack.title,
+                artist = initialTrack.artist,
+                album = initialTrack.album
+            )
+        }
+        MediaNotificationListenerService.onTrackChangedListener = { trackInfo ->
+            currentTrackMetadata = HatPacket.MediaMetadataPayload(
+                isPlaying = trackInfo.isPlaying,
+                title = trackInfo.title,
+                artist = trackInfo.artist,
+                album = trackInfo.album
+            )
+            sendMediaMetadata()
+        }
 
         // Real-time audio engine adaptation: monitor Android playback sessions (e.g. Tidal/Spotify)
         val rawRatePref = prefs.getString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_AUTO) ?: AudioConfig.SAMPLE_RATE_AUTO
@@ -700,6 +728,16 @@ class AudioCaptureService : Service() {
         if (profileStr == AudioConfig.PROFILE_AUTO || (profileStr == AudioConfig.PROFILE_MUSIC && (rawRatePref == AudioConfig.SAMPLE_RATE_AUTO || rawBitPref == AudioConfig.BIT_DEPTH_AUTO))) {
             AudioPlaybackDetector.startMonitoring(this) { newFormat ->
                 Log.d(TAG, "AudioPlaybackDetector active media format: ${newFormat.description}")
+                if (!MediaNotificationListenerService.isServiceConnected) {
+                    val appTitle = if (newFormat.appName != "None") newFormat.appName else "Simple Audio Stream"
+                    currentTrackMetadata = HatPacket.MediaMetadataPayload(
+                        isPlaying = newFormat.isPlaying,
+                        title = appTitle,
+                        artist = "Transmitter",
+                        album = newFormat.description
+                    )
+                    sendMediaMetadata()
+                }
             }
         }
     }
@@ -1065,6 +1103,7 @@ class AudioCaptureService : Service() {
                                     val targetVol = getReceiverVolume(endpoint.address.hostAddress ?: "", remoteNodeInfo.id)
                                     sendStreamAnnouncement(currentConfig, targetVol, endpoint)
                                     publishConnectedReceivers()
+                                    sendMediaMetadata(endpoint)
                                 }
                             } else {
                                 if (byteVal != 0) {
@@ -1085,6 +1124,7 @@ class AudioCaptureService : Service() {
                                     val capsDesc = if (byteVal != 0) AudioCapabilities.describeCapabilitiesMask(byteVal) else "default"
                                     Log.i(TAG, "Receiver registered: $endpoint (pre-config, caps: $capsDesc)")
                                     publishConnectedReceivers()
+                                    sendMediaMetadata(endpoint)
                                 }
                             }
                         }
@@ -1132,6 +1172,11 @@ class AudioCaptureService : Service() {
                             } else {
                                 Log.d(TAG, "Rejected packet from $endpoint: TYPE_DISCONNECT from non-connected client")
                             }
+                        }
+                        HatPacket.TYPE_MEDIA_CONTROL -> {
+                            val cmd = header.volumeOrCaps
+                            Log.i(TAG, "Received TYPE_MEDIA_CONTROL from $endpoint: cmd=$cmd")
+                            handleMediaControlCommand(cmd)
                         }
                         else -> {
                             Log.d(TAG, "Rejected packet from $endpoint: type $typeName (${header.packetType}) is not a receiver admission control packet")
@@ -1527,6 +1572,7 @@ class AudioCaptureService : Service() {
                             consecutiveCaptureErrors.set(0L)
                             diagCaptureFrames.addAndGet((pcmBytesRead / 4).toLong())
                             diagCapturePcmBytes.addAndGet(pcmBytesRead.toLong())
+                            masterEqualizer.process16BitStereo(pcmReadBuffer, 0, pcmBytesRead)
                             val metrics = audioMeter.analyze(pcmReadBuffer, 0, pcmBytesRead, is24Bit = false)
                             val chunkPeak = metrics.peak
 
@@ -1711,6 +1757,11 @@ class AudioCaptureService : Service() {
                             consecutiveCaptureErrors.set(0L)
                             diagCapturePcmBytes.addAndGet(bytesRead.toLong())
                             val isEffective24 = is24BitActive
+                            if (isEffective24) {
+                                masterEqualizer.process24BitStereo(rawPcmBuffer, 0, bytesRead)
+                            } else {
+                                masterEqualizer.process16BitStereo(rawPcmBuffer, 0, bytesRead)
+                            }
                             val bytesPerFrame = if (isEffective24) 6 else 4
                             val framesRead = bytesRead / bytesPerFrame
                             val currentTimestamp = streamTimelineFrames
@@ -2149,7 +2200,31 @@ class AudioCaptureService : Service() {
         }
         Log.i(TAG, "Stopping audio capture service (keepProjection=$keepProjection)")
 
+        MediaNotificationListenerService.onTrackChangedListener = null
         AudioPlaybackDetector.stopMonitoring(this)
+
+        // Broadcast 3x TYPE_DISCONNECT burst to all connected receivers so they immediately terminate
+        val sock = udpSocket
+        if (sock != null && !sock.isClosed) {
+            val discBuf = ByteArray(HatPacket.HEADER_SIZE)
+            val header = HatPacket.Header(
+                packetType = HatPacket.TYPE_DISCONNECT,
+                payloadLength = 0
+            )
+            HatPacket.writeHeader(discBuf, 0, header)
+            for (ep in clientRegistry.keys) {
+                try {
+                    val discPkt = DatagramPacket(discBuf, discBuf.size, ep.address, ep.port)
+                    repeat(3) {
+                        sock.send(discPkt)
+                    }
+                } catch (ignored: Exception) {}
+            }
+        }
+        clientRegistry.clear()
+        clientCapabilities.clear()
+        clientDiag.clear()
+        configuredEndpoints.clear()
 
         stopProducerSynchronously()
         stopDiagnosticsSession()
@@ -2377,6 +2452,59 @@ class AudioCaptureService : Service() {
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed pausing media playback: ${e.message}")
+        }
+    }
+
+    fun sendMediaMetadata(endpoint: ClientEndpoint? = null) {
+        val meta = currentTrackMetadata ?: return
+        val sock = udpSocket ?: return
+        if (sock.isClosed) return
+
+        try {
+            val payload = HatPacket.serializeMediaMetadata(
+                isPlaying = meta.isPlaying,
+                title = meta.title,
+                artist = meta.artist,
+                album = meta.album
+            )
+            val header = HatPacket.Header(
+                packetType = HatPacket.TYPE_MEDIA_METADATA,
+                payloadLength = payload.size
+            )
+            val sendBuf = ByteArray(HatPacket.HEADER_SIZE + payload.size)
+            HatPacket.writeHeader(sendBuf, 0, header)
+            System.arraycopy(payload, 0, sendBuf, HatPacket.HEADER_SIZE, payload.size)
+
+            val targets = if (endpoint != null) listOf(endpoint) else clientRegistry.keys.toList()
+            for (target in targets) {
+                val packet = DatagramPacket(sendBuf, sendBuf.size, target.address, target.port)
+                sock.send(packet)
+            }
+            Log.d(TAG, "Sent TYPE_MEDIA_METADATA to ${targets.size} endpoints: '${meta.title}'")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed sending media metadata: ${e.message}")
+        }
+    }
+
+    fun handleMediaControlCommand(command: Byte) {
+        val handled = MediaNotificationListenerService.dispatchMediaControl(command)
+        if (handled) return
+
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+            val keyCode = when (command) {
+                HatPacket.MEDIA_CMD_PLAY_PAUSE -> KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+                HatPacket.MEDIA_CMD_PLAY -> KeyEvent.KEYCODE_MEDIA_PLAY
+                HatPacket.MEDIA_CMD_PAUSE -> KeyEvent.KEYCODE_MEDIA_PAUSE
+                HatPacket.MEDIA_CMD_NEXT -> KeyEvent.KEYCODE_MEDIA_NEXT
+                HatPacket.MEDIA_CMD_PREVIOUS -> KeyEvent.KEYCODE_MEDIA_PREVIOUS
+                else -> return
+            }
+            audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+            audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
+            Log.i(TAG, "Dispatched media key event $keyCode for cmd $command")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed dispatching media key event: ${e.message}")
         }
     }
 
