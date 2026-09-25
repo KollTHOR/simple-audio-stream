@@ -93,17 +93,6 @@
                             android:ellipsize="end"
                             android:visibility="gone" />
                     </LinearLayout>
-
-                    <ImageView
-                        android:id="@+id/btn_header_eq"
-                        android:layout_width="32dp"
-                        android:layout_height="32dp"
-                        android:layout_marginStart="8dp"
-                        android:padding="6dp"
-                        android:background="?attr/selectableItemBackgroundBorderless"
-                        android:src="@drawable/ic_equalizer"
-                        app:tint="@color/text_primary"
-                        android:contentDescription="12-Band Equalizer" />
                 </LinearLayout>
 
                 <!-- Active Transports Badge Row (Material Chips) -->
@@ -1312,6 +1301,21 @@
             </LinearLayout>
         </LinearLayout>
     </ScrollView>
+
+    <!-- Equalizer Button at Bottom Left -->
+    <com.google.android.material.floatingactionbutton.FloatingActionButton
+        android:id="@+id/fab_equalizer"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_marginStart="16dp"
+        android:layout_marginBottom="16dp"
+        app:srcCompat="@drawable/ic_equalizer"
+        app:tint="@color/white"
+        app:backgroundTint="@color/card_bg"
+        app:rippleColor="@color/primary"
+        app:elevation="6dp"
+        android:contentDescription="12-Band Equalizer" />
 
     <!-- Settings Button at Bottom Right -->
     <com.google.android.material.floatingactionbutton.FloatingActionButton

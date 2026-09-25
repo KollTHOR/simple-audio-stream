@@ -1,7 +1,9 @@
 package com.example.audiostreamer
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -10,7 +12,9 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
+import androidx.core.app.NotificationManagerCompat
 import android.util.Log
 import android.view.View
 import android.widget.ImageView
@@ -73,6 +77,7 @@ class SettingsActivity : AppCompatActivity() {
         // Deep-link intent extra keys
         const val EXTRA_CATEGORY = "extra_category"
         const val CATEGORY_AUDIO = "audio"
+        const val CATEGORY_PERMISSIONS = "permissions"
         const val CATEGORY_DIAGNOSTICS = "diagnostics"
         const val CATEGORY_UPDATES = "updates"
         const val CATEGORY_ABOUT = "about"
@@ -81,6 +86,7 @@ class SettingsActivity : AppCompatActivity() {
     enum class Category {
         MENU,
         AUDIO,
+        PERMISSIONS,
         DIAGNOSTICS,
         UPDATES,
         ABOUT,
@@ -101,20 +107,42 @@ class SettingsActivity : AppCompatActivity() {
     // Top-Level Menu
     private lateinit var layoutCategoryMenu: LinearLayout
     private lateinit var cardMenuAudio: MaterialCardView
+    private lateinit var cardMenuPermissions: MaterialCardView
     private lateinit var cardMenuDiagnostics: MaterialCardView
     private lateinit var cardMenuUpdates: MaterialCardView
     private lateinit var cardMenuAbout: MaterialCardView
     private lateinit var cardMenuAppearance: MaterialCardView
     private lateinit var tvMenuAudioBadge: TextView
+    private lateinit var tvMenuPermissionsBadge: TextView
     private lateinit var tvMenuDiagBadge: TextView
     private lateinit var tvMenuUpdatesBadge: TextView
 
     // Category Layouts
     private lateinit var layoutCategoryAudio: LinearLayout
+    private lateinit var layoutCategoryPermissions: LinearLayout
     private lateinit var layoutCategoryDiagnostics: LinearLayout
     private lateinit var layoutCategoryUpdates: LinearLayout
     private lateinit var layoutCategoryAbout: LinearLayout
     private lateinit var layoutCategoryAppearance: LinearLayout
+
+    // Permissions Category Views
+    private lateinit var tvPermMediaSessionStatus: TextView
+    private lateinit var btnPermMediaSession: MaterialButton
+    private lateinit var tvPermRecordAudioStatus: TextView
+    private lateinit var btnPermRecordAudio: MaterialButton
+    private lateinit var tvPermAccessibilityStatus: TextView
+    private lateinit var btnPermAccessibility: MaterialButton
+    private lateinit var tvPermNotificationsStatus: TextView
+    private lateinit var btnPermNotifications: MaterialButton
+    private lateinit var tvPermNearbyWifiStatus: TextView
+    private lateinit var btnPermNearbyWifi: MaterialButton
+    private lateinit var tvPermBluetoothStatus: TextView
+    private lateinit var btnPermBluetooth: MaterialButton
+    private lateinit var tvPermBatteryStatus: TextView
+    private lateinit var btnPermBattery: MaterialButton
+    private lateinit var tvPermInstallPackagesStatus: TextView
+    private lateinit var btnPermInstallPackages: MaterialButton
+    private lateinit var btnPermAppInfo: MaterialButton
 
     // Appearance Category Views
     private lateinit var btnThemeSystem: com.google.android.material.button.MaterialButton
@@ -240,6 +268,34 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
+    private val permSettingsLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        refreshPermissionsUi()
+        updateCategoryMenuBadges()
+    }
+
+    private val permRecordAudioLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {
+        refreshPermissionsUi()
+        updateCategoryMenuBadges()
+    }
+
+    private val permNotificationsLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {
+        refreshPermissionsUi()
+        updateCategoryMenuBadges()
+    }
+
+    private val permMultipleLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        refreshPermissionsUi()
+        updateCategoryMenuBadges()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
         val themeMode = prefs.getInt("theme_mode", AppCompatDelegate.MODE_NIGHT_YES) // default: dark
@@ -258,6 +314,7 @@ class SettingsActivity : AppCompatActivity() {
         bindViews()
         setupTopHeaderAndNavigation()
         setupAudioCategory()
+        setupPermissionsCategory()
         setupDiagnosticsCategory()
         setupUpdatesCategory()
         setupAboutCategory()
@@ -267,6 +324,7 @@ class SettingsActivity : AppCompatActivity() {
         val targetCategoryStr = intent.getStringExtra(EXTRA_CATEGORY)
         val initialCategory = when (targetCategoryStr?.lowercase(Locale.ROOT)) {
             CATEGORY_AUDIO -> Category.AUDIO
+            CATEGORY_PERMISSIONS -> Category.PERMISSIONS
             CATEGORY_DIAGNOSTICS -> Category.DIAGNOSTICS
             CATEGORY_UPDATES -> Category.UPDATES
             CATEGORY_ABOUT -> Category.ABOUT
@@ -285,20 +343,42 @@ class SettingsActivity : AppCompatActivity() {
         // Menu
         layoutCategoryMenu = findViewById(R.id.layout_category_menu)
         cardMenuAudio = findViewById(R.id.card_menu_audio)
+        cardMenuPermissions = findViewById(R.id.card_menu_permissions)
         cardMenuDiagnostics = findViewById(R.id.card_menu_diagnostics)
         cardMenuUpdates = findViewById(R.id.card_menu_updates)
         cardMenuAbout = findViewById(R.id.card_menu_about)
         cardMenuAppearance = findViewById(R.id.card_menu_appearance)
         tvMenuAudioBadge = findViewById(R.id.tv_menu_audio_badge)
+        tvMenuPermissionsBadge = findViewById(R.id.tv_menu_permissions_badge)
         tvMenuDiagBadge = findViewById(R.id.tv_menu_diag_badge)
         tvMenuUpdatesBadge = findViewById(R.id.tv_menu_updates_badge)
 
         // Category Containers
         layoutCategoryAudio = findViewById(R.id.layout_category_audio)
+        layoutCategoryPermissions = findViewById(R.id.layout_category_permissions)
         layoutCategoryDiagnostics = findViewById(R.id.layout_category_diagnostics)
         layoutCategoryUpdates = findViewById(R.id.layout_category_updates)
         layoutCategoryAbout = findViewById(R.id.layout_category_about)
         layoutCategoryAppearance = findViewById(R.id.layout_category_appearance)
+
+        // Permissions Views
+        tvPermMediaSessionStatus = findViewById(R.id.tv_perm_media_session_status)
+        btnPermMediaSession = findViewById(R.id.btn_perm_media_session)
+        tvPermRecordAudioStatus = findViewById(R.id.tv_perm_record_audio_status)
+        btnPermRecordAudio = findViewById(R.id.btn_perm_record_audio)
+        tvPermAccessibilityStatus = findViewById(R.id.tv_perm_accessibility_status)
+        btnPermAccessibility = findViewById(R.id.btn_perm_accessibility)
+        tvPermNotificationsStatus = findViewById(R.id.tv_perm_notifications_status)
+        btnPermNotifications = findViewById(R.id.btn_perm_notifications)
+        tvPermNearbyWifiStatus = findViewById(R.id.tv_perm_nearby_wifi_status)
+        btnPermNearbyWifi = findViewById(R.id.btn_perm_nearby_wifi)
+        tvPermBluetoothStatus = findViewById(R.id.tv_perm_bluetooth_status)
+        btnPermBluetooth = findViewById(R.id.btn_perm_bluetooth)
+        tvPermBatteryStatus = findViewById(R.id.tv_perm_battery_status)
+        btnPermBattery = findViewById(R.id.btn_perm_battery)
+        tvPermInstallPackagesStatus = findViewById(R.id.tv_perm_install_packages_status)
+        btnPermInstallPackages = findViewById(R.id.btn_perm_install_packages)
+        btnPermAppInfo = findViewById(R.id.btn_perm_app_info)
 
         // Appearance Views
         btnThemeSystem = findViewById(R.id.btn_theme_system)
@@ -417,6 +497,7 @@ class SettingsActivity : AppCompatActivity() {
         })
 
         cardMenuAudio.setOnClickListener { showCategory(Category.AUDIO) }
+        cardMenuPermissions.setOnClickListener { showCategory(Category.PERMISSIONS) }
         cardMenuDiagnostics.setOnClickListener { showCategory(Category.DIAGNOSTICS) }
         cardMenuUpdates.setOnClickListener { showCategory(Category.UPDATES) }
         cardMenuAbout.setOnClickListener { showCategory(Category.ABOUT) }
@@ -428,6 +509,7 @@ class SettingsActivity : AppCompatActivity() {
 
         layoutCategoryMenu.visibility = if (category == Category.MENU) View.VISIBLE else View.GONE
         layoutCategoryAudio.visibility = if (category == Category.AUDIO) View.VISIBLE else View.GONE
+        layoutCategoryPermissions.visibility = if (category == Category.PERMISSIONS) View.VISIBLE else View.GONE
         layoutCategoryDiagnostics.visibility = if (category == Category.DIAGNOSTICS) View.VISIBLE else View.GONE
         layoutCategoryUpdates.visibility = if (category == Category.UPDATES) View.VISIBLE else View.GONE
         layoutCategoryAbout.visibility = if (category == Category.ABOUT) View.VISIBLE else View.GONE
@@ -444,6 +526,12 @@ class SettingsActivity : AppCompatActivity() {
                 tvSettingsTitle.text = "Audio Settings"
                 tvSettingsSubtitle.text = "Streaming Profiles & Preferences"
                 diagnosticsViewModel.stopSampling()
+            }
+            Category.PERMISSIONS -> {
+                tvSettingsTitle.text = "Permissions"
+                tvSettingsSubtitle.text = "System Access & Background Exemptions"
+                diagnosticsViewModel.stopSampling()
+                refreshPermissionsUi()
             }
             Category.DIAGNOSTICS -> {
                 tvSettingsTitle.text = "Diagnostics"
@@ -480,6 +568,10 @@ class SettingsActivity : AppCompatActivity() {
             else -> "Auto Adaptive (24-bit/48k)"
         }
         tvMenuAudioBadge.text = profileDesc
+
+        val permStatus = checkAllPermissionsStatus()
+        tvMenuPermissionsBadge.text = if (permStatus.allGranted) "All Configured (${permStatus.total}/${permStatus.total})" else "${permStatus.grantedCount}/${permStatus.total} Configured"
+        tvMenuPermissionsBadge.setTextColor(ContextCompat.getColor(this, if (permStatus.allGranted) R.color.status_green else R.color.status_orange))
 
         val isRx = AudioSinkService.isRunning.get()
         if (isRx) {
@@ -1413,11 +1505,256 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
+    data class PermissionOverview(val grantedCount: Int, val total: Int, val allGranted: Boolean)
+
+    private fun checkAllPermissionsStatus(): PermissionOverview {
+        val media = isNotificationListenerEnabled()
+        val audio = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        val access = isAccessibilityServiceEnabled()
+        val notif = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        } else {
+            NotificationManagerCompat.from(this).areNotificationsEnabled()
+        }
+        val wifi = (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED) &&
+                   ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val bt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE) == PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH) == PackageManager.PERMISSION_GRANTED
+        }
+        val battery = isBatteryOptimizationIgnored()
+        val install = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) packageManager.canRequestPackageInstalls() else true
+
+        val list = listOf(media, audio, access, notif, wifi, bt, battery, install)
+        val count = list.count { it }
+        return PermissionOverview(count, list.size, count == list.size)
+    }
+
+    private fun refreshPermissionsUi() {
+        val mediaGranted = isNotificationListenerEnabled()
+        setStatusBadge(tvPermMediaSessionStatus, mediaGranted)
+        btnPermMediaSession.text = if (mediaGranted) "Configure Notification Access" else "Grant Notification Access"
+
+        val audioGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        setStatusBadge(tvPermRecordAudioStatus, audioGranted)
+        btnPermRecordAudio.text = if (audioGranted) "Permission Granted" else "Grant Record Permission"
+
+        val accessGranted = isAccessibilityServiceEnabled()
+        setStatusBadge(tvPermAccessibilityStatus, accessGranted)
+        btnPermAccessibility.text = if (accessGranted) "Service Configured" else "Configure Accessibility Service"
+
+        val notifGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        } else {
+            NotificationManagerCompat.from(this).areNotificationsEnabled()
+        }
+        setStatusBadge(tvPermNotificationsStatus, notifGranted)
+        btnPermNotifications.text = if (notifGranted) "Notification Settings" else "Grant Notification Permission"
+
+        val wifiGranted = (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED) &&
+                          ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        setStatusBadge(tvPermNearbyWifiStatus, wifiGranted)
+        btnPermNearbyWifi.text = if (wifiGranted) "Nearby Wi-Fi Configured" else "Grant Nearby Devices Permission"
+
+        val btGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE) == PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH) == PackageManager.PERMISSION_GRANTED
+        }
+        setStatusBadge(tvPermBluetoothStatus, btGranted)
+        btnPermBluetooth.text = if (btGranted) "Bluetooth Configured" else "Grant Bluetooth Permission"
+
+        val batteryIgnored = isBatteryOptimizationIgnored()
+        setStatusBadge(tvPermBatteryStatus, batteryIgnored, "Unrestricted", "Optimized")
+        btnPermBattery.text = if (batteryIgnored) "Battery Unrestricted" else "Request Unrestricted Battery"
+
+        val installGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) packageManager.canRequestPackageInstalls() else true
+        setStatusBadge(tvPermInstallPackagesStatus, installGranted)
+        btnPermInstallPackages.text = if (installGranted) "Install Allowed" else "Allow Install Unknown Apps"
+    }
+
+    private fun setStatusBadge(tv: TextView, granted: Boolean, grantedText: String = "Granted", missingText: String = "Action Needed") {
+        if (granted) {
+            tv.text = grantedText
+            tv.setTextColor(ContextCompat.getColor(this, R.color.status_green))
+        } else {
+            tv.text = missingText
+            tv.setTextColor(ContextCompat.getColor(this, R.color.status_orange))
+        }
+    }
+
+    private fun isNotificationListenerEnabled(): Boolean {
+        if (MediaNotificationListenerService.isServiceConnected) return true
+        val cn = ComponentName(this, MediaNotificationListenerService::class.java).flattenToString()
+        val enabledListeners = Settings.Secure.getString(
+            contentResolver,
+            "enabled_notification_listeners"
+        ) ?: return false
+        return enabledListeners.split(":").any { it.equals(cn, ignoreCase = true) }
+    }
+
+    private fun isAccessibilityServiceEnabled(): Boolean {
+        if (VolumeKeyInterceptorService.isRunning.get()) return true
+        val expectedComponentName = ComponentName(this, VolumeKeyInterceptorService::class.java).flattenToString()
+        val enabledServices = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        return enabledServices.split(":").any { it.equals(expectedComponentName, ignoreCase = true) }
+    }
+
+    private fun isBatteryOptimizationIgnored(): Boolean {
+        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return true
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            pm.isIgnoringBatteryOptimizations(packageName)
+        } else true
+    }
+
+    private fun setupPermissionsCategory() {
+        btnPermMediaSession.setOnClickListener {
+            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS).apply {
+                    putExtra(
+                        Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME,
+                        ComponentName(this@SettingsActivity, MediaNotificationListenerService::class.java).flattenToString()
+                    )
+                }
+            } else {
+                Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+            }
+            try {
+                permSettingsLauncher.launch(intent)
+            } catch (e: Exception) {
+                try {
+                    permSettingsLauncher.launch(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                } catch (ignored: Exception) {}
+            }
+        }
+
+        btnPermRecordAudio.setOnClickListener {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Audio recording permission is already granted", Toast.LENGTH_SHORT).show()
+            } else {
+                permRecordAudioLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
+
+        btnPermAccessibility.setOnClickListener {
+            try {
+                permSettingsLauncher.launch(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            } catch (e: Exception) {
+                Toast.makeText(this, "Unable to open Accessibility Settings", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        btnPermNotifications.setOnClickListener {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                    permNotificationsLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    openNotificationSettings()
+                }
+            } else {
+                openNotificationSettings()
+            }
+        }
+
+        btnPermNearbyWifi.setOnClickListener {
+            val perms = mutableListOf<String>()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                perms.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            }
+            perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            permMultipleLauncher.launch(perms.toTypedArray())
+        }
+
+        btnPermBluetooth.setOnClickListener {
+            val perms = mutableListOf<String>()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                perms.add(Manifest.permission.BLUETOOTH_SCAN)
+                perms.add(Manifest.permission.BLUETOOTH_ADVERTISE)
+                perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+            } else {
+                perms.add(Manifest.permission.BLUETOOTH)
+                perms.add(Manifest.permission.BLUETOOTH_ADMIN)
+            }
+            permMultipleLauncher.launch(perms.toTypedArray())
+        }
+
+        btnPermBattery.setOnClickListener {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                try {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    permSettingsLauncher.launch(intent)
+                } catch (e: Exception) {
+                    try {
+                        permSettingsLauncher.launch(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                    } catch (ignored: Exception) {}
+                }
+            }
+        }
+
+        btnPermInstallPackages.setOnClickListener {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                try {
+                    val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    permSettingsLauncher.launch(intent)
+                } catch (e: Exception) {
+                    openAppInfoSettings()
+                }
+            }
+        }
+
+        btnPermAppInfo.setOnClickListener {
+            openAppInfoSettings()
+        }
+    }
+
+    private fun openAppInfoSettings() {
+        try {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", packageName, null)
+            }
+            permSettingsLauncher.launch(intent)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Failed to open App Info", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun openNotificationSettings() {
+        try {
+            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                }
+            } else {
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.fromParts("package", packageName, null)
+                }
+            }
+            permSettingsLauncher.launch(intent)
+        } catch (e: Exception) {
+            openAppInfoSettings()
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         checkInstallPermissionOnResume()
         updateAccessibilityButton()
         updateCategoryMenuBadges()
+        if (currentCategory == Category.PERMISSIONS) {
+            refreshPermissionsUi()
+        }
         if (currentCategory == Category.DIAGNOSTICS) {
             updateAudioStatsUi()
             diagnosticsViewModel.startSampling()
