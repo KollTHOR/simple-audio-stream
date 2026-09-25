@@ -261,8 +261,9 @@ class AudioCaptureService : Service() {
             }
             ACTION_REMOVE_CLIENT -> {
                 val ip = intent.getStringExtra(EXTRA_TARGET_IP)
-                if (!ip.isNullOrBlank()) {
-                    removeClientDynamically(ip)
+                val nodeId = intent.getStringExtra(EXTRA_RECEIVER_NODE_ID)
+                if (!ip.isNullOrBlank() || !nodeId.isNullOrBlank()) {
+                    removeClientDynamically(ip, nodeId)
                 }
                 return START_NOT_STICKY
             }
@@ -293,10 +294,13 @@ class AudioCaptureService : Service() {
         }
     }
 
-    private fun removeClientDynamically(ip: String) {
+    private fun removeClientDynamically(ip: String?, nodeId: String? = null) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val matching = clientRegistry.keys.filter { it.address.hostAddress == ip }
+                val matching = clientRegistry.keys.filter { ep ->
+                    (ip != null && ep.address.hostAddress == ip) ||
+                    (nodeId != null && clientNodeInfo[ep]?.id == nodeId)
+                }
                 for (ep in matching) {
                     try {
                         val discBuf = ByteArray(AudioConfig.HEADER_SIZE)
@@ -316,14 +320,14 @@ class AudioCaptureService : Service() {
                     val destId = removedNode?.id ?: "${com.example.audiostreamer.node.NodeIdentity.ID_PREFIX}ep-${(ep.address.hostAddress ?: "").replace(".", "-")}"
                     com.example.audiostreamer.node.HatMultiStreamManager.removeDestination(destId, "dynamic_removal")
                     com.example.audiostreamer.node.HatLinkManager.closeLinkByRemoteAddress(ep.address.hostAddress ?: "")
-                    Log.i(TAG, "Dynamically removed client: $ep")
+                    Log.i(TAG, "Dynamically removed client: $ep (nodeId=$nodeId)")
                 }
                 publishConnectedReceivers()
                 if (clientRegistry.isEmpty()) {
                     pauseSystemMediaPlayback()
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to remove client $ip - ${e.message}")
+                Log.w(TAG, "Failed to remove client $ip ($nodeId) - ${e.message}")
             }
         }
     }
