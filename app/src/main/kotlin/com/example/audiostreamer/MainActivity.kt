@@ -118,11 +118,20 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvDiscoveryStatusBanner: TextView
     private lateinit var tvDiscoveryTimer: TextView
     private lateinit var pbDiscoveryProgressBar: LinearProgressIndicator
+    private lateinit var tvChipLanTitle: TextView
     private lateinit var tvChipLanStatus: TextView
+    private lateinit var tvChipDirectTitle: TextView
     private lateinit var tvChipDirectStatus: TextView
-    private lateinit var tvChipBleStatus: TextView
+    private lateinit var tvChipAwareTitle: TextView
     private lateinit var tvChipAwareStatus: TextView
+    private lateinit var tvChipBleTitle: TextView
+    private lateinit var tvChipBleStatus: TextView
+    private lateinit var tvScanSummary: TextView
     private lateinit var tvOfflineDirectHint: TextView
+    private lateinit var cardReceiverDiscoverable: MaterialCardView
+    private lateinit var tvReceiverHeadline: TextView
+    private lateinit var tvReceiverTransportsList: TextView
+    private lateinit var tvReceiverEndpointPill: TextView
     private var activeScanJob: Job? = null
     private lateinit var layoutDiscoveredDevicesContainer: LinearLayout
     private lateinit var tvAvailableEmpty: TextView
@@ -431,11 +440,20 @@ class MainActivity : AppCompatActivity() {
         tvDiscoveryStatusBanner = findViewById(R.id.tv_discovery_status_banner)
         tvDiscoveryTimer = findViewById(R.id.tv_discovery_timer)
         pbDiscoveryProgressBar = findViewById(R.id.pb_discovery_progress_bar)
+        tvChipLanTitle = findViewById(R.id.tv_chip_lan_title)
         tvChipLanStatus = findViewById(R.id.tv_chip_lan_status)
+        tvChipDirectTitle = findViewById(R.id.tv_chip_direct_title)
         tvChipDirectStatus = findViewById(R.id.tv_chip_direct_status)
-        tvChipBleStatus = findViewById(R.id.tv_chip_ble_status)
+        tvChipAwareTitle = findViewById(R.id.tv_chip_aware_title)
         tvChipAwareStatus = findViewById(R.id.tv_chip_aware_status)
+        tvChipBleTitle = findViewById(R.id.tv_chip_ble_title)
+        tvChipBleStatus = findViewById(R.id.tv_chip_ble_status)
+        tvScanSummary = findViewById(R.id.tv_scan_summary)
         tvOfflineDirectHint = findViewById(R.id.tv_offline_direct_hint)
+        cardReceiverDiscoverable = findViewById(R.id.card_receiver_discoverable)
+        tvReceiverHeadline = findViewById(R.id.tv_receiver_headline)
+        tvReceiverTransportsList = findViewById(R.id.tv_receiver_transports_list)
+        tvReceiverEndpointPill = findViewById(R.id.tv_receiver_endpoint_pill)
         layoutDiscoveredDevicesContainer = findViewById(R.id.layout_discovered_devices_container)
         tvAvailableEmpty = findViewById(R.id.tv_available_empty)
 
@@ -501,7 +519,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnScanReceivers.setOnClickListener {
-            if (activeScanJob?.isActive == true) {
+            if (com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.scanState.value.isScanning) {
                 stopUnifiedScan()
             } else {
                 startUnifiedScan()
@@ -517,6 +535,11 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch {
+                    com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.scanState.collect { state ->
+                        renderDiscoveryScanState(state)
+                    }
+                }
                 launch {
                     ConnectionProfileManager.profilesFlow.collect {
                         updateSavedProfilesUi()
@@ -807,6 +830,7 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         activeScanJob?.cancel()
         activeScanJob = null
+        com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.stopScan(this)
         DiscoveryManager.stopDiscovery()
         DiscoveryManager.stopReceiverResponder()
         LanDiscoveryProvider.stopAll()
@@ -823,39 +847,49 @@ class MainActivity : AppCompatActivity() {
     private fun syncDiscoveryMode() {
         when (currentMode) {
             Mode.TRANSMITTER -> {
+                // 1. Stop all receiver advertisements & responders
                 DiscoveryManager.stopReceiverResponder()
                 LanDiscoveryProvider.stopAdvertisement()
                 WifiDirectDiscoveryProvider.stopAdvertisement()
+                com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.stopPublishing()
                 BleDiscoveryManager.stopAdvertising()
-                if (!AudioCaptureService.isRunning.get()) {
-                    DiscoveryManager.startDiscovery(lifecycleScope)
-                    LanDiscoveryProvider.startDiscovery(this)
-                    if (checkAndRequestP2pPermissions()) {
-                        WifiDirectDiscoveryProvider.startDiscovery(this)
-                    }
-                } else {
-                    DiscoveryManager.stopDiscovery()
-                    LanDiscoveryProvider.stopDiscovery()
-                    WifiDirectDiscoveryProvider.stopDiscovery()
-                }
-                if (BleDiscoveryManager.hasPermissions(this)) {
-                    BleDiscoveryManager.startScanning(this)
-                }
+                com.example.audiostreamer.node.discovery.HatBlePresenceProvider.stopAdvertising()
+
+                // 2. Stop any active scan
+                com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.stopScan(this)
             }
             Mode.RECEIVER -> {
+                // 1. Stop any active scanner from transmitter
+                com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.stopScan(this)
                 DiscoveryManager.stopDiscovery()
                 LanDiscoveryProvider.stopDiscovery()
                 WifiDirectDiscoveryProvider.stopDiscovery()
+                WifiDirectManager.stopPeerDiscovery(this)
+                com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.stopSubscribing()
                 BleDiscoveryManager.stopScanning()
                 com.example.audiostreamer.node.discovery.HatBlePresenceProvider.stopScanning()
+
+                // 2. Start continuous advertisements on ALL supported transports simultaneously
+                val localNode = LocalNodeManager.getLocalNode()
+                val port = etPort.text.toString().toIntOrNull() ?: AudioConfig.DEFAULT_PORT
+
+                // LAN advertisement & responder
                 DiscoveryManager.startReceiverResponder(this, lifecycleScope)
-                LanDiscoveryProvider.advertiseNode(this, LocalNodeManager.getLocalNode(), AudioConfig.DEFAULT_PORT)
+                LanDiscoveryProvider.advertiseNode(this, localNode, port)
+
+                // Wi-Fi Direct DNS-SD advertisement
                 if (checkAndRequestP2pPermissions()) {
-                    WifiDirectDiscoveryProvider.advertiseNode(this, LocalNodeManager.getLocalNode(), AudioConfig.DEFAULT_PORT)
+                    WifiDirectDiscoveryProvider.advertiseNode(this, localNode, port)
                     if (!WifiDirectManager.isGroupCreated.value) {
                         WifiDirectManager.discoverPeers(this)
                     }
                 }
+
+                // Wi-Fi Aware publish
+                com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.probeCapability(this)
+                com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.startPublishing(this)
+
+                // BLE HAT presence & legacy advertising
                 if (BleDiscoveryManager.hasPermissions(this)) {
                     val ssid = WifiDirectManager.networkSsid.value
                     val pass = WifiDirectManager.networkPassphrase.value
@@ -869,160 +903,157 @@ class MainActivity : AppCompatActivity() {
                     )
                     com.example.audiostreamer.node.discovery.HatBlePresenceProvider.startAdvertising(this)
                 }
-                com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.probeCapability(this)
-                com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.startPublishing(this)
             }
         }
+        updateReceiverDiscoverableBanner()
+    }
+
+    private fun updateReceiverDiscoverableBanner() {
+        if (currentMode != Mode.RECEIVER) {
+            cardReceiverDiscoverable.visibility = View.GONE
+            return
+        }
+
+        cardReceiverDiscoverable.visibility = View.VISIBLE
+        tvReceiverHeadline.text = "Discoverable nearby"
+
+        val availableTransports = mutableListOf<String>()
+        if (NetworkUtils.isLanAvailable(this)) {
+            availableTransports.add("Local Wi-Fi")
+        }
+        if (packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)) {
+            availableTransports.add("Wi-Fi Direct")
+        }
+        if (com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.isSupported(this)) {
+            availableTransports.add("Aware")
+        }
+        if (packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE) && BleDiscoveryManager.hasPermissions(this)) {
+            availableTransports.add("Bluetooth")
+        }
+
+        val transportsStr = if (availableTransports.isNotEmpty()) {
+            "Discoverable on " + when (availableTransports.size) {
+                1 -> availableTransports[0]
+                2 -> "${availableTransports[0]} and ${availableTransports[1]}"
+                else -> availableTransports.dropLast(1).joinToString(", ") + ", and " + availableTransports.last()
+            }
+        } else {
+            "No active discovery transports"
+        }
+        tvReceiverTransportsList.text = transportsStr
+
+        val localIp = NetworkUtils.getLocalIpAddress() ?: "0.0.0.0"
+        val port = etPort.text.toString().toIntOrNull() ?: AudioConfig.DEFAULT_PORT
+        val localNodeId = try { LocalNodeManager.getLocalNode().id } catch (_: Exception) { "" }
+        val idShort = if (localNodeId.isNotBlank()) " • ${localNodeId.takeLast(6)}" else ""
+        tvReceiverEndpointPill.text = "$localIp:$port$idShort"
     }
 
     private fun Int.dpToPx(): Int = (this * resources.displayMetrics.density).toInt()
 
     private fun startUnifiedScan() {
-        activeScanJob?.cancel()
-        btnScanReceivers.text = "Stop"
-        btnScanReceivers.setTextColor(ContextCompat.getColor(this, R.color.status_red))
-        pbDiscoveryScanning.visibility = View.VISIBLE
-        pbDiscoveryProgressBar.visibility = View.VISIBLE
-        tvDiscoveryTimer.visibility = View.VISIBLE
-        pbDiscoveryProgressBar.progress = 100
-
-        val isLanAvailable = NetworkUtils.isLanAvailable()
-        tvOfflineDirectHint.visibility = if (!isLanAvailable) View.VISIBLE else View.GONE
-        tvChipLanStatus.text = if (isLanAvailable) "Searching" else "Offline"
-        tvChipLanStatus.setTextColor(ContextCompat.getColor(this, if (isLanAvailable) R.color.primary else R.color.text_hint))
-
-        tvChipDirectStatus.text = "Scanning"
-        tvChipDirectStatus.setTextColor(ContextCompat.getColor(this, R.color.status_orange))
-
-        tvChipBleStatus.text = "Scanning"
-        tvChipBleStatus.setTextColor(ContextCompat.getColor(this, R.color.status_blue))
-
-        tvChipAwareStatus.text = if (com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.isSupported(this)) "Searching" else "Unsupported"
-        tvChipAwareStatus.setTextColor(ContextCompat.getColor(this, R.color.secondary))
-
-        tvDiscoveryStatusBanner.text = "Scanning radio channels for nearby devices..."
-
-        // 1. LAN Discovery (if router available)
-        if (isLanAvailable) {
-            DiscoveryManager.triggerScan(lifecycleScope)
-            if (currentMode == Mode.TRANSMITTER && !AudioCaptureService.isRunning.get()) {
-                LanDiscoveryProvider.stopDiscovery()
-                LanDiscoveryProvider.startDiscovery(this)
-            }
-        }
-
-        // 2. Wi-Fi Direct Discovery
-        if (checkAndRequestP2pPermissions()) {
-            WifiDirectManager.discoverPeers(this)
-            WifiDirectDiscoveryProvider.stopDiscovery()
-            WifiDirectDiscoveryProvider.startDiscovery(this)
-        }
-
-        // 3. BLE Discovery
-        if (checkAndRequestBlePermissions()) {
-            BleDiscoveryManager.startScanning(this)
-            com.example.audiostreamer.node.discovery.HatBlePresenceProvider.startScanning(this)
-        }
-
-        // 4. Wi-Fi Aware Discovery
-        com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.probeCapability(this)
-        com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.startSubscribing(this)
-        HatDiscoveryRegistry.recomputeRegistry()
-
-        // 5. 8-second countdown ticker
-        activeScanJob = lifecycleScope.launch {
-            val totalSeconds = 8
-            for (remaining in totalSeconds downTo 1) {
-                tvDiscoveryTimer.text = "${remaining}s"
-                tvDiscoveryStatusBanner.text = "Scanning channels (${remaining}s remaining)..."
-                pbDiscoveryProgressBar.progress = (remaining * 100) / totalSeconds
-                updateScanDashboardMetrics()
-                delay(1000L)
-            }
-            stopUnifiedScan()
-        }
+        if (currentMode == Mode.RECEIVER) return
+        com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.startScan(this, lifecycleScope)
     }
 
     private fun stopUnifiedScan() {
-        activeScanJob?.cancel()
-        activeScanJob = null
+        com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.stopScan(this)
+    }
 
-        if (checkAndRequestBlePermissions()) {
-            BleDiscoveryManager.stopScanning()
-            com.example.audiostreamer.node.discovery.HatBlePresenceProvider.stopScanning()
-        }
-        if (checkAndRequestP2pPermissions()) {
-            WifiDirectManager.stopPeerDiscovery(this)
-            WifiDirectDiscoveryProvider.stopDiscovery()
-        }
-        com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.stopSubscribing()
-        if (NetworkUtils.isLanAvailable()) {
-            DiscoveryManager.stopDiscovery()
-            LanDiscoveryProvider.stopDiscovery()
+    private fun renderDiscoveryScanState(state: com.example.audiostreamer.node.discovery.DiscoveryScanState) {
+        val isScanning = state.isScanning
+        btnScanReceivers.text = if (isScanning) "Stop" else "Scan"
+        btnScanReceivers.setTextColor(
+            ContextCompat.getColor(
+                this,
+                if (isScanning) R.color.status_red else R.color.primary
+            )
+        )
+
+        pbDiscoveryScanning.visibility = if (isScanning) View.VISIBLE else View.GONE
+        pbDiscoveryProgressBar.visibility = if (isScanning) View.VISIBLE else View.GONE
+        tvDiscoveryTimer.visibility = if (isScanning) View.VISIBLE else View.GONE
+
+        if (isScanning) {
+            val totalMs = when (state.currentPhase) {
+                com.example.audiostreamer.node.discovery.DiscoveryScanPhase.LOCAL_WIFI -> com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.TIMEOUT_LAN_MS
+                com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_DIRECT -> com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.TIMEOUT_WIFI_DIRECT_MS
+                com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_AWARE -> com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.TIMEOUT_WIFI_AWARE_MS
+                com.example.audiostreamer.node.discovery.DiscoveryScanPhase.BLE -> com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.TIMEOUT_BLE_MS
+                else -> 1000L
+            }
+            val elapsed = (totalMs - state.phaseTimeRemainingMs).coerceIn(0L, totalMs)
+            pbDiscoveryProgressBar.progress = if (totalMs > 0) ((elapsed * 100) / totalMs).toInt() else 0
+            tvDiscoveryTimer.text = "${state.secondsRemaining}s remaining"
         }
 
-        btnScanReceivers.text = "Scan"
-        btnScanReceivers.setTextColor(ContextCompat.getColor(this, R.color.primary))
-        pbDiscoveryScanning.visibility = View.GONE
-        pbDiscoveryProgressBar.visibility = View.GONE
-        tvDiscoveryTimer.visibility = View.GONE
+        tvDiscoveryStatusBanner.text = state.statusMessage
 
-        updateScanDashboardMetrics()
-        val devices = getUnifiedDiscoveredDevices()
-        val availableCount = devices.size
-        tvDiscoveryStatusBanner.text = if (availableCount > 0) {
-            "Scan complete • $availableCount device(s) found"
+        if (!isScanning && !state.scanSummary.isNullOrEmpty()) {
+            tvScanSummary.visibility = View.VISIBLE
+            tvScanSummary.text = state.scanSummary
         } else {
-            "Scan complete • No devices found"
+            tvScanSummary.visibility = View.GONE
         }
+
+        fun updateChip(
+            phase: com.example.audiostreamer.node.discovery.DiscoveryScanPhase,
+            statusView: TextView
+        ) {
+            val report = state.phaseReports[phase]
+            when {
+                report == null || report.status == com.example.audiostreamer.node.discovery.PhaseStatus.WAITING -> {
+                    statusView.text = if (isScanning) "○ Waiting" else "○ Idle"
+                    statusView.setTextColor(ContextCompat.getColor(this, R.color.text_hint))
+                }
+                report.status == com.example.audiostreamer.node.discovery.PhaseStatus.SEARCHING -> {
+                    statusView.text = if (report.discoveredCount > 0) "● ${report.discoveredCount} dev" else "● Searching..."
+                    val colorRes = when (phase) {
+                        com.example.audiostreamer.node.discovery.DiscoveryScanPhase.LOCAL_WIFI -> R.color.primary
+                        com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_DIRECT -> R.color.status_orange
+                        com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_AWARE -> R.color.secondary
+                        com.example.audiostreamer.node.discovery.DiscoveryScanPhase.BLE -> R.color.status_blue
+                        else -> R.color.primary
+                    }
+                    statusView.setTextColor(ContextCompat.getColor(this, colorRes))
+                }
+                report.status == com.example.audiostreamer.node.discovery.PhaseStatus.FOUND -> {
+                    statusView.text = "✓ ${report.discoveredCount} dev"
+                    statusView.setTextColor(ContextCompat.getColor(this, R.color.status_green))
+                }
+                report.status == com.example.audiostreamer.node.discovery.PhaseStatus.TIMED_OUT -> {
+                    statusView.text = "○ 0 dev"
+                    statusView.setTextColor(ContextCompat.getColor(this, R.color.text_hint))
+                }
+                report.status == com.example.audiostreamer.node.discovery.PhaseStatus.SKIPPED -> {
+                    statusView.text = "— Skipped"
+                    statusView.setTextColor(ContextCompat.getColor(this, R.color.text_hint))
+                }
+                report.status == com.example.audiostreamer.node.discovery.PhaseStatus.FAILED -> {
+                    statusView.text = "✕ Failed"
+                    statusView.setTextColor(ContextCompat.getColor(this, R.color.status_red))
+                }
+            }
+        }
+
+        updateChip(com.example.audiostreamer.node.discovery.DiscoveryScanPhase.LOCAL_WIFI, tvChipLanStatus)
+        updateChip(com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_DIRECT, tvChipDirectStatus)
+        updateChip(com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_AWARE, tvChipAwareStatus)
+        updateChip(com.example.audiostreamer.node.discovery.DiscoveryScanPhase.BLE, tvChipBleStatus)
+
+        val isLanAvailable = NetworkUtils.isLanAvailable(this)
+        tvOfflineDirectHint.visibility = if (!isLanAvailable && isScanning) View.VISIBLE else View.GONE
     }
 
     private fun updateScanDashboardMetrics() {
-        val isLanAvailable = NetworkUtils.isLanAvailable()
-        val lanCount = DiscoveryManager.discoveredDevices.value.size + LanDiscoveryProvider.discoveredEndpoints.value.size
-        val p2pCount = WifiDirectManager.discoveredPeers.value.size + WifiDirectDiscoveryProvider.discoveredEndpoints.value.size
-        val bleCount = BleDiscoveryManager.bleDevices.value.size + com.example.audiostreamer.node.discovery.HatBlePresenceProvider.discoveredNodes.value.size
-        val awareCount = com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.discoveredNodes.value.size
-
-        tvChipLanStatus.text = when {
-            !isLanAvailable -> "Offline"
-            lanCount > 0 -> "$lanCount dev"
-            activeScanJob?.isActive == true -> "Searching"
-            else -> "Idle"
-        }
-
-        tvChipDirectStatus.text = when {
-            p2pCount > 0 -> "$p2pCount peer(s)"
-            activeScanJob?.isActive == true -> "Scanning"
-            else -> "Idle"
-        }
-
-        tvChipBleStatus.text = when {
-            bleCount > 0 -> "$bleCount dev"
-            activeScanJob?.isActive == true -> "Scanning"
-            else -> "Idle"
-        }
-
-        tvChipAwareStatus.text = when {
-            !com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.isSupported(this) -> "Unsupported"
-            awareCount > 0 -> "$awareCount peer(s)"
-            activeScanJob?.isActive == true -> "Searching"
-            else -> "Idle"
-        }
+        renderDiscoveryScanState(com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.scanState.value)
     }
 
     private fun updateScanningIndicator() {
-        val isScanning = activeScanJob?.isActive == true ||
-            DiscoveryManager.isScanning.value ||
-            WifiDirectManager.isScanningPeers.value ||
-            BleDiscoveryManager.isScanning.value ||
-            LanDiscoveryProvider.isScanning.value ||
-            WifiDirectDiscoveryProvider.isScanning.value ||
-            com.example.audiostreamer.node.discovery.HatBlePresenceProvider.isScanning.value ||
-            com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.isSubscribing.value
+        val isScanning = com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.scanState.value.isScanning
         pbDiscoveryScanning.visibility = if (isScanning) View.VISIBLE else View.GONE
         tvDiscoveryScanningText.visibility = View.GONE
-        updateScanDashboardMetrics()
+        renderDiscoveryScanState(com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.scanState.value)
     }
 
     data class UnifiedDevice(
@@ -1048,194 +1079,92 @@ class MainActivity : AppCompatActivity() {
     private val deviceDirectPreferences = mutableMapOf<String, Boolean>()
 
     private fun getUnifiedDiscoveredDevices(): List<UnifiedDevice> {
-        BleDiscoveryManager.pruneStaleDevices()
-        val localDevices = DiscoveryManager.discoveredDevices.value
-        val p2pPeers = WifiDirectManager.discoveredPeers.value.toMutableList()
-        val blePeers = BleDiscoveryManager.bleDevices.value.toMutableList()
-        val localIps = (NetworkUtils.getAllLocalIpAddresses() + NetworkUtils.getP2pIpAddresses()).toSet()
+        val registryNodes = HatDiscoveryRegistry.recomputeRegistry()
+        val localIps = try {
+            (NetworkUtils.getAllLocalIpAddresses() + NetworkUtils.getP2pIpAddresses()).toSet()
+        } catch (e: Exception) { emptySet() }
+
+        val p2pPeers = try { WifiDirectManager.discoveredPeers.value } catch (e: Exception) { emptyList() }
+        val blePeers = try { BleDiscoveryManager.bleDevices.value } catch (e: Exception) { emptyList() }
+
         val unified = mutableListOf<UnifiedDevice>()
 
-        for (dev in localDevices) {
-            // Exclude self/local interfaces from being shown as available receiver
-            if (dev.ip in localIps || (dev.p2pGoIp != null && dev.p2pGoIp in localIps)) {
-                continue
+        for (regNode in registryNodes) {
+            val lanEp = regNode.getLanEndpoint()
+            val wdEp = regNode.getWifiDirectEndpoint()
+            val awareEp = regNode.getWifiAwareEndpoint()
+            val bleEp = regNode.getBleEndpoint()
+            val nfcEp = regNode.getNfcEndpoint()
+
+            val ip = lanEp?.address?.takeIf { it !in localIps }
+            val mac = wdEp?.address ?: bleEp?.details?.get("mac") as? String
+
+            // Find matching P2P peer by deviceAddress or by name match
+            val matchingPeer = if (mac != null) {
+                p2pPeers.firstOrNull { it.deviceAddress.equals(mac, ignoreCase = true) }
+            } else {
+                p2pPeers.firstOrNull { peer ->
+                    peer.deviceName.isNotEmpty() && (
+                        peer.deviceName.equals(regNode.name, ignoreCase = true) ||
+                        regNode.name.contains(peer.deviceName, ignoreCase = true)
+                    )
+                }
             }
 
-            // Find matching P2P peer by deviceAddress / p2pMac or by name match
-            val matchingPeerIndex = p2pPeers.indexOfFirst { peer ->
-                (dev.p2pMac != null && peer.deviceAddress.equals(dev.p2pMac, ignoreCase = true)) ||
-                (peer.deviceName.isNotEmpty() && (
-                    peer.deviceName.equals(dev.name, ignoreCase = true) ||
-                    dev.name.contains(peer.deviceName, ignoreCase = true) ||
-                    peer.deviceName.contains(dev.name, ignoreCase = true)
-                ))
+            // Find matching BLE peer by address or name
+            val matchingBle = blePeers.firstOrNull { ble ->
+                (mac != null && ble.bluetoothAddress.equals(mac, ignoreCase = true)) ||
+                (ble.name.isNotEmpty() && ble.name.equals(regNode.name, ignoreCase = true))
             }
-            val matchingPeer = if (matchingPeerIndex >= 0) p2pPeers.removeAt(matchingPeerIndex) else null
 
-            // Find matching BLE peer by name or bluetooth address
-            val matchingBleIndex = blePeers.indexOfFirst { ble ->
-                (dev.p2pMac != null && ble.bluetoothAddress.equals(dev.p2pMac, ignoreCase = true)) ||
-                (ble.name.isNotEmpty() && (
-                    ble.name.equals(dev.name, ignoreCase = true) ||
-                    dev.name.contains(ble.name, ignoreCase = true) ||
-                    ble.name.contains(dev.name, ignoreCase = true)
-                ))
+            val p2pSsid = (lanEp?.details?.get("p2pSsid") as? String)
+                ?: (wdEp?.details?.get("p2pSsid") as? String)
+                ?: matchingBle?.p2pSsid
+            val p2pPassphrase = (lanEp?.details?.get("p2pPassphrase") as? String)
+                ?: (wdEp?.details?.get("p2pPassphrase") as? String)
+                ?: matchingBle?.p2pPassphrase
+            val p2pGoIp = (lanEp?.details?.get("p2pGoIp") as? String)
+                ?: (wdEp?.details?.get("p2pGoIp") as? String)
+                ?: matchingBle?.p2pGoIp
+                ?: if (ip != null && ip.startsWith("192.168.49.")) ip else null
+
+            val isDirect = regNode.hasTransport(NodeTransportType.WIFI_DIRECT) ||
+                matchingPeer != null ||
+                !p2pSsid.isNullOrEmpty() ||
+                (ip != null && ip.startsWith("192.168.49."))
+
+            val sourcesList = regNode.discoverySources.map { it.name }
+            val candidateTransportsList = regNode.transportCandidates.map { it.name }
+            val capsSummary = regNode.nodeInfo.capabilities.describe()
+
+            val displayName = when {
+                regNode.name.isNotEmpty() && regNode.name != "HAT Node" && regNode.name != "Audio Receiver" -> regNode.name
+                matchingPeer?.deviceName?.isNotEmpty() == true -> matchingPeer.deviceName
+                matchingBle?.name?.isNotEmpty() == true && matchingBle.name != "Nearby receiver" -> matchingBle.name
+                else -> regNode.name.ifEmpty { "Audio Receiver" }
             }
-            val matchingBle = if (matchingBleIndex >= 0) blePeers.removeAt(matchingBleIndex) else null
 
-            val p2pSsid = dev.p2pSsid ?: matchingBle?.p2pSsid
-            val p2pPassphrase = dev.p2pPassphrase ?: matchingBle?.p2pPassphrase
-            val p2pGoIp = dev.p2pGoIp ?: matchingBle?.p2pGoIp ?: if (dev.ip.startsWith("192.168.49.")) dev.ip else null
-            val isDirect = dev.isP2pActive || matchingPeer != null || !p2pSsid.isNullOrEmpty()
-
-            val displayName = matchingPeer?.deviceName?.takeIf { it.isNotEmpty() }
-                ?: matchingBle?.name?.takeIf { it.isNotEmpty() && it != "Nearby receiver" }
-                ?: dev.name.takeIf { it != "Audio Receiver" && it.isNotEmpty() }
-                ?: "Audio Receiver"
+            val port = lanEp?.port ?: wdEp?.port ?: nfcEp?.port ?: AudioConfig.DEFAULT_PORT
 
             unified.add(
                 UnifiedDevice(
-                    id = dev.nodeId ?: dev.p2pMac ?: matchingBle?.bluetoothAddress ?: "ip_${dev.ip}",
+                    id = regNode.id,
                     displayName = displayName,
-                    modelName = dev.modelName ?: if (dev.name != displayName && dev.name != "Audio Receiver") dev.name else null,
-                    lanIp = if (dev.ip.startsWith("192.168.49.")) null else dev.ip,
-                    port = dev.port,
+                    modelName = if (regNode.discoverySources.isNotEmpty()) regNode.discoverySources.joinToString(", ") { it.name } else null,
+                    lanIp = if (ip != null && ip.startsWith("192.168.49.")) null else ip,
+                    port = port,
                     p2pPeer = matchingPeer,
                     p2pSsid = p2pSsid,
                     p2pPassphrase = p2pPassphrase,
                     p2pGoIp = p2pGoIp,
                     isDirectAvailable = isDirect,
-                    useDirect = !isDirect && dev.ip.startsWith("192.168.49."),
-                    capabilitiesMask = dev.capabilitiesMask,
-                    nodeId = dev.nodeId,
-                    discoverySources = listOf(if (isDirect) "DIRECT" else "LAN"),
-                    transportCandidates = listOf(if (isDirect) "WIFI_DIRECT" else "LOCAL_WIFI")
-                )
-            )
-        }
-
-        // Add remaining verified BLE peers (filtered by HAT service UUID)
-        for (ble in blePeers) {
-            if (ble.role == "receiver" && currentMode == Mode.TRANSMITTER) {
-                val matchingPeerIndex = p2pPeers.indexOfFirst { peer ->
-                    peer.deviceAddress.equals(ble.bluetoothAddress, ignoreCase = true) ||
-                    (peer.deviceName.isNotEmpty() && peer.deviceName.equals(ble.name, ignoreCase = true))
-                }
-                val matchingPeer = if (matchingPeerIndex >= 0) p2pPeers.removeAt(matchingPeerIndex) else null
-
-                unified.add(
-                    UnifiedDevice(
-                        id = "ble_${ble.bluetoothAddress}",
-                        displayName = matchingPeer?.deviceName?.takeIf { it.isNotEmpty() } ?: ble.name,
-                        modelName = "Nearby BLE",
-                        lanIp = null,
-                        port = AudioConfig.DEFAULT_PORT,
-                        p2pPeer = matchingPeer,
-                        p2pSsid = ble.p2pSsid,
-                        p2pPassphrase = ble.p2pPassphrase,
-                        p2pGoIp = ble.p2pGoIp,
-                        isDirectAvailable = matchingPeer != null || !ble.p2pSsid.isNullOrEmpty(),
-                        useDirect = true,
-                        capabilitiesMask = 0,
-                        nodeId = null,
-                        discoverySources = listOf("BLE"),
-                        transportCandidates = listOf("BLUETOOTH_LE")
-                    )
-                )
-            }
-        }
-
-        // Ingest deduplicated nodes from central HatDiscoveryRegistry
-        // (merges LAN NSD, Wi-Fi Direct, Wi-Fi Aware, BLE, and NFC Bootstrap)
-        val registryNodes = HatDiscoveryRegistry.recomputeRegistry()
-        for (regNode in registryNodes) {
-            val lanEp = regNode.getLanEndpoint()
-            val wdEp = regNode.getWifiDirectEndpoint()
-            val nfcEp = regNode.getNfcEndpoint()
-
-            val ip = lanEp?.address?.takeIf { it !in localIps }
-            val mac = wdEp?.address
-
-            val matchingPeerIndex = if (mac != null) {
-                p2pPeers.indexOfFirst { it.deviceAddress.equals(mac, ignoreCase = true) }
-            } else -1
-            val matchingPeer = if (matchingPeerIndex >= 0) p2pPeers.removeAt(matchingPeerIndex) else null
-
-            val isDirect = regNode.hasTransport(NodeTransportType.WIFI_DIRECT) || matchingPeer != null
-            val sourcesDesc = regNode.discoverySources.joinToString(", ") { it.name }
-            val sourcesList = regNode.discoverySources.map { it.name }
-            val candidateTransportsList = regNode.transportCandidates.map { it.name }
-            val capsSummary = regNode.nodeInfo.capabilities.describe()
-
-            val existingIndex = unified.indexOfFirst {
-                it.nodeId == regNode.id || (ip != null && it.lanIp == ip) || (mac != null && it.id.contains(mac))
-            }
-
-            if (existingIndex >= 0) {
-                val existing = unified[existingIndex]
-                unified[existingIndex] = existing.copy(
+                    useDirect = isDirect && ip == null,
+                    capabilitiesMask = regNode.nodeInfo.capabilities.toCapabilitiesMask(),
                     nodeId = regNode.id,
-                    capabilitiesMask = if (existing.capabilitiesMask != 0) existing.capabilitiesMask else regNode.nodeInfo.capabilities.toCapabilitiesMask(),
-                    displayName = if (existing.displayName == "Audio Receiver" && regNode.name.isNotEmpty()) regNode.name else existing.displayName,
-                    modelName = existing.modelName ?: sourcesDesc,
-                    lanIp = existing.lanIp ?: ip,
-                    port = if (existing.port != AudioConfig.DEFAULT_PORT) existing.port else (lanEp?.port ?: nfcEp?.port ?: AudioConfig.DEFAULT_PORT),
-                    isDirectAvailable = existing.isDirectAvailable || isDirect,
-                    p2pPeer = existing.p2pPeer ?: matchingPeer,
-                    discoverySources = (existing.discoverySources + sourcesList).distinct(),
-                    transportCandidates = (existing.transportCandidates + candidateTransportsList).distinct(),
-                    rssi = existing.rssi ?: regNode.rssi,
-                    capabilitiesSummary = existing.capabilitiesSummary ?: capsSummary
-                )
-            } else {
-                unified.add(
-                    UnifiedDevice(
-                        id = regNode.id,
-                        displayName = regNode.name.ifEmpty { matchingPeer?.deviceName ?: "HAT Node" },
-                        modelName = sourcesDesc,
-                        lanIp = ip,
-                        port = lanEp?.port ?: nfcEp?.port ?: AudioConfig.DEFAULT_PORT,
-                        p2pPeer = matchingPeer,
-                        p2pSsid = null,
-                        p2pPassphrase = null,
-                        p2pGoIp = null,
-                        isDirectAvailable = isDirect,
-                        useDirect = isDirect && ip == null,
-                        capabilitiesMask = regNode.nodeInfo.capabilities.toCapabilitiesMask(),
-                        nodeId = regNode.id,
-                        discoverySources = sourcesList,
-                        transportCandidates = candidateTransportsList,
-                        rssi = regNode.rssi,
-                        capabilitiesSummary = capsSummary
-                    )
-                )
-            }
-        }
-
-        // Include remaining Wi-Fi Direct peers (e.g. offline discovery when BLE/LAN are unavailable)
-        for (peer in p2pPeers) {
-            val isSelf = peer.deviceAddress.equals(WifiDirectManager.thisDeviceAddress, ignoreCase = true) ||
-                         (WifiDirectManager.thisDeviceName != null && peer.deviceName.equals(WifiDirectManager.thisDeviceName, ignoreCase = true))
-            if (isSelf) continue
-
-            val dispName = peer.deviceName.ifEmpty { "Wi-Fi Direct (${peer.deviceAddress.takeLast(5)})" }
-            unified.add(
-                UnifiedDevice(
-                    id = "p2p_${peer.deviceAddress}",
-                    displayName = dispName,
-                    modelName = "Wi-Fi Direct Peer",
-                    lanIp = null,
-                    port = AudioConfig.DEFAULT_PORT,
-                    p2pPeer = peer,
-                    p2pSsid = null,
-                    p2pPassphrase = null,
-                    p2pGoIp = null,
-                    isDirectAvailable = true,
-                    useDirect = true,
-                    capabilitiesMask = 0,
-                    nodeId = null,
-                    discoverySources = listOf("WIFI_DIRECT"),
-                    transportCandidates = listOf("WIFI_DIRECT")
+                    discoverySources = sourcesList,
+                    transportCandidates = candidateTransportsList,
+                    rssi = regNode.rssi,
+                    capabilitiesSummary = capsSummary
                 )
             )
         }
@@ -2455,6 +2384,7 @@ class MainActivity : AppCompatActivity() {
                 btnModeReceiver.iconTint = ColorStateList.valueOf(colorTextSecondary)
 
                 tvModeGuide.text = "Broadcast audio to nearby speakers, receivers, or devices"
+                cardReceiverDiscoverable.visibility = View.GONE
                 layoutSavedProfilesSection.visibility = View.GONE
                 layoutDiscoverySection.visibility = View.VISIBLE
                 layoutReceiverP2p.visibility = View.GONE
@@ -2501,6 +2431,8 @@ class MainActivity : AppCompatActivity() {
                 btnModeTransmitter.iconTint = ColorStateList.valueOf(colorTextSecondary)
 
                 tvModeGuide.text = "Accept and play audio streams from nearby transmitters"
+                cardReceiverDiscoverable.visibility = View.VISIBLE
+                updateReceiverDiscoverableBanner()
                 layoutDiscoverySection.visibility = View.GONE
                 layoutSavedProfilesSection.visibility = View.GONE
                 layoutReceiverP2p.visibility = View.GONE

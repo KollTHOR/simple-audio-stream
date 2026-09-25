@@ -146,13 +146,22 @@ object HatDiscoveryRegistry {
                     LanDiscoveryProvider.discoveredEndpoints.collect { recomputeRegistry() }
                 }
                 launch {
+                    com.example.audiostreamer.DiscoveryManager.discoveredDevices.collect { recomputeRegistry() }
+                }
+                launch {
                     WifiDirectDiscoveryProvider.discoveredEndpoints.collect { recomputeRegistry() }
+                }
+                launch {
+                    com.example.audiostreamer.WifiDirectManager.discoveredPeers.collect { recomputeRegistry() }
                 }
                 launch {
                     WifiAwareDiscoveryProvider.discoveredNodes.collect { recomputeRegistry() }
                 }
                 launch {
                     HatBlePresenceProvider.discoveredNodes.collect { recomputeRegistry() }
+                }
+                launch {
+                    com.example.audiostreamer.BleDiscoveryManager.bleDevices.collect { recomputeRegistry() }
                 }
                 launch {
                     HatNfcBootstrapProvider.discoveredNodes.collect { recomputeRegistry() }
@@ -309,6 +318,49 @@ object HatDiscoveryRegistry {
                 )
             }
 
+            // 2b. Ingest UDP broadcast LAN endpoints from DiscoveryManager (deduplicated by Node ID and IP)
+            val localIps = try {
+                (com.example.audiostreamer.NetworkUtils.getAllLocalIpAddresses() + 
+                 com.example.audiostreamer.NetworkUtils.getP2pIpAddresses()).toSet()
+            } catch (e: Exception) { emptySet() }
+
+            val udpDevices = com.example.audiostreamer.DiscoveryManager.discoveredDevices.value
+            for (udp in udpDevices) {
+                if (udp.ip in localIps || (udp.p2pGoIp != null && udp.p2pGoIp in localIps)) continue
+                val matchedBuilder = if (!udp.nodeId.isNullOrBlank() && !isInvalidIdentity(udp.nodeId)) {
+                    nodeMap[udp.nodeId]
+                } else {
+                    nodeMap.values.firstOrNull { b -> b.endpoints.any { it.address == udp.ip } }
+                }
+
+                val id = udp.nodeId?.takeIf { !isInvalidIdentity(it) }
+                    ?: matchedBuilder?.id
+                    ?: "hat-node-lan-${udp.ip.replace('.', '-').replace(':', '-')}"
+
+                if (id == localNodeId) continue
+
+                val builder = getOrCreateBuilder(nodeMap, id, udp.name)
+                builder.discoverySources.add(DiscoverySource.LAN)
+                builder.transportCandidates.add(NodeTransportType.LOCAL_WIFI)
+                if (udp.isP2pActive || !udp.p2pSsid.isNullOrEmpty()) {
+                    builder.discoverySources.add(DiscoverySource.WIFI_DIRECT)
+                    builder.transportCandidates.add(NodeTransportType.WIFI_DIRECT)
+                }
+                val now = System.currentTimeMillis()
+                builder.firstSeenEpochMs = minOf(builder.firstSeenEpochMs, now)
+                builder.lastSeenEpochMs = maxOf(builder.lastSeenEpochMs, now)
+                builder.endpoints.add(
+                    DiscoveredEndpoint(
+                        transportType = NodeTransportType.LOCAL_WIFI,
+                        address = udp.ip,
+                        port = udp.port,
+                        description = "LAN Broadcast (${udp.ip}:${udp.port})",
+                        details = mapOf("p2pSsid" to udp.p2pSsid, "p2pGoIp" to udp.p2pGoIp, "p2pMac" to udp.p2pMac),
+                        lastSeenEpochMs = now
+                    )
+                )
+            }
+
             // 3. Ingest Wi-Fi Direct endpoints
             val wdEndpoints = WifiDirectDiscoveryProvider.discoveredEndpoints.value
             for (wd in wdEndpoints) {
@@ -329,6 +381,42 @@ object HatDiscoveryRegistry {
                         lastSeenEpochMs = wd.lastSeenEpochMs
                     )
                 )
+            }
+
+            // 3b. Correlate raw P2P peers from WifiDirectManager
+            val p2pPeers = try { com.example.audiostreamer.WifiDirectManager.discoveredPeers.value } catch (e: Exception) { emptyList() }
+            val thisP2pMac = try { com.example.audiostreamer.WifiDirectManager.thisDeviceAddress } catch (_: Exception) { null }
+            val thisP2pName = try { com.example.audiostreamer.WifiDirectManager.thisDeviceName } catch (_: Exception) { null }
+            for (peer in p2pPeers) {
+                val mac = peer.deviceAddress
+                val isSelf = (thisP2pMac != null && mac.equals(thisP2pMac, ignoreCase = true)) ||
+                             (thisP2pName != null && peer.deviceName.isNotBlank() && peer.deviceName.equals(thisP2pName, ignoreCase = true))
+                if (isSelf) continue
+
+                val matched = nodeMap.values.firstOrNull { b ->
+                    b.endpoints.any { it.address.equals(mac, ignoreCase = true) } ||
+                    (peer.deviceName.isNotBlank() && b.name.equals(peer.deviceName, ignoreCase = true))
+                }
+                if (matched != null) {
+                    matched.discoverySources.add(DiscoverySource.WIFI_DIRECT)
+                    matched.transportCandidates.add(NodeTransportType.WIFI_DIRECT)
+                } else {
+                    val id = "hat-node-p2p-${mac.replace(':', '-')}"
+                    val b = getOrCreateBuilder(nodeMap, id, peer.deviceName.ifEmpty { "Wi-Fi Direct Peer" })
+                    b.discoverySources.add(DiscoverySource.WIFI_DIRECT)
+                    b.transportCandidates.add(NodeTransportType.WIFI_DIRECT)
+                    val now = System.currentTimeMillis()
+                    b.firstSeenEpochMs = minOf(b.firstSeenEpochMs, now)
+                    b.lastSeenEpochMs = maxOf(b.lastSeenEpochMs, now)
+                    b.endpoints.add(
+                        DiscoveredEndpoint(
+                            transportType = NodeTransportType.WIFI_DIRECT,
+                            address = mac,
+                            description = "Wi-Fi Direct ($mac)",
+                            lastSeenEpochMs = now
+                        )
+                    )
+                }
             }
 
             // 4. Ingest Wi-Fi Aware endpoints
@@ -380,6 +468,38 @@ object HatDiscoveryRegistry {
                         lastSeenEpochMs = ble.lastSeenEpochMs
                     )
                 )
+            }
+
+            // 5b. Correlate legacy BLE peers from BleDiscoveryManager
+            val bleLegacy = try { com.example.audiostreamer.BleDiscoveryManager.bleDevices.value } catch (e: Exception) { emptyList() }
+            for (ble in bleLegacy) {
+                if (ble.role != "receiver") continue
+                val addr = ble.bluetoothAddress
+                val matched = nodeMap.values.firstOrNull { b ->
+                    b.endpoints.any { it.address.equals(addr, ignoreCase = true) } ||
+                    (ble.name.isNotBlank() && (b.name.equals(ble.name, ignoreCase = true) || b.name.contains(ble.name, ignoreCase = true)))
+                }
+                if (matched != null) {
+                    matched.discoverySources.add(DiscoverySource.BLE)
+                    matched.transportCandidates.add(NodeTransportType.BLUETOOTH_LE)
+                } else {
+                    val id = "hat-node-ble-${addr.replace(':', '-')}"
+                    val b = getOrCreateBuilder(nodeMap, id, ble.name.ifEmpty { "Nearby Receiver" })
+                    b.discoverySources.add(DiscoverySource.BLE)
+                    b.transportCandidates.add(NodeTransportType.BLUETOOTH_LE)
+                    val now = System.currentTimeMillis()
+                    b.firstSeenEpochMs = minOf(b.firstSeenEpochMs, now)
+                    b.lastSeenEpochMs = maxOf(b.lastSeenEpochMs, now)
+                    b.endpoints.add(
+                        DiscoveredEndpoint(
+                            transportType = NodeTransportType.BLUETOOTH_LE,
+                            address = addr,
+                            description = "BLE (${ble.name})",
+                            details = mapOf("p2pSsid" to ble.p2pSsid, "p2pPassphrase" to ble.p2pPassphrase, "p2pGoIp" to ble.p2pGoIp),
+                            lastSeenEpochMs = now
+                        )
+                    )
+                }
             }
 
             // 6. Ingest NFC Bootstrap endpoints

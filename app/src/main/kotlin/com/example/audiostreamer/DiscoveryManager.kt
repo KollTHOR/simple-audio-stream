@@ -684,7 +684,7 @@ object DiscoveryManager {
     }
 
     @Synchronized
-    private fun addDiscoveredDevice(device: DiscoveredDevice) {
+    internal fun addDiscoveredDevice(device: DiscoveredDevice) {
         val current = _discoveredDevices.value.toMutableList()
         val existingIndex = current.indexOfFirst {
             (it.p2pMac != null && device.p2pMac != null && it.p2pMac.equals(device.p2pMac, ignoreCase = true)) ||
@@ -749,5 +749,12 @@ object DiscoveryManager {
         if (filteredTx.size != _discoveredTransmitters.value.size) {
             _discoveredTransmitters.value = filteredTx
         }
+    }
+
+    @androidx.annotation.VisibleForTesting
+    @Synchronized
+    internal fun clearDiscoveredDevices() {
+        _discoveredDevices.value = emptyList()
+        _discoveredTransmitters.value = emptyList()
     }
 }

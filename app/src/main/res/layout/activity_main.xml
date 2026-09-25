@@ -257,6 +257,82 @@
                             android:textColor="@color/text_secondary"
                             android:layout_marginBottom="12dp" />
 
+                        <!-- Receiver Mode: Persistent Discoverable Status Banner -->
+                        <com.google.android.material.card.MaterialCardView
+                            android:id="@+id/card_receiver_discoverable"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginBottom="12dp"
+                            app:cardCornerRadius="12dp"
+                            app:cardElevation="0dp"
+                            app:strokeColor="@color/card_stroke"
+                            app:strokeWidth="1dp"
+                            app:cardBackgroundColor="@color/input_bg"
+                            android:visibility="gone">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="vertical"
+                                android:padding="12dp">
+
+                                <LinearLayout
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:orientation="horizontal"
+                                    android:gravity="center_vertical"
+                                    android:layout_marginBottom="4dp">
+
+                                    <View
+                                        android:layout_width="8dp"
+                                        android:layout_height="8dp"
+                                        android:background="@drawable/bg_badge"
+                                        android:backgroundTint="@color/status_green"
+                                        android:layout_marginEnd="6dp" />
+
+                                    <TextView
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:text="READY TO RECEIVE"
+                                        android:textSize="10sp"
+                                        android:textStyle="bold"
+                                        android:textColor="@color/status_green"
+                                        android:letterSpacing="0.05" />
+                                </LinearLayout>
+
+                                <TextView
+                                    android:id="@+id/tv_receiver_headline"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:text="Discoverable nearby"
+                                    android:textSize="15sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/text_primary" />
+
+                                <TextView
+                                    android:id="@+id/tv_receiver_transports_list"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:text="Discoverable on Local Wi-Fi, Wi-Fi Direct, Aware, and Bluetooth"
+                                    android:textSize="12sp"
+                                    android:textColor="@color/text_secondary"
+                                    android:layout_marginTop="2dp" />
+
+                                <TextView
+                                    android:id="@+id/tv_receiver_endpoint_pill"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="0.0.0.0:50005"
+                                    android:textSize="11sp"
+                                    android:textStyle="bold"
+                                    android:textColor="@color/pill_text"
+                                    android:background="@drawable/bg_ip_pill"
+                                    android:paddingHorizontal="8dp"
+                                    android:paddingVertical="4dp"
+                                    android:layout_marginTop="8dp" />
+                            </LinearLayout>
+                        </com.google.android.material.card.MaterialCardView>
+
                         <!-- Receiver Mode: Auto-Tune / Tune-In Prompt Banner -->
                         <com.google.android.material.card.MaterialCardView
                             android:id="@+id/layout_tune_in_banner"
@@ -631,36 +707,6 @@
                                                 android:ellipsize="end" />
                                         </LinearLayout>
 
-                                        <!-- BLE Status Badge -->
-                                        <LinearLayout
-                                            android:id="@+id/status_chip_ble"
-                                            android:layout_width="0dp"
-                                            android:layout_height="wrap_content"
-                                            android:layout_weight="1"
-                                            android:orientation="vertical"
-                                            android:background="@drawable/bg_stat_badge"
-                                            android:padding="6dp"
-                                            android:layout_marginEnd="3dp">
-                                            <TextView
-                                                android:id="@+id/tv_chip_ble_title"
-                                                android:layout_width="wrap_content"
-                                                android:layout_height="wrap_content"
-                                                android:text="BLE"
-                                                android:textSize="9sp"
-                                                android:textStyle="bold"
-                                                android:textColor="@color/text_hint" />
-                                            <TextView
-                                                android:id="@+id/tv_chip_ble_status"
-                                                android:layout_width="wrap_content"
-                                                android:layout_height="wrap_content"
-                                                android:text="Idle"
-                                                android:textSize="11sp"
-                                                android:textStyle="bold"
-                                                android:textColor="@color/text_secondary"
-                                                android:singleLine="true"
-                                                android:ellipsize="end" />
-                                        </LinearLayout>
-
                                         <!-- Wi-Fi Aware Status Badge -->
                                         <LinearLayout
                                             android:id="@+id/status_chip_aware"
@@ -669,7 +715,8 @@
                                             android:layout_weight="1"
                                             android:orientation="vertical"
                                             android:background="@drawable/bg_stat_badge"
-                                            android:padding="6dp">
+                                            android:padding="6dp"
+                                            android:layout_marginEnd="3dp">
                                             <TextView
                                                 android:id="@+id/tv_chip_aware_title"
                                                 android:layout_width="wrap_content"
@@ -689,7 +736,46 @@
                                                 android:singleLine="true"
                                                 android:ellipsize="end" />
                                         </LinearLayout>
+
+                                        <!-- BLE Status Badge -->
+                                        <LinearLayout
+                                            android:id="@+id/status_chip_ble"
+                                            android:layout_width="0dp"
+                                            android:layout_height="wrap_content"
+                                            android:layout_weight="1"
+                                            android:orientation="vertical"
+                                            android:background="@drawable/bg_stat_badge"
+                                            android:padding="6dp">
+                                            <TextView
+                                                android:id="@+id/tv_chip_ble_title"
+                                                android:layout_width="wrap_content"
+                                                android:layout_height="wrap_content"
+                                                android:text="BLE"
+                                                android:textSize="9sp"
+                                                android:textStyle="bold"
+                                                android:textColor="@color/text_hint" />
+                                            <TextView
+                                                android:id="@+id/tv_chip_ble_status"
+                                                android:layout_width="wrap_content"
+                                                android:layout_height="wrap_content"
+                                                android:text="Idle"
+                                                android:textSize="11sp"
+                                                android:textStyle="bold"
+                                                android:textColor="@color/text_secondary"
+                                                android:singleLine="true"
+                                                android:ellipsize="end" />
+                                        </LinearLayout>
                                     </LinearLayout>
+
+                                    <!-- Compact Summary of Last Scan -->
+                                    <TextView
+                                        android:id="@+id/tv_scan_summary"
+                                        android:layout_width="match_parent"
+                                        android:layout_height="wrap_content"
+                                        android:textSize="11sp"
+                                        android:textColor="@color/text_hint"
+                                        android:layout_marginTop="6dp"
+                                        android:visibility="gone" />
 
                                     <!-- Offline Helper Tip (Visible when offline / disconnected from router) -->
                                     <TextView
