@@ -513,12 +513,16 @@ class HatPacketTest {
         val originalArtist = "Queen"
         val originalAlbum = "A Night at the Opera"
         val isPlaying = true
+        val seq = 42L
+        val pkg = "com.aspiro.tidal"
 
         val payload = HatPacket.serializeMediaMetadata(
             isPlaying = isPlaying,
             title = originalTitle,
             artist = originalArtist,
-            album = originalAlbum
+            album = originalAlbum,
+            mediaStateSequence = seq,
+            packageName = pkg
         )
 
         val header = HatPacket.Header(
@@ -539,6 +543,57 @@ class HatPacketTest {
         assertEquals(originalTitle, parsedMeta?.title)
         assertEquals(originalArtist, parsedMeta?.artist)
         assertEquals(originalAlbum, parsedMeta?.album)
+        assertEquals(seq, parsedMeta?.mediaStateSequence)
+        assertEquals(pkg, parsedMeta?.packageName)
+    }
+
+    @Test
+    fun testMediaMetadataSequenceAndPackage() {
+        // Large sequence values must survive Big-Endian int64 serialization
+        val highSeq = Long.MAX_VALUE - 1
+        val payload = HatPacket.serializeMediaMetadata(
+            isPlaying = false,
+            title = "Test",
+            artist = "Artist",
+            album = "Album",
+            mediaStateSequence = highSeq,
+            packageName = "com.google.android.youtube"
+        )
+        val parsed = HatPacket.parseMediaMetadata(payload, 0, payload.size)
+        assertNotNull(parsed)
+        assertEquals(highSeq, parsed?.mediaStateSequence)
+        assertEquals("com.google.android.youtube", parsed?.packageName)
+        assertEquals(false, parsed?.isPlaying)
+
+        // Sequence 0 (default / legacy)
+        val zeroSeq = HatPacket.serializeMediaMetadata(
+            isPlaying = true, title = "T", artist = "A", album = "B",
+            mediaStateSequence = 0L, packageName = ""
+        )
+        val parsedZero = HatPacket.parseMediaMetadata(zeroSeq, 0, zeroSeq.size)
+        assertNotNull(parsedZero)
+        assertEquals(0L, parsedZero?.mediaStateSequence)
+        assertEquals("", parsedZero?.packageName)
+    }
+
+    @Test
+    fun testMediaMetadataClearPacket() {
+        // A clear packet has empty title/artist/album — receiver must detect and reset to fallback
+        val clearPayload = HatPacket.serializeMediaMetadata(
+            isPlaying = false,
+            title = "",
+            artist = "",
+            album = "",
+            mediaStateSequence = 99L,
+            packageName = ""
+        )
+        val parsed = HatPacket.parseMediaMetadata(clearPayload, 0, clearPayload.size)
+        assertNotNull(parsed)
+        assertEquals("", parsed?.title)
+        assertEquals("", parsed?.artist)
+        assertEquals("", parsed?.album)
+        assertEquals(false, parsed?.isPlaying)
+        assertEquals(99L, parsed?.mediaStateSequence)
     }
 
     @Test

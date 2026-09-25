@@ -415,75 +415,124 @@ object HatPacket {
         )
     }
 
+    /**
+     * Payload for TYPE_MEDIA_METADATA packets.
+     *
+     * Wire format (after the 24-byte HAT header):
+     *   1     flags byte        bit 0 = isPlaying
+     *   8     mediaStateSeq     monotonic session sequence (BE int64)
+     *   2+N   packageName       UTF-8 length-prefixed (max 255 bytes)
+     *   2+N   title             UTF-8 length-prefixed (max 255 bytes)
+     *   2+N   artist            UTF-8 length-prefixed (max 255 bytes)
+     *   2+N   album             UTF-8 length-prefixed (max 255 bytes)
+     *
+     * [mediaStateSequence] is incremented by MediaSessionTracker on every state change.
+     * Receiver MUST reject packets whose sequence is <= its own lastReceivedSequence.
+     *
+     * A packet with empty title/artist/album and [isPlaying]=false is a valid
+     * "no-active-media" clear event. Receiver must reset to fallback text.
+     */
     data class MediaMetadataPayload(
         val isPlaying: Boolean,
         val title: String,
         val artist: String,
-        val album: String
+        val album: String,
+        /** Monotonically increasing counter. Receiver rejects older values. */
+        val mediaStateSequence: Long = 0L,
+        /** Package name of the source media app, e.g. "com.aspiro.tidal". */
+        val packageName: String = ""
     )
 
     fun serializeMediaMetadata(
         isPlaying: Boolean,
         title: String,
         artist: String,
-        album: String
+        album: String,
+        mediaStateSequence: Long = 0L,
+        packageName: String = ""
     ): ByteArray {
+        val pkgBytes   = packageName.toByteArray(Charsets.UTF_8).take(255).toByteArray()
         val titleBytes = title.toByteArray(Charsets.UTF_8).take(255).toByteArray()
         val artistBytes = artist.toByteArray(Charsets.UTF_8).take(255).toByteArray()
         val albumBytes = album.toByteArray(Charsets.UTF_8).take(255).toByteArray()
 
-        val totalLen = 1 + 2 + titleBytes.size + 2 + artistBytes.size + 2 + albumBytes.size
+        // 1 (flags) + 8 (seq) + (2+N)*4
+        val totalLen = 1 + 8 +
+            2 + pkgBytes.size +
+            2 + titleBytes.size +
+            2 + artistBytes.size +
+            2 + albumBytes.size
         val buf = ByteArray(totalLen)
         var pos = 0
+
+        // flags byte
         buf[pos++] = if (isPlaying) 1 else 0
 
+        // 8-byte sequence (big-endian int64)
+        buf[pos++] = ((mediaStateSequence ushr 56) and 0xFF).toByte()
+        buf[pos++] = ((mediaStateSequence ushr 48) and 0xFF).toByte()
+        buf[pos++] = ((mediaStateSequence ushr 40) and 0xFF).toByte()
+        buf[pos++] = ((mediaStateSequence ushr 32) and 0xFF).toByte()
+        buf[pos++] = ((mediaStateSequence ushr 24) and 0xFF).toByte()
+        buf[pos++] = ((mediaStateSequence ushr 16) and 0xFF).toByte()
+        buf[pos++] = ((mediaStateSequence ushr  8) and 0xFF).toByte()
+        buf[pos++] = ( mediaStateSequence          and 0xFF).toByte()
+
+        // packageName
+        buf[pos++] = ((pkgBytes.size shr 8) and 0xFF).toByte()
+        buf[pos++] = (pkgBytes.size and 0xFF).toByte()
+        System.arraycopy(pkgBytes, 0, buf, pos, pkgBytes.size); pos += pkgBytes.size
+
+        // title
         buf[pos++] = ((titleBytes.size shr 8) and 0xFF).toByte()
         buf[pos++] = (titleBytes.size and 0xFF).toByte()
-        System.arraycopy(titleBytes, 0, buf, pos, titleBytes.size)
-        pos += titleBytes.size
+        System.arraycopy(titleBytes, 0, buf, pos, titleBytes.size); pos += titleBytes.size
 
+        // artist
         buf[pos++] = ((artistBytes.size shr 8) and 0xFF).toByte()
         buf[pos++] = (artistBytes.size and 0xFF).toByte()
-        System.arraycopy(artistBytes, 0, buf, pos, artistBytes.size)
-        pos += artistBytes.size
+        System.arraycopy(artistBytes, 0, buf, pos, artistBytes.size); pos += artistBytes.size
 
+        // album
         buf[pos++] = ((albumBytes.size shr 8) and 0xFF).toByte()
         buf[pos++] = (albumBytes.size and 0xFF).toByte()
         System.arraycopy(albumBytes, 0, buf, pos, albumBytes.size)
-        pos += albumBytes.size
 
         return buf
     }
 
     fun parseMediaMetadata(buffer: ByteArray, offset: Int, length: Int): MediaMetadataPayload? {
-        if (length < 7 || offset + length > buffer.size) return null
+        // Minimum: 1 + 8 + 2*4 = 17 bytes (all strings empty)
+        if (length < 17 || offset + length > buffer.size) return null
         var pos = offset
+
         val isPlaying = (buffer[pos++].toInt() and 0x01) != 0
 
-        val titleLen = readUInt16BE(buffer, pos)
-        pos += 2
-        if (pos + titleLen > offset + length) return null
-        val title = String(buffer, pos, titleLen, Charsets.UTF_8)
-        pos += titleLen
+        // 8-byte sequence
+        var seq = 0L
+        for (i in 0 until 8) { seq = (seq shl 8) or (buffer[pos++].toLong() and 0xFF) }
 
-        if (pos + 2 > offset + length) return null
-        val artistLen = readUInt16BE(buffer, pos)
-        pos += 2
-        if (pos + artistLen > offset + length) return null
-        val artist = String(buffer, pos, artistLen, Charsets.UTF_8)
-        pos += artistLen
+        fun readField(): String? {
+            if (pos + 2 > offset + length) return null
+            val len = readUInt16BE(buffer, pos); pos += 2
+            if (pos + len > offset + length) return null
+            val s = String(buffer, pos, len, Charsets.UTF_8); pos += len
+            return s
+        }
 
-        if (pos + 2 > offset + length) return null
-        val albumLen = readUInt16BE(buffer, pos)
-        pos += 2
-        if (pos + albumLen > offset + length) return null
-        val album = String(buffer, pos, albumLen, Charsets.UTF_8)
+        val pkg    = readField() ?: return null
+        val title  = readField() ?: return null
+        val artist = readField() ?: return null
+        val album  = readField() ?: return null
 
         return MediaMetadataPayload(
             isPlaying = isPlaying,
             title = title,
             artist = artist,
-            album = album
+            album = album,
+            mediaStateSequence = seq,
+            packageName = pkg
         )
     }
 }
+

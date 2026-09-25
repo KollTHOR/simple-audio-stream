@@ -702,27 +702,49 @@ class AudioCaptureService : Service() {
             masterEqualizer.sampleRate = rate
         }
 
-        // Initialize media metadata tracking from active notification listener if available
-        val initialTrack = MediaNotificationListenerService.currentTrackInfo
-        if (initialTrack != null) {
+        // Wire into MediaSessionTracker — the single source of truth for media metadata.
+        // Immediately snapshot current state if tracking is already running.
+        val initialState = MediaSessionTracker.currentState
+        if (initialState != null) {
             currentTrackMetadata = HatPacket.MediaMetadataPayload(
-                isPlaying = initialTrack.isPlaying,
-                title = initialTrack.title,
-                artist = initialTrack.artist,
-                album = initialTrack.album
+                isPlaying = initialState.isPlaying,
+                title = initialState.title,
+                artist = initialState.artist,
+                album = initialState.album,
+                mediaStateSequence = initialState.sequence,
+                packageName = initialState.packageName
             )
         }
-        MediaNotificationListenerService.onTrackChangedListener = { trackInfo ->
-            currentTrackMetadata = HatPacket.MediaMetadataPayload(
-                isPlaying = trackInfo.isPlaying,
-                title = trackInfo.title,
-                artist = trackInfo.artist,
-                album = trackInfo.album
-            )
+        MediaSessionTracker.onStateChangedListener = { state ->
+            if (state != null) {
+                // New or updated session — build payload carrying sequence + packageName
+                currentTrackMetadata = HatPacket.MediaMetadataPayload(
+                    isPlaying = state.isPlaying,
+                    title = state.title,
+                    artist = state.artist,
+                    album = state.album,
+                    mediaStateSequence = state.sequence,
+                    packageName = state.packageName
+                )
+                Log.i(TAG, "MEDIA_METADATA_TX seq=${state.sequence} package=${state.packageName} title=\"${state.title}\"")
+            } else {
+                // No active session — transmit an explicit clear packet so receivers reset
+                val clearSeq = MediaSessionTracker.currentState?.sequence?.plus(1) ?: 0L
+                currentTrackMetadata = HatPacket.MediaMetadataPayload(
+                    isPlaying = false,
+                    title = "",
+                    artist = "",
+                    album = "",
+                    mediaStateSequence = clearSeq,
+                    packageName = ""
+                )
+                Log.i(TAG, "MEDIA_METADATA_TX seq=$clearSeq [CLEAR — no active session]")
+            }
             sendMediaMetadata()
         }
 
-        // Real-time audio engine adaptation: monitor Android playback sessions (e.g. Tidal/Spotify)
+        // AudioPlaybackDetector: fallback ONLY when Notification Access is not granted.
+        // It provides audio-format info / app name, NOT song metadata — per spec §13.
         val rawRatePref = prefs.getString(AudioConfig.PREF_KEY_SAMPLE_RATE, AudioConfig.SAMPLE_RATE_AUTO) ?: AudioConfig.SAMPLE_RATE_AUTO
         val rawBitPref = prefs.getString(AudioConfig.PREF_KEY_BIT_DEPTH, AudioConfig.BIT_DEPTH_AUTO) ?: AudioConfig.BIT_DEPTH_AUTO
         if (profileStr == AudioConfig.PROFILE_AUTO || (profileStr == AudioConfig.PROFILE_MUSIC && (rawRatePref == AudioConfig.SAMPLE_RATE_AUTO || rawBitPref == AudioConfig.BIT_DEPTH_AUTO))) {
@@ -2200,7 +2222,7 @@ class AudioCaptureService : Service() {
         }
         Log.i(TAG, "Stopping audio capture service (keepProjection=$keepProjection)")
 
-        MediaNotificationListenerService.onTrackChangedListener = null
+        MediaSessionTracker.onStateChangedListener = null
         AudioPlaybackDetector.stopMonitoring(this)
 
         // Broadcast 3x TYPE_DISCONNECT burst to all connected receivers so they immediately terminate
@@ -2465,7 +2487,9 @@ class AudioCaptureService : Service() {
                 isPlaying = meta.isPlaying,
                 title = meta.title,
                 artist = meta.artist,
-                album = meta.album
+                album = meta.album,
+                mediaStateSequence = meta.mediaStateSequence,
+                packageName = meta.packageName
             )
             val header = HatPacket.Header(
                 packetType = HatPacket.TYPE_MEDIA_METADATA,
@@ -2480,16 +2504,21 @@ class AudioCaptureService : Service() {
                 val packet = DatagramPacket(sendBuf, sendBuf.size, target.address, target.port)
                 sock.send(packet)
             }
-            Log.d(TAG, "Sent TYPE_MEDIA_METADATA to ${targets.size} endpoints: '${meta.title}'")
+            Log.d(TAG, "MEDIA_METADATA_TX seq=${meta.mediaStateSequence} package=${meta.packageName} title='${meta.title}' → ${targets.size} endpoints")
         } catch (e: Exception) {
             Log.w(TAG, "Failed sending media metadata: ${e.message}")
         }
     }
 
     fun handleMediaControlCommand(command: Byte) {
-        val handled = MediaNotificationListenerService.dispatchMediaControl(command)
+        val targetPkg = MediaSessionTracker.currentState?.packageName ?: "unknown"
+        Log.i(TAG, "MEDIA_COMMAND command=$command targetPackage=$targetPkg")
+
+        // Primary: dispatch via MediaSessionTracker (always targets current controller)
+        val handled = MediaSessionTracker.dispatchCommand(command)
         if (handled) return
 
+        // Fallback: inject system media key event (no Notification Access or no controller)
         try {
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
             val keyCode = when (command) {
@@ -2502,7 +2531,7 @@ class AudioCaptureService : Service() {
             }
             audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
             audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
-            Log.i(TAG, "Dispatched media key event $keyCode for cmd $command")
+            Log.i(TAG, "MEDIA_COMMAND fallback keyEvent=$keyCode for cmd=$command")
         } catch (e: Exception) {
             Log.w(TAG, "Failed dispatching media key event: ${e.message}")
         }
