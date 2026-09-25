@@ -115,37 +115,20 @@ class MainActivity : AppCompatActivity() {
     private var isConnectedSectionExpanded: Boolean = true
 
     private lateinit var layoutDiscoverySection: View
-    private var layoutAvailableDevicesBody: View? = null
-    private var ivAvailableSectionChevron: ImageView? = null
-    private var isAvailableSectionExpanded: Boolean = false
-    /** Tracks previous sender-active state so we collapse the section exactly once on transition. */
+    /** Tracks previous sender-active state. */
     private var wasSenderActive: Boolean = false
 
     private lateinit var tvDiscoveryTitle: TextView
-    private lateinit var pbDiscoveryScanning: ProgressBar
-    private lateinit var tvDiscoveryScanningText: TextView
     private lateinit var btnScanReceivers: MaterialButton
-    private lateinit var cardScanDashboard: MaterialCardView
-    private lateinit var tvDiscoveryStatusBanner: TextView
-    private lateinit var tvDiscoveryTimer: TextView
-    private lateinit var pbDiscoveryProgressBar: LinearProgressIndicator
-    private lateinit var tvChipLanTitle: TextView
-    private lateinit var tvChipLanStatus: TextView
-    private lateinit var tvChipDirectTitle: TextView
-    private lateinit var tvChipDirectStatus: TextView
-    private lateinit var tvChipAwareTitle: TextView
-    private lateinit var tvChipAwareStatus: TextView
-    private lateinit var tvChipBleTitle: TextView
-    private lateinit var tvChipBleStatus: TextView
-    private lateinit var tvScanSummary: TextView
-    private lateinit var tvOfflineDirectHint: TextView
+    private lateinit var tvDiscoveryStatusDot: TextView
+    private lateinit var tvDiscoveryCompactStatus: TextView
+    private lateinit var btnDiscoveryRetry: TextView
     private lateinit var cardReceiverDiscoverable: MaterialCardView
     private lateinit var tvReceiverHeadline: TextView
     private var tvReceiverTransportsList: TextView? = null
     private lateinit var tvReceiverEndpointPill: TextView
     private var activeScanJob: Job? = null
     private lateinit var layoutDiscoveredDevicesContainer: LinearLayout
-    private lateinit var tvAvailableEmpty: TextView
 
     private lateinit var layoutReceiverP2p: LinearLayout
     private lateinit var switchReceiverP2p: MaterialSwitch
@@ -514,38 +497,20 @@ class MainActivity : AppCompatActivity() {
         }
 
         layoutDiscoverySection = findViewById(R.id.layout_discovery_section)
-        layoutAvailableDevicesBody = findViewById(R.id.layout_available_devices_body)
-        ivAvailableSectionChevron = findViewById(R.id.iv_available_chevron)
+        tvDiscoveryTitle = findViewById(R.id.tv_discovery_title)
+        btnScanReceivers = findViewById(R.id.btn_scan_receivers)
+        layoutDiscoveredDevicesContainer = findViewById(R.id.layout_discovered_devices_container)
+        tvDiscoveryStatusDot = findViewById(R.id.tv_discovery_status_dot)
+        tvDiscoveryCompactStatus = findViewById(R.id.tv_discovery_compact_status)
+        btnDiscoveryRetry = findViewById(R.id.btn_discovery_retry)
 
-        findViewById<View>(R.id.header_available_devices)?.setOnClickListener {
-            isAvailableSectionExpanded = !isAvailableSectionExpanded
-            layoutAvailableDevicesBody?.visibility = if (isAvailableSectionExpanded) View.VISIBLE else View.GONE
-            ivAvailableSectionChevron?.animate()?.rotation(if (isAvailableSectionExpanded) 180f else 0f)?.setDuration(150)?.start()
+        btnDiscoveryRetry.setOnClickListener {
+            startUnifiedScan()
         }
 
-        tvDiscoveryTitle = findViewById(R.id.tv_discovery_title)
-        pbDiscoveryScanning = findViewById(R.id.pb_discovery_scanning)
-        tvDiscoveryScanningText = findViewById(R.id.tv_discovery_scanning_text)
-        btnScanReceivers = findViewById(R.id.btn_scan_receivers)
-        cardScanDashboard = findViewById(R.id.card_scan_dashboard)
-        tvDiscoveryStatusBanner = findViewById(R.id.tv_discovery_status_banner)
-        tvDiscoveryTimer = findViewById(R.id.tv_discovery_timer)
-        pbDiscoveryProgressBar = findViewById(R.id.pb_discovery_progress_bar)
-        tvChipLanTitle = findViewById(R.id.tv_chip_lan_title)
-        tvChipLanStatus = findViewById(R.id.tv_chip_lan_status)
-        tvChipDirectTitle = findViewById(R.id.tv_chip_direct_title)
-        tvChipDirectStatus = findViewById(R.id.tv_chip_direct_status)
-        tvChipAwareTitle = findViewById(R.id.tv_chip_aware_title)
-        tvChipAwareStatus = findViewById(R.id.tv_chip_aware_status)
-        tvChipBleTitle = findViewById(R.id.tv_chip_ble_title)
-        tvChipBleStatus = findViewById(R.id.tv_chip_ble_status)
-        tvScanSummary = findViewById(R.id.tv_scan_summary)
-        tvOfflineDirectHint = findViewById(R.id.tv_offline_direct_hint)
         cardReceiverDiscoverable = findViewById(R.id.card_receiver_discoverable)
         tvReceiverHeadline = findViewById(R.id.tv_receiver_headline)
         tvReceiverEndpointPill = findViewById(R.id.tv_receiver_endpoint_pill)
-        layoutDiscoveredDevicesContainer = findViewById(R.id.layout_discovered_devices_container)
-        tvAvailableEmpty = findViewById(R.id.tv_available_empty)
 
         layoutReceiverP2p = findViewById(R.id.layout_receiver_p2p)
         switchReceiverP2p = findViewById(R.id.switch_receiver_p2p)
@@ -1024,7 +989,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderDiscoveryScanState(state: com.example.audiostreamer.node.discovery.DiscoveryScanState) {
         val isScanning = state.isScanning
-        btnScanReceivers.text = if (isScanning) "Stop" else "Scan"
+        val availableCount = layoutDiscoveredDevicesContainer.childCount
+
+        btnScanReceivers.text = if (isScanning) "STOP" else "SCAN"
         btnScanReceivers.setTextColor(
             ContextCompat.getColor(
                 this,
@@ -1032,104 +999,46 @@ class MainActivity : AppCompatActivity() {
             )
         )
 
-        pbDiscoveryScanning.visibility = if (isScanning) View.VISIBLE else View.GONE
-        pbDiscoveryProgressBar.visibility = if (isScanning) View.VISIBLE else View.GONE
-        tvDiscoveryTimer.visibility = if (isScanning) View.VISIBLE else View.GONE
-
-        if (isScanning) {
-            val totalMs = when (state.currentPhase) {
-                com.example.audiostreamer.node.discovery.DiscoveryScanPhase.LOCAL_WIFI -> com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.TIMEOUT_LAN_MS
-                com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_DIRECT -> com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.TIMEOUT_WIFI_DIRECT_MS
-                com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_AWARE -> com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.TIMEOUT_WIFI_AWARE_MS
-                com.example.audiostreamer.node.discovery.DiscoveryScanPhase.BLE -> com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.TIMEOUT_BLE_MS
-                else -> 1000L
+        when {
+            isScanning -> {
+                tvDiscoveryStatusDot.visibility = View.VISIBLE
+                tvDiscoveryStatusDot.text = "●"
+                tvDiscoveryStatusDot.setTextColor(ContextCompat.getColor(this, R.color.primary))
+                val phaseName = when (state.currentPhase) {
+                    com.example.audiostreamer.node.discovery.DiscoveryScanPhase.LOCAL_WIFI -> "Local Wi-Fi"
+                    com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_DIRECT -> "Wi-Fi Direct"
+                    com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_AWARE -> "Wi-Fi Aware"
+                    com.example.audiostreamer.node.discovery.DiscoveryScanPhase.BLE -> "Bluetooth"
+                    else -> "Local Wi-Fi"
+                }
+                tvDiscoveryCompactStatus.text = "Searching nearby devices · $phaseName"
+                tvDiscoveryCompactStatus.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
+                btnDiscoveryRetry.visibility = View.GONE
             }
-            val elapsed = (totalMs - state.phaseTimeRemainingMs).coerceIn(0L, totalMs)
-            pbDiscoveryProgressBar.progress = if (totalMs > 0) ((elapsed * 100) / totalMs).toInt() else 0
-            tvDiscoveryTimer.text = "${state.secondsRemaining}s remaining"
-        }
-
-        tvDiscoveryStatusBanner.text = state.statusMessage
-
-        if (!isScanning && !state.scanSummary.isNullOrEmpty()) {
-            tvScanSummary.visibility = View.VISIBLE
-            tvScanSummary.text = state.scanSummary
-        } else {
-            tvScanSummary.visibility = View.GONE
-        }
-
-        val regNodes = com.example.audiostreamer.node.discovery.HatDiscoveryRegistry.discoveredNodes.value
-        fun updateChip(
-            phase: com.example.audiostreamer.node.discovery.DiscoveryScanPhase,
-            statusView: TextView
-        ) {
-            val report = state.phaseReports[phase]
-            val regCount = when (phase) {
-                com.example.audiostreamer.node.discovery.DiscoveryScanPhase.LOCAL_WIFI ->
-                    regNodes.count { it.hasSource(com.example.audiostreamer.node.discovery.DiscoverySource.LAN) }
-                com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_DIRECT ->
-                    regNodes.count { it.hasSource(com.example.audiostreamer.node.discovery.DiscoverySource.WIFI_DIRECT) }
-                com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_AWARE ->
-                    regNodes.count { it.hasSource(com.example.audiostreamer.node.discovery.DiscoverySource.WIFI_AWARE) }
-                com.example.audiostreamer.node.discovery.DiscoveryScanPhase.BLE ->
-                    regNodes.count { it.hasSource(com.example.audiostreamer.node.discovery.DiscoverySource.BLE) }
-                else -> 0
+            state.phaseStatus == com.example.audiostreamer.node.discovery.PhaseStatus.FAILED -> {
+                tvDiscoveryStatusDot.visibility = View.VISIBLE
+                tvDiscoveryStatusDot.text = "✕"
+                tvDiscoveryStatusDot.setTextColor(ContextCompat.getColor(this, R.color.status_red))
+                tvDiscoveryCompactStatus.text = "Couldn't complete discovery · "
+                tvDiscoveryCompactStatus.setTextColor(ContextCompat.getColor(this, R.color.status_red))
+                btnDiscoveryRetry.visibility = View.VISIBLE
             }
-
-            when {
-                report == null || report.status == com.example.audiostreamer.node.discovery.PhaseStatus.WAITING -> {
-                    if (!isScanning && regCount > 0) {
-                        statusView.text = "✓ $regCount dev"
-                        statusView.setTextColor(ContextCompat.getColor(this, R.color.status_green))
-                    } else {
-                        statusView.text = if (isScanning) "○ Waiting" else "○ Idle"
-                        statusView.setTextColor(ContextCompat.getColor(this, R.color.text_hint))
-                    }
-                }
-                report.status == com.example.audiostreamer.node.discovery.PhaseStatus.SEARCHING -> {
-                    val count = if (report.discoveredCount > 0) report.discoveredCount else regCount
-                    statusView.text = if (count > 0) "● $count dev" else "● Searching..."
-                    val colorRes = when (phase) {
-                        com.example.audiostreamer.node.discovery.DiscoveryScanPhase.LOCAL_WIFI -> R.color.primary
-                        com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_DIRECT -> R.color.status_orange
-                        com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_AWARE -> R.color.secondary
-                        com.example.audiostreamer.node.discovery.DiscoveryScanPhase.BLE -> R.color.status_blue
-                        else -> R.color.primary
-                    }
-                    statusView.setTextColor(ContextCompat.getColor(this, colorRes))
-                }
-                report.status == com.example.audiostreamer.node.discovery.PhaseStatus.FOUND -> {
-                    val count = maxOf(report.discoveredCount, regCount)
-                    statusView.text = "✓ $count dev"
-                    statusView.setTextColor(ContextCompat.getColor(this, R.color.status_green))
-                }
-                report.status == com.example.audiostreamer.node.discovery.PhaseStatus.TIMED_OUT -> {
-                    if (regCount > 0) {
-                        statusView.text = "✓ $regCount dev"
-                        statusView.setTextColor(ContextCompat.getColor(this, R.color.status_green))
-                    } else {
-                        statusView.text = "○ 0 dev"
-                        statusView.setTextColor(ContextCompat.getColor(this, R.color.text_hint))
-                    }
-                }
-                report.status == com.example.audiostreamer.node.discovery.PhaseStatus.SKIPPED -> {
-                    statusView.text = "— Skipped"
-                    statusView.setTextColor(ContextCompat.getColor(this, R.color.text_hint))
-                }
-                report.status == com.example.audiostreamer.node.discovery.PhaseStatus.FAILED -> {
-                    statusView.text = "✕ Failed"
-                    statusView.setTextColor(ContextCompat.getColor(this, R.color.status_red))
-                }
+            availableCount > 0 -> {
+                tvDiscoveryStatusDot.visibility = View.VISIBLE
+                tvDiscoveryStatusDot.text = "✓"
+                tvDiscoveryStatusDot.setTextColor(ContextCompat.getColor(this, R.color.status_green))
+                val devWord = if (availableCount == 1) "device" else "devices"
+                tvDiscoveryCompactStatus.text = "$availableCount $devWord found"
+                tvDiscoveryCompactStatus.setTextColor(ContextCompat.getColor(this, R.color.status_green))
+                btnDiscoveryRetry.visibility = View.GONE
+            }
+            else -> {
+                tvDiscoveryStatusDot.visibility = View.GONE
+                tvDiscoveryCompactStatus.text = "No nearby devices found"
+                tvDiscoveryCompactStatus.setTextColor(ContextCompat.getColor(this, R.color.text_hint))
+                btnDiscoveryRetry.visibility = View.GONE
             }
         }
-
-        updateChip(com.example.audiostreamer.node.discovery.DiscoveryScanPhase.LOCAL_WIFI, tvChipLanStatus)
-        updateChip(com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_DIRECT, tvChipDirectStatus)
-        updateChip(com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_AWARE, tvChipAwareStatus)
-        updateChip(com.example.audiostreamer.node.discovery.DiscoveryScanPhase.BLE, tvChipBleStatus)
-
-        val isLanAvailable = NetworkUtils.isLanAvailable(this)
-        tvOfflineDirectHint.visibility = if (!isLanAvailable && isScanning) View.VISIBLE else View.GONE
     }
 
     private fun updateScanDashboardMetrics() {
@@ -1137,9 +1046,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateScanningIndicator() {
-        val isScanning = com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.scanState.value.isScanning
-        pbDiscoveryScanning.visibility = if (isScanning) View.VISIBLE else View.GONE
-        tvDiscoveryScanningText.visibility = View.GONE
         renderDiscoveryScanState(com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.scanState.value)
     }
 
@@ -1615,15 +1521,12 @@ class MainActivity : AppCompatActivity() {
             val itemView = layoutInflater.inflate(R.layout.item_available_device, layoutDiscoveredDevicesContainer, false)
             val card = itemView.findViewById<MaterialCardView>(R.id.card_available_device)
             val tvName = itemView.findViewById<TextView>(R.id.tv_device_name)
-            val tvDetails = itemView.findViewById<TextView>(R.id.tv_device_details)
-            val tvTransportBadge = itemView.findViewById<TextView>(R.id.tv_device_transport_badge)
-            val tvBadgeSecondary = itemView.findViewById<TextView>(R.id.tv_badge_secondary)
+            val tvTransport = itemView.findViewById<TextView>(R.id.tv_device_transport)
             val btnConnect = itemView.findViewById<MaterialButton>(R.id.btn_device_connect)
+            val ivIcon = itemView.findViewById<ImageView>(R.id.iv_device_icon)
 
-            // Section 6: Device Name Handling - never concatenate model into title
             tvName.text = dev.displayName
 
-            // Section 4 & 5: Transport Badges
             val sources = dev.discoverySources.toMutableList()
             val isP2p = dev.useDirect || dev.lanIp == null || dev.isDirectAvailable
             if (sources.isEmpty()) {
@@ -1631,41 +1534,13 @@ class MainActivity : AppCompatActivity() {
             }
 
             val primarySource = sources.firstOrNull() ?: if (isP2p) "DIRECT" else "LAN"
-            when (primarySource.uppercase()) {
-                "WIFI_DIRECT", "DIRECT" -> {
-                    tvTransportBadge.text = "DIRECT"
-                    tvTransportBadge.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.status_orange))
-                }
-                "BLE" -> {
-                    tvTransportBadge.text = "BLE"
-                    tvTransportBadge.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.status_blue))
-                }
-                "WIFI_AWARE", "AWARE" -> {
-                    tvTransportBadge.text = "AWARE"
-                    tvTransportBadge.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.secondary))
-                }
-                else -> {
-                    tvTransportBadge.text = "LAN"
-                    tvTransportBadge.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.status_green))
-                }
+            val transportLabel = when (primarySource.uppercase()) {
+                "WIFI_DIRECT", "DIRECT" -> "Wi-Fi Direct"
+                "BLE" -> "Bluetooth"
+                "WIFI_AWARE", "AWARE" -> "Wi-Fi Aware"
+                else -> "Local Wi-Fi"
             }
-            tvTransportBadge.visibility = View.VISIBLE
-
-            // Optional secondary badge (e.g. "+1" or "+2")
-            if (sources.size > 1) {
-                tvBadgeSecondary.visibility = View.VISIBLE
-                tvBadgeSecondary.text = "+${sources.size - 1}"
-            } else {
-                tvBadgeSecondary.visibility = View.GONE
-            }
-
-            // Short endpoint / details line
-            val transportLabel = if (isP2p) "Wi-Fi Direct" else "Local Wi-Fi"
-            val ipStr = dev.lanIp ?: dev.p2pGoIp
-            val modelSub = if (!dev.modelName.isNullOrEmpty() && dev.modelName != dev.displayName && !dev.discoverySources.contains(dev.modelName)) {
-                " • ${dev.modelName}"
-            } else ""
-            tvDetails.text = if (ipStr != null) "$transportLabel • $ipStr$modelSub" else "$transportLabel$modelSub"
+            tvTransport.text = transportLabel
 
             val isAlreadyConnected = dev.nodeId != null && !com.example.audiostreamer.node.discovery.HatDiscoveryRegistry.canConnect(dev.nodeId)
             btnConnect.visibility = View.VISIBLE
@@ -1674,7 +1549,7 @@ class MainActivity : AppCompatActivity() {
                 btnConnect.isEnabled = false
                 btnConnect.alpha = 0.6f
             } else {
-                btnConnect.text = "Connect"
+                btnConnect.text = "CONNECT"
                 btnConnect.isEnabled = true
                 btnConnect.alpha = 1.0f
             }
@@ -1734,14 +1609,14 @@ class MainActivity : AppCompatActivity() {
             }
 
             fun performSaveProfile() {
-                val isP2p = dev.useDirect || dev.lanIp == null
-                val targetIp = if (isP2p) (dev.p2pGoIp ?: "192.168.49.1") else dev.lanIp ?: "192.168.1.1"
+                val isP2pDev = dev.useDirect || dev.lanIp == null
+                val targetIp = if (isP2pDev) (dev.p2pGoIp ?: "192.168.49.1") else dev.lanIp ?: "192.168.1.1"
                 val profile = ConnectionProfile(
-                    id = if (isP2p) "p2p_${dev.id}" else "wifi_${dev.id}",
+                    id = if (isP2pDev) "p2p_${dev.id}" else "wifi_${dev.id}",
                     name = dev.displayName,
                     targetIp = targetIp,
                     port = dev.port,
-                    connectionType = if (isP2p) ConnectionType.WIFI_DIRECT else ConnectionType.LOCAL_WIFI,
+                    connectionType = if (isP2pDev) ConnectionType.WIFI_DIRECT else ConnectionType.LOCAL_WIFI,
                     preferredStreamingProfile = AudioConfig.PROFILE_MUSIC,
                     capabilitiesMask = dev.capabilitiesMask,
                     p2pSsid = dev.p2pSsid,
@@ -1752,30 +1627,44 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this@MainActivity, "Saved profile: ${profile.name}", Toast.LENGTH_SHORT).show()
             }
 
+            fun showDeviceDetailsDialog() {
+                val ipStr = dev.lanIp ?: dev.p2pGoIp ?: "Not available"
+                val sourceList = if (dev.discoverySources.isNotEmpty()) dev.discoverySources.joinToString(", ") else primarySource
+                val message = StringBuilder()
+                    .append("Transport: ").append(transportLabel).append("\n")
+                    .append("Address: ").append(ipStr).append(":").append(dev.port).append("\n")
+                if (!dev.nodeId.isNullOrEmpty()) {
+                    message.append("Node ID: ").append(dev.nodeId).append("\n")
+                }
+                if (!dev.modelName.isNullOrEmpty() && dev.modelName != dev.displayName) {
+                    message.append("Model: ").append(dev.modelName).append("\n")
+                }
+                message.append("Discovered Via: ").append(sourceList)
+
+                com.google.android.material.dialog.MaterialAlertDialogBuilder(this@MainActivity)
+                    .setTitle(dev.displayName)
+                    .setMessage(message.toString())
+                    .setPositiveButton("Connect") { _, _ -> performConnect() }
+                    .setNeutralButton("Save Profile") { _, _ -> performSaveProfile() }
+                    .setNegativeButton("Close", null)
+                    .show()
+            }
+
             btnConnect.setOnClickListener { performConnect() }
             card.setOnClickListener { performConnect() }
             card.setOnLongClickListener {
-                performSaveProfile()
+                showDeviceDetailsDialog()
                 true
+            }
+            ivIcon?.setOnClickListener {
+                showDeviceDetailsDialog()
             }
 
             layoutDiscoveredDevicesContainer.addView(itemView)
         }
 
-        if (availableDevices.isEmpty()) {
-            tvAvailableEmpty.visibility = View.VISIBLE
-            layoutDiscoveredDevicesContainer.visibility = View.GONE
-            val isLan = NetworkUtils.isLanAvailable()
-            tvAvailableEmpty.text = if (!isLan) {
-                "No direct devices found.\n\nTips for connecting without a router:\n• Make sure the other phone is set to 'Receiver' mode.\n• Ensure Wi-Fi & Bluetooth are turned ON on both phones.\n• On Receiver, you can turn on 'Autonomous Wi-Fi Direct' to broadcast an instant P2P network."
-            } else {
-                "Searching for nearby devices on your local Wi-Fi and direct radio..."
-            }
-        } else {
-            tvAvailableEmpty.visibility = View.GONE
-            layoutDiscoveredDevicesContainer.visibility = View.VISIBLE
-        }
-
+        layoutDiscoveredDevicesContainer.visibility = if (availableDevices.isEmpty()) View.GONE else View.VISIBLE
+        renderDiscoveryScanState(com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.scanState.value)
         layoutDiscoverySection.visibility = if (currentMode == Mode.TRANSMITTER) View.VISIBLE else View.GONE
     }
 
@@ -2567,14 +2456,6 @@ class MainActivity : AppCompatActivity() {
                         btnAction.text = getString(R.string.stop_stream)
                         btnAction.setIconResource(R.drawable.ic_stop)
                         btnAction.backgroundTintList = ColorStateList.valueOf(colorRed)
-                        // Collapse available devices exactly once when streaming starts.
-                        // This hides stale device entries during the heartbeat-registration race,
-                        // preventing accidental double-connect. User can re-expand if needed.
-                        if (!wasSenderActive && isAvailableSectionExpanded) {
-                            isAvailableSectionExpanded = false
-                            layoutAvailableDevicesBody?.visibility = View.GONE
-                            ivAvailableSectionChevron?.rotation = 0f
-                        }
                         wasSenderActive = true
                     }
 

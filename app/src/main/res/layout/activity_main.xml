@@ -481,9 +481,7 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:orientation="horizontal"
-                            android:gravity="center_vertical"
-                            android:clickable="true"
-                            android:focusable="true">
+                            android:gravity="center_vertical">
 
                             <TextView
                                 android:id="@+id/tv_discovery_title"
@@ -510,270 +508,63 @@
                                 android:textSize="11sp"
                                 android:textStyle="bold"
                                 android:textColor="@color/primary"
-                                android:text="Scan"
-                                android:layout_marginEnd="4dp" />
-
-                            <ImageView
-                                android:id="@+id/iv_available_chevron"
-                                android:layout_width="18dp"
-                                android:layout_height="18dp"
-                                android:src="@drawable/ic_expand_more"
-                                app:tint="@color/text_secondary" />
+                                android:text="SCAN" />
                         </LinearLayout>
 
-                        <!-- Collapsible Body Content -->
+                        <!-- Vertical List Container for Available Devices -->
                         <LinearLayout
-                            android:id="@+id/layout_available_devices_body"
+                            android:id="@+id/layout_discovered_devices_container"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:orientation="vertical"
-                            android:layout_marginTop="8dp"
-                            android:visibility="gone">
+                            android:layout_marginTop="8dp" />
 
-                            <!-- Scan Process Dashboard / Feedback Card -->
-                            <com.google.android.material.card.MaterialCardView
-                                android:id="@+id/card_scan_dashboard"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginBottom="8dp"
-                                app:cardCornerRadius="10dp"
-                                app:cardElevation="0dp"
-                                app:strokeColor="@color/card_stroke"
-                                app:strokeWidth="1dp"
-                                app:cardBackgroundColor="@color/card_bg">
+                        <!-- Compact Single Discovery Status Line -->
+                        <LinearLayout
+                            android:id="@+id/layout_discovery_status_line"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginTop="6dp"
+                            android:layout_marginBottom="2dp"
+                            android:paddingStart="2dp"
+                            android:paddingEnd="2dp">
 
-                                <LinearLayout
-                                    android:layout_width="match_parent"
-                                    android:layout_height="wrap_content"
-                                    android:orientation="vertical"
-                                    android:paddingStart="12dp"
-                                    android:paddingEnd="12dp"
-                                    android:paddingTop="8dp"
-                                    android:paddingBottom="8dp">
-
-                                    <!-- Top Status Row: Spinner, Live Status Banner, Timer Countdown -->
-                                    <LinearLayout
-                                        android:layout_width="match_parent"
-                                        android:layout_height="wrap_content"
-                                        android:orientation="horizontal"
-                                        android:gravity="center_vertical">
-
-                                        <ProgressBar
-                                            android:id="@+id/pb_discovery_scanning"
-                                            android:layout_width="14dp"
-                                            android:layout_height="14dp"
-                                            android:indeterminate="true"
-                                            android:visibility="gone"
-                                            android:layout_marginEnd="6dp" />
-
-                                        <TextView
-                                            android:id="@+id/tv_discovery_status_banner"
-                                            android:layout_width="0dp"
-                                            android:layout_height="wrap_content"
-                                            android:layout_weight="1"
-                                            android:text="Tap Scan to discover nearby devices"
-                                            android:textSize="12sp"
-                                            android:textStyle="bold"
-                                            android:textColor="@color/text_primary" />
-
-                                        <TextView
-                                            android:id="@+id/tv_discovery_timer"
-                                            android:layout_width="wrap_content"
-                                            android:layout_height="wrap_content"
-                                            android:text=""
-                                            android:textSize="11sp"
-                                            android:textColor="@color/primary"
-                                            android:textStyle="bold"
-                                            android:visibility="gone" />
-                                    </LinearLayout>
-
-                                    <!-- Hidden backward compatibility view -->
-                                    <TextView
-                                        android:id="@+id/tv_discovery_scanning_text"
-                                        android:layout_width="wrap_content"
-                                        android:layout_height="wrap_content"
-                                        android:visibility="gone" />
-
-                                    <!-- Linear Progress Indicator for scan countdown -->
-                                    <com.google.android.material.progressindicator.LinearProgressIndicator
-                                        android:id="@+id/pb_discovery_progress_bar"
-                                        android:layout_width="match_parent"
-                                        android:layout_height="wrap_content"
-                                        android:layout_marginTop="6dp"
-                                        android:layout_marginBottom="6dp"
-                                        android:max="100"
-                                        android:progress="0"
-                                        app:trackColor="@color/input_bg"
-                                        app:indicatorColor="@color/primary"
-                                        app:trackCornerRadius="4dp"
-                                        app:trackThickness="3dp"
-                                        android:visibility="gone" />
-
-                                    <!-- Discovery Methods Status Chips Row -->
-                                    <LinearLayout
-                                        android:layout_width="match_parent"
-                                        android:layout_height="wrap_content"
-                                        android:orientation="horizontal"
-                                        android:baselineAligned="false">
-
-                                        <!-- LAN Status Badge -->
-                                        <LinearLayout
-                                            android:id="@+id/status_chip_lan"
-                                            android:layout_width="0dp"
-                                            android:layout_height="wrap_content"
-                                            android:layout_weight="1"
-                                            android:orientation="vertical"
-                                            android:background="@drawable/bg_stat_badge"
-                                            android:padding="6dp"
-                                            android:layout_marginEnd="3dp">
-                                            <TextView
-                                                android:id="@+id/tv_chip_lan_title"
-                                                android:layout_width="wrap_content"
-                                                android:layout_height="wrap_content"
-                                                android:text="LAN"
-                                                android:textSize="9sp"
-                                                android:textStyle="bold"
-                                                android:textColor="@color/text_hint" />
-                                            <TextView
-                                                android:id="@+id/tv_chip_lan_status"
-                                                android:layout_width="wrap_content"
-                                                android:layout_height="wrap_content"
-                                                android:text="Idle"
-                                                android:textSize="11sp"
-                                                android:textStyle="bold"
-                                                android:textColor="@color/text_secondary"
-                                                android:singleLine="true"
-                                                android:ellipsize="end" />
-                                        </LinearLayout>
-
-                                        <!-- Wi-Fi Direct Status Badge -->
-                                        <LinearLayout
-                                            android:id="@+id/status_chip_direct"
-                                            android:layout_width="0dp"
-                                            android:layout_height="wrap_content"
-                                            android:layout_weight="1"
-                                            android:orientation="vertical"
-                                            android:background="@drawable/bg_stat_badge"
-                                            android:padding="6dp"
-                                            android:layout_marginEnd="3dp">
-                                            <TextView
-                                                android:id="@+id/tv_chip_direct_title"
-                                                android:layout_width="wrap_content"
-                                                android:layout_height="wrap_content"
-                                                android:text="DIRECT"
-                                                android:textSize="9sp"
-                                                android:textStyle="bold"
-                                                android:textColor="@color/text_hint" />
-                                            <TextView
-                                                android:id="@+id/tv_chip_direct_status"
-                                                android:layout_width="wrap_content"
-                                                android:layout_height="wrap_content"
-                                                android:text="Idle"
-                                                android:textSize="11sp"
-                                                android:textStyle="bold"
-                                                android:textColor="@color/text_secondary"
-                                                android:singleLine="true"
-                                                android:ellipsize="end" />
-                                        </LinearLayout>
-
-                                        <!-- Wi-Fi Aware Status Badge -->
-                                        <LinearLayout
-                                            android:id="@+id/status_chip_aware"
-                                            android:layout_width="0dp"
-                                            android:layout_height="wrap_content"
-                                            android:layout_weight="1"
-                                            android:orientation="vertical"
-                                            android:background="@drawable/bg_stat_badge"
-                                            android:padding="6dp"
-                                            android:layout_marginEnd="3dp">
-                                            <TextView
-                                                android:id="@+id/tv_chip_aware_title"
-                                                android:layout_width="wrap_content"
-                                                android:layout_height="wrap_content"
-                                                android:text="AWARE"
-                                                android:textSize="9sp"
-                                                android:textStyle="bold"
-                                                android:textColor="@color/text_hint" />
-                                            <TextView
-                                                android:id="@+id/tv_chip_aware_status"
-                                                android:layout_width="wrap_content"
-                                                android:layout_height="wrap_content"
-                                                android:text="Idle"
-                                                android:textSize="11sp"
-                                                android:textStyle="bold"
-                                                android:textColor="@color/text_secondary"
-                                                android:singleLine="true"
-                                                android:ellipsize="end" />
-                                        </LinearLayout>
-
-                                        <!-- BLE Status Badge -->
-                                        <LinearLayout
-                                            android:id="@+id/status_chip_ble"
-                                            android:layout_width="0dp"
-                                            android:layout_height="wrap_content"
-                                            android:layout_weight="1"
-                                            android:orientation="vertical"
-                                            android:background="@drawable/bg_stat_badge"
-                                            android:padding="6dp">
-                                            <TextView
-                                                android:id="@+id/tv_chip_ble_title"
-                                                android:layout_width="wrap_content"
-                                                android:layout_height="wrap_content"
-                                                android:text="BLE"
-                                                android:textSize="9sp"
-                                                android:textStyle="bold"
-                                                android:textColor="@color/text_hint" />
-                                            <TextView
-                                                android:id="@+id/tv_chip_ble_status"
-                                                android:layout_width="wrap_content"
-                                                android:layout_height="wrap_content"
-                                                android:text="Idle"
-                                                android:textSize="11sp"
-                                                android:textStyle="bold"
-                                                android:textColor="@color/text_secondary"
-                                                android:singleLine="true"
-                                                android:ellipsize="end" />
-                                        </LinearLayout>
-                                    </LinearLayout>
-
-                                    <!-- Compact Summary of Last Scan -->
-                                    <TextView
-                                        android:id="@+id/tv_scan_summary"
-                                        android:layout_width="match_parent"
-                                        android:layout_height="wrap_content"
-                                        android:textSize="11sp"
-                                        android:textColor="@color/text_hint"
-                                        android:layout_marginTop="6dp"
-                                        android:visibility="gone" />
-
-                                    <!-- Hidden dummy views -->
-                                    <TextView
-                                        android:id="@+id/tv_offline_direct_hint"
-                                        android:layout_width="0dp"
-                                        android:layout_height="0dp"
-                                        android:visibility="gone" />
-                                </LinearLayout>
-                            </com.google.android.material.card.MaterialCardView>
-
-                            <!-- Vertical List Container for Available Devices -->
-                            <LinearLayout
-                                android:id="@+id/layout_discovered_devices_container"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:orientation="vertical"
-                                android:layout_marginTop="4dp" />
-
-                            <!-- Empty State for Available Devices -->
                             <TextView
-                                android:id="@+id/tv_available_empty"
-                                android:layout_width="match_parent"
+                                android:id="@+id/tv_discovery_status_dot"
+                                android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
+                                android:text="●"
+                                android:textSize="10sp"
+                                android:textColor="@color/primary"
+                                android:layout_marginEnd="6dp"
+                                android:visibility="gone" />
+
+                            <TextView
+                                android:id="@+id/tv_discovery_compact_status"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
                                 android:text="No nearby devices found"
                                 android:textSize="12sp"
-                                android:textColor="@color/text_hint"
-                                android:background="@color/input_bg"
-                                android:padding="10dp"
-                                android:layout_marginBottom="4dp" />
+                                android:textColor="@color/text_hint" />
+
+                            <TextView
+                                android:id="@+id/btn_discovery_retry"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Retry"
+                                android:textSize="12sp"
+                                android:textStyle="bold"
+                                android:textColor="@color/primary"
+                                android:clickable="true"
+                                android:focusable="true"
+                                android:visibility="gone"
+                                android:paddingStart="8dp"
+                                android:paddingEnd="4dp"
+                                android:paddingTop="2dp"
+                                android:paddingBottom="2dp" />
                         </LinearLayout>
                     </LinearLayout>
                 </com.google.android.material.card.MaterialCardView>

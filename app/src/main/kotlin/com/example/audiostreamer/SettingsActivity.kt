@@ -48,6 +48,12 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.example.audiostreamer.diagnostics.DiagnosticsViewModel
 import com.example.audiostreamer.diagnostics.LatencyGraphView
 import com.example.audiostreamer.diagnostics.ReceiverDiagnosticsState
+import com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator
+import com.example.audiostreamer.node.discovery.DiscoveryScanPhase
+import com.example.audiostreamer.node.discovery.DiscoveryScanState
+import com.example.audiostreamer.node.discovery.PhaseStatus
+import com.example.audiostreamer.node.discovery.HatDiscoveryRegistry
+import com.example.audiostreamer.node.discovery.DiscoverySource
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.button.MaterialButtonToggleGroup
 import com.google.android.material.card.MaterialCardView
@@ -206,6 +212,23 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var btnViewLogs: MaterialButton
     private lateinit var btnCopyLogs: MaterialButton
     private lateinit var btnShareLogs: MaterialButton
+
+    // Discovery Diagnostics Views
+    private lateinit var tvDiagDiscoveryOverallStatus: TextView
+    private lateinit var tvDiagLanSupport: TextView
+    private lateinit var tvDiagLanState: TextView
+    private lateinit var tvDiagLanDetails: TextView
+    private lateinit var tvDiagDirectSupport: TextView
+    private lateinit var tvDiagDirectState: TextView
+    private lateinit var tvDiagDirectDetails: TextView
+    private lateinit var tvDiagAwareSupport: TextView
+    private lateinit var tvDiagAwareState: TextView
+    private lateinit var tvDiagAwareDetails: TextView
+    private lateinit var tvDiagBleSupport: TextView
+    private lateinit var tvDiagBleState: TextView
+    private lateinit var tvDiagBleDetails: TextView
+    private lateinit var btnDiagScan: MaterialButton
+    private lateinit var btnDiagDiscoveryLogs: MaterialButton
 
     // Updates Category Views (Update Center)
     private lateinit var tvAppVersion: TextView
@@ -442,6 +465,23 @@ class SettingsActivity : AppCompatActivity() {
         btnViewLogs = findViewById(R.id.btn_view_logs)
         btnCopyLogs = findViewById(R.id.btn_copy_logs)
         btnShareLogs = findViewById(R.id.btn_share_logs)
+
+        // Discovery Diagnostics Views
+        tvDiagDiscoveryOverallStatus = findViewById(R.id.tv_diag_discovery_overall_status)
+        tvDiagLanSupport = findViewById(R.id.tv_diag_lan_support)
+        tvDiagLanState = findViewById(R.id.tv_diag_lan_state)
+        tvDiagLanDetails = findViewById(R.id.tv_diag_lan_details)
+        tvDiagDirectSupport = findViewById(R.id.tv_diag_direct_support)
+        tvDiagDirectState = findViewById(R.id.tv_diag_direct_state)
+        tvDiagDirectDetails = findViewById(R.id.tv_diag_direct_details)
+        tvDiagAwareSupport = findViewById(R.id.tv_diag_aware_support)
+        tvDiagAwareState = findViewById(R.id.tv_diag_aware_state)
+        tvDiagAwareDetails = findViewById(R.id.tv_diag_aware_details)
+        tvDiagBleSupport = findViewById(R.id.tv_diag_ble_support)
+        tvDiagBleState = findViewById(R.id.tv_diag_ble_state)
+        tvDiagBleDetails = findViewById(R.id.tv_diag_ble_details)
+        btnDiagScan = findViewById(R.id.btn_diag_scan)
+        btnDiagDiscoveryLogs = findViewById(R.id.btn_diag_discovery_logs)
 
         // Updates Views (Update Center)
         tvAppVersion = findViewById(R.id.tv_app_version)
@@ -849,16 +889,146 @@ class SettingsActivity : AppCompatActivity() {
         btnShareLogs.setOnClickListener {
             AppLogger.shareLogs(this)
         }
+
+        btnDiagScan.setOnClickListener {
+            if (DiscoveryScanCoordinator.scanState.value.isScanning) {
+                DiscoveryScanCoordinator.stopScan(this)
+            } else {
+                DiscoveryScanCoordinator.startScan(this, lifecycleScope)
+            }
+        }
+
+        btnDiagDiscoveryLogs.setOnClickListener {
+            AppLogger.showLogViewerDialog(this)
+        }
     }
 
     private fun observeDiagnostics() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                diagnosticsViewModel.state.collect { state ->
-                    updateDiagnosticsUi(state)
+                launch {
+                    diagnosticsViewModel.state.collect { state ->
+                        updateDiagnosticsUi(state)
+                    }
+                }
+                launch {
+                    DiscoveryScanCoordinator.scanState.collect { scanState ->
+                        updateDiscoveryDiagnosticsUi(scanState)
+                    }
                 }
             }
         }
+    }
+
+    private fun updateDiscoveryDiagnosticsUi(scanState: DiscoveryScanState) {
+        val greenColor = ContextCompat.getColor(this, R.color.status_green)
+        val hintColor = ContextCompat.getColor(this, R.color.text_hint)
+        val redColor = ContextCompat.getColor(this, R.color.status_red)
+        val orangeColor = ContextCompat.getColor(this, R.color.status_orange)
+        val primaryColor = ContextCompat.getColor(this, R.color.primary)
+        val pm = packageManager
+
+        // Overall status & button text
+        if (scanState.isScanning) {
+            tvDiagDiscoveryOverallStatus.text = "● Scanning (${scanState.secondsRemaining}s)"
+            tvDiagDiscoveryOverallStatus.setTextColor(primaryColor)
+            btnDiagScan.text = "Stop Discovery Scan"
+            btnDiagScan.setTextColor(redColor)
+            btnDiagScan.strokeColor = ColorStateList.valueOf(redColor)
+        } else {
+            val totalDiscovered = scanState.totalDiscoveredNodes.size
+            tvDiagDiscoveryOverallStatus.text = if (totalDiscovered > 0) "✓ $totalDiscovered found" else "Idle"
+            tvDiagDiscoveryOverallStatus.setTextColor(if (totalDiscovered > 0) greenColor else hintColor)
+            btnDiagScan.text = "Test Discovery Scan"
+            btnDiagScan.setTextColor(primaryColor)
+            btnDiagScan.strokeColor = ColorStateList.valueOf(primaryColor)
+        }
+
+        // Support checks
+        val isLanSupported = NetworkUtils.isLanAvailable(this)
+        tvDiagLanSupport.text = if (isLanSupported) "Supported" else "Offline"
+        tvDiagLanSupport.setTextColor(if (isLanSupported) greenColor else hintColor)
+
+        val isDirectSupported = pm.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)
+        tvDiagDirectSupport.text = if (isDirectSupported) "Supported" else "Unsupported"
+        tvDiagDirectSupport.setTextColor(if (isDirectSupported) greenColor else hintColor)
+
+        val isAwareSupported = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            pm.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)
+        } else false
+        tvDiagAwareSupport.text = if (isAwareSupported) "Supported" else "Unsupported"
+        tvDiagAwareSupport.setTextColor(if (isAwareSupported) greenColor else hintColor)
+
+        val isBleSupported = pm.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
+        tvDiagBleSupport.text = if (isBleSupported) "Supported" else "Unsupported"
+        tvDiagBleSupport.setTextColor(if (isBleSupported) greenColor else hintColor)
+
+        // Helper to format provider state & details
+        fun renderProvider(
+            phase: DiscoveryScanPhase,
+            stateView: TextView,
+            detailsView: TextView,
+            defaultTimeoutMs: Long
+        ) {
+            val report = scanState.phaseReports[phase]
+            val regCount = HatDiscoveryRegistry.discoveredNodes.value.count { node ->
+                when (phase) {
+                    DiscoveryScanPhase.LOCAL_WIFI -> node.hasSource(DiscoverySource.LAN)
+                    DiscoveryScanPhase.WIFI_DIRECT -> node.hasSource(DiscoverySource.WIFI_DIRECT)
+                    DiscoveryScanPhase.WIFI_AWARE -> node.hasSource(DiscoverySource.WIFI_AWARE)
+                    DiscoveryScanPhase.BLE -> node.hasSource(DiscoverySource.BLE)
+                    else -> false
+                }
+            }
+
+            val status = report?.status ?: if (scanState.isScanning) PhaseStatus.WAITING else PhaseStatus.WAITING
+            val count = maxOf(report?.discoveredCount ?: 0, regCount)
+            val durationSec = if (report != null && report.durationMs > 0) String.format(Locale.US, "%.1fs", report.durationMs / 1000f) else "${defaultTimeoutMs / 1000}s timeout"
+
+            when (status) {
+                PhaseStatus.SEARCHING -> {
+                    stateView.text = "● Searching..."
+                    stateView.setTextColor(orangeColor)
+                    detailsView.text = "$count devices found so far • ${scanState.secondsRemaining}s remaining"
+                }
+                PhaseStatus.FOUND -> {
+                    stateView.text = "✓ Found ($count)"
+                    stateView.setTextColor(greenColor)
+                    detailsView.text = "$count devices discovered • $durationSec"
+                }
+                PhaseStatus.SKIPPED -> {
+                    stateView.text = "— Skipped"
+                    stateView.setTextColor(hintColor)
+                    detailsView.text = report?.reason ?: "Transport skipped / not ready"
+                }
+                PhaseStatus.FAILED -> {
+                    stateView.text = "✕ Failed"
+                    stateView.setTextColor(redColor)
+                    detailsView.text = report?.reason ?: "Provider scan failed"
+                }
+                PhaseStatus.TIMED_OUT -> {
+                    stateView.text = if (count > 0) "✓ Found ($count)" else "○ Timed out"
+                    stateView.setTextColor(if (count > 0) greenColor else hintColor)
+                    detailsView.text = "$count devices discovered • $durationSec"
+                }
+                PhaseStatus.WAITING -> {
+                    if (count > 0) {
+                        stateView.text = "✓ Found ($count)"
+                        stateView.setTextColor(greenColor)
+                        detailsView.text = "$count devices registered • $durationSec"
+                    } else {
+                        stateView.text = if (scanState.isScanning) "○ Waiting" else "Idle"
+                        stateView.setTextColor(hintColor)
+                        detailsView.text = "0 devices • ${defaultTimeoutMs / 1000}s timeout"
+                    }
+                }
+            }
+        }
+
+        renderProvider(DiscoveryScanPhase.LOCAL_WIFI, tvDiagLanState, tvDiagLanDetails, DiscoveryScanCoordinator.TIMEOUT_LAN_MS)
+        renderProvider(DiscoveryScanPhase.WIFI_DIRECT, tvDiagDirectState, tvDiagDirectDetails, DiscoveryScanCoordinator.TIMEOUT_WIFI_DIRECT_MS)
+        renderProvider(DiscoveryScanPhase.WIFI_AWARE, tvDiagAwareState, tvDiagAwareDetails, DiscoveryScanCoordinator.TIMEOUT_WIFI_AWARE_MS)
+        renderProvider(DiscoveryScanPhase.BLE, tvDiagBleState, tvDiagBleDetails, DiscoveryScanCoordinator.TIMEOUT_BLE_MS)
     }
 
     private fun updateDiagnosticsUi(state: ReceiverDiagnosticsState) {
