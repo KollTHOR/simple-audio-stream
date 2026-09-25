@@ -427,9 +427,20 @@ object MediaSessionTracker {
             null
         }
 
-        // Fallback: extract from active notification for this package
         if (artBitmap == null) {
-            artBitmap = MediaNotificationListenerService.getArtworkForPackage(ctrl.packageName)
+            val artUriStr = meta?.getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI)
+                ?: meta?.getString(MediaMetadata.METADATA_KEY_ART_URI)
+                ?: meta?.getString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI)
+            if (!artUriStr.isNullOrBlank()) {
+                artBitmap = try {
+                    val uri = android.net.Uri.parse(artUriStr)
+                    context?.contentResolver?.openInputStream(uri)?.use { stream ->
+                        android.graphics.BitmapFactory.decodeStream(stream)
+                    }
+                } catch (ignored: Exception) {
+                    null
+                }
+            }
         }
 
         val artBytes: ByteArray? = artBitmap?.let { bmp ->

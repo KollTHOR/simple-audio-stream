@@ -636,16 +636,28 @@ class AudioCaptureService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Simple Audio Stream")
             .setContentText("Transmitting audio")
             .setSmallIcon(R.drawable.ic_transmitter)
             .setContentIntent(pendingActivityIntent)
             .setOngoing(true)
+            .setSilent(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .build()
+            .setShowWhen(false)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+        }
+
+        val notification = builder.build()
+
+        Log.i(TAG, "HAT_FOREGROUND_NOTIFICATION_CREATED: channelId=$CHANNEL_ID, importance=LOW, category=CATEGORY_SERVICE, priority=PRIORITY_LOW, ongoing=true, silent=true, onlyAlertOnce=true, fgsBehavior=IMMEDIATE")
+
+        return notification
     }
 
     private fun createNotificationChannel() {
@@ -656,9 +668,12 @@ class AudioCaptureService : Service() {
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Captures system audio and streams via UDP"
+                setShowBadge(false)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
             val manager = getSystemService(NotificationManager::class.java)
             manager?.createNotificationChannel(channel)
+            Log.i(TAG, "AudioCaptureChannel configured: id=$CHANNEL_ID, importance=IMPORTANCE_LOW")
         }
     }
 
