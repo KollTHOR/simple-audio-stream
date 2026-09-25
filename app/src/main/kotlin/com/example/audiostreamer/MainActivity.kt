@@ -15,6 +15,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import android.view.KeyEvent
 import android.view.View
 import android.widget.LinearLayout
@@ -996,18 +997,37 @@ class MainActivity : AppCompatActivity() {
             tvScanSummary.visibility = View.GONE
         }
 
+        val regNodes = com.example.audiostreamer.node.discovery.HatDiscoveryRegistry.discoveredNodes.value
         fun updateChip(
             phase: com.example.audiostreamer.node.discovery.DiscoveryScanPhase,
             statusView: TextView
         ) {
             val report = state.phaseReports[phase]
+            val regCount = when (phase) {
+                com.example.audiostreamer.node.discovery.DiscoveryScanPhase.LOCAL_WIFI ->
+                    regNodes.count { it.hasSource(com.example.audiostreamer.node.discovery.DiscoverySource.LAN) }
+                com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_DIRECT ->
+                    regNodes.count { it.hasSource(com.example.audiostreamer.node.discovery.DiscoverySource.WIFI_DIRECT) }
+                com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_AWARE ->
+                    regNodes.count { it.hasSource(com.example.audiostreamer.node.discovery.DiscoverySource.WIFI_AWARE) }
+                com.example.audiostreamer.node.discovery.DiscoveryScanPhase.BLE ->
+                    regNodes.count { it.hasSource(com.example.audiostreamer.node.discovery.DiscoverySource.BLE) }
+                else -> 0
+            }
+
             when {
                 report == null || report.status == com.example.audiostreamer.node.discovery.PhaseStatus.WAITING -> {
-                    statusView.text = if (isScanning) "○ Waiting" else "○ Idle"
-                    statusView.setTextColor(ContextCompat.getColor(this, R.color.text_hint))
+                    if (!isScanning && regCount > 0) {
+                        statusView.text = "✓ $regCount dev"
+                        statusView.setTextColor(ContextCompat.getColor(this, R.color.status_green))
+                    } else {
+                        statusView.text = if (isScanning) "○ Waiting" else "○ Idle"
+                        statusView.setTextColor(ContextCompat.getColor(this, R.color.text_hint))
+                    }
                 }
                 report.status == com.example.audiostreamer.node.discovery.PhaseStatus.SEARCHING -> {
-                    statusView.text = if (report.discoveredCount > 0) "● ${report.discoveredCount} dev" else "● Searching..."
+                    val count = if (report.discoveredCount > 0) report.discoveredCount else regCount
+                    statusView.text = if (count > 0) "● $count dev" else "● Searching..."
                     val colorRes = when (phase) {
                         com.example.audiostreamer.node.discovery.DiscoveryScanPhase.LOCAL_WIFI -> R.color.primary
                         com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_DIRECT -> R.color.status_orange
@@ -1018,12 +1038,18 @@ class MainActivity : AppCompatActivity() {
                     statusView.setTextColor(ContextCompat.getColor(this, colorRes))
                 }
                 report.status == com.example.audiostreamer.node.discovery.PhaseStatus.FOUND -> {
-                    statusView.text = "✓ ${report.discoveredCount} dev"
+                    val count = maxOf(report.discoveredCount, regCount)
+                    statusView.text = "✓ $count dev"
                     statusView.setTextColor(ContextCompat.getColor(this, R.color.status_green))
                 }
                 report.status == com.example.audiostreamer.node.discovery.PhaseStatus.TIMED_OUT -> {
-                    statusView.text = "○ 0 dev"
-                    statusView.setTextColor(ContextCompat.getColor(this, R.color.text_hint))
+                    if (regCount > 0) {
+                        statusView.text = "✓ $regCount dev"
+                        statusView.setTextColor(ContextCompat.getColor(this, R.color.status_green))
+                    } else {
+                        statusView.text = "○ 0 dev"
+                        statusView.setTextColor(ContextCompat.getColor(this, R.color.text_hint))
+                    }
                 }
                 report.status == com.example.audiostreamer.node.discovery.PhaseStatus.SKIPPED -> {
                     statusView.text = "— Skipped"
@@ -1088,16 +1114,31 @@ class MainActivity : AppCompatActivity() {
         val blePeers = try { BleDiscoveryManager.bleDevices.value } catch (e: Exception) { emptyList() }
 
         val unified = mutableListOf<UnifiedDevice>()
+        val seenNodeIds = mutableSetOf<String>()
+        val seenEndpoints = mutableSetOf<String>()
 
         for (regNode in registryNodes) {
+            if (regNode.id in seenNodeIds) {
+                Log.d("HatDiscovery", "UI_DEDUP nodeId=${regNode.id} source=REGISTRY endpoint=${regNode.getLanEndpoint()?.address ?: "none"}")
+                continue
+            }
+            seenNodeIds.add(regNode.id)
+
             val lanEp = regNode.getLanEndpoint()
             val wdEp = regNode.getWifiDirectEndpoint()
             val awareEp = regNode.getWifiAwareEndpoint()
             val bleEp = regNode.getBleEndpoint()
             val nfcEp = regNode.getNfcEndpoint()
 
+            regNode.resolvedEndpoints.forEach { ep ->
+                if (!ep.address.isNullOrBlank()) {
+                    seenEndpoints.add(ep.address)
+                }
+            }
+
             val ip = lanEp?.address?.takeIf { it !in localIps }
             val mac = wdEp?.address ?: bleEp?.details?.get("mac") as? String
+            mac?.let { seenEndpoints.add(it) }
 
             // Find matching P2P peer by deviceAddress or by name match
             val matchingPeer = if (mac != null) {
@@ -1127,6 +1168,7 @@ class MainActivity : AppCompatActivity() {
                 ?: (wdEp?.details?.get("p2pGoIp") as? String)
                 ?: matchingBle?.p2pGoIp
                 ?: if (ip != null && ip.startsWith("192.168.49.")) ip else null
+            p2pGoIp?.let { seenEndpoints.add(it) }
 
             val isDirect = regNode.hasTransport(NodeTransportType.WIFI_DIRECT) ||
                 matchingPeer != null ||
@@ -1169,6 +1211,47 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
+        // Legacy provider fallback: only for entries that have no registry representation
+        val legacyUdpDevices = try { DiscoveryManager.discoveredDevices.value } catch (e: Exception) { emptyList() }
+        for (udp in legacyUdpDevices) {
+            if (udp.ip in localIps || (udp.p2pGoIp != null && udp.p2pGoIp in localIps)) continue
+            if (!udp.nodeId.isNullOrBlank() && udp.nodeId in seenNodeIds) {
+                Log.d("HatDiscovery", "UI_DEDUP nodeId=${udp.nodeId} source=UDP endpoint=${udp.ip}")
+                continue
+            }
+            if (udp.ip in seenEndpoints || (udp.p2pGoIp != null && udp.p2pGoIp in seenEndpoints)) {
+                Log.d("HatDiscovery", "UI_DEDUP nodeId=${udp.nodeId ?: "legacy"} source=UDP endpoint=${udp.ip}")
+                continue
+            }
+
+            val fallbackId = udp.nodeId ?: "hat-legacy-udp-${udp.ip.replace('.', '-')}"
+            seenNodeIds.add(fallbackId)
+            seenEndpoints.add(udp.ip)
+            udp.p2pGoIp?.let { seenEndpoints.add(it) }
+
+            unified.add(
+                UnifiedDevice(
+                    id = fallbackId,
+                    displayName = udp.name.ifEmpty { "Audio Receiver" },
+                    modelName = udp.modelName,
+                    lanIp = if (udp.ip.startsWith("192.168.49.")) null else udp.ip,
+                    port = udp.port,
+                    p2pPeer = null,
+                    p2pSsid = udp.p2pSsid,
+                    p2pPassphrase = udp.p2pPassphrase,
+                    p2pGoIp = udp.p2pGoIp,
+                    isDirectAvailable = udp.isP2pActive,
+                    useDirect = udp.isP2pActive && !udp.ip.startsWith("192.168."),
+                    capabilitiesMask = udp.capabilitiesMask,
+                    nodeId = udp.nodeId,
+                    discoverySources = listOf("LAN"),
+                    transportCandidates = listOf("LOCAL_WIFI"),
+                    rssi = null,
+                    capabilitiesSummary = null
+                )
+            )
+        }
+
         return unified
     }
 
@@ -1178,77 +1261,68 @@ class MainActivity : AppCompatActivity() {
             if (receivers.isNotEmpty()) {
                 layoutConnectedDevicesSection.visibility = View.VISIBLE
                 tvConnectedDevicesTitle.text = "CONNECTED RECEIVERS"
-                tvConnectedCountBadge.text = "${receivers.size} active"
 
-                val activeIps = receivers.map { it.ip }.toSet()
+                // Deduplicate receivers by stable Node ID first, then fallback to endpoint IP
+                val uniqueReceivers = mutableListOf<ConnectedDevice>()
+                val seenConnIds = mutableSetOf<String>()
+                for (rec in receivers) {
+                    val key = rec.nodeId?.takeIf { it.isNotBlank() && !it.startsWith("hat-node-ep-") } ?: rec.ip
+                    if (seenConnIds.add(key)) {
+                        uniqueReceivers.add(rec)
+                    }
+                }
+
+                tvConnectedCountBadge.text = "${uniqueReceivers.size} active"
+
+                val activeTags = uniqueReceivers.map { rec ->
+                    rec.nodeId?.takeIf { it.isNotBlank() && !it.startsWith("hat-node-ep-") } ?: rec.ip
+                }.toSet()
+
                 val toRemove = mutableListOf<View>()
                 for (i in 0 until layoutConnectedDevicesContainer.childCount) {
                     val child = layoutConnectedDevicesContainer.getChildAt(i)
-                    val tagIp = child.tag as? String
-                    if (tagIp == null || tagIp !in activeIps) {
+                    val tagStr = child.tag as? String
+                    if (tagStr == null || tagStr !in activeTags) {
                         toRemove.add(child)
                     }
                 }
                 toRemove.forEach { layoutConnectedDevicesContainer.removeView(it) }
 
-                for (rec in receivers) {
-                    var itemView = layoutConnectedDevicesContainer.findViewWithTag<View>(rec.ip)
+                for (rec in uniqueReceivers) {
+                    val stableTag = rec.nodeId?.takeIf { it.isNotBlank() && !it.startsWith("hat-node-ep-") } ?: rec.ip
+                    var itemView = layoutConnectedDevicesContainer.findViewWithTag<View>(stableTag)
                     val isNew = (itemView == null)
                     if (isNew) {
-                        itemView = layoutInflater.inflate(R.layout.item_connection_device, layoutConnectedDevicesContainer, false)
-                        itemView.tag = rec.ip
+                        itemView = layoutInflater.inflate(R.layout.item_connected_device, layoutConnectedDevicesContainer, false)
+                        itemView.tag = stableTag
                     }
 
                     val tvName = itemView!!.findViewById<TextView>(R.id.tv_device_name)
-                    val tvDetails = itemView.findViewById<TextView>(R.id.tv_device_details)
+                    val tvStatus = itemView.findViewById<TextView>(R.id.tv_device_status)
                     val dot = itemView.findViewById<View>(R.id.view_active_dot)
-                    val tvTransportBadge = itemView.findViewById<TextView>(R.id.tv_device_transport_badge)
                     val layoutDeviceVolume = itemView.findViewById<LinearLayout>(R.id.layout_device_volume)
                     val btnDeviceMute = itemView.findViewById<ImageView>(R.id.btn_device_mute)
                     val sliderDeviceVol = itemView.findViewById<Slider>(R.id.slider_device_vol)
                     val tvDeviceVolVal = itemView.findViewById<TextView>(R.id.tv_device_vol_val)
                     val btnDisconnect = itemView.findViewById<MaterialButton>(R.id.btn_device_disconnect)
-                    val btnConnect = itemView.findViewById<MaterialButton>(R.id.btn_device_connect)
 
                     val dest = com.example.audiostreamer.node.HatMultiStreamManager.getDestination(rec.nodeId ?: "")
                         ?: com.example.audiostreamer.node.HatMultiStreamManager.getAllDestinations().firstOrNull { it.link.metadata.remoteAddress == rec.ip }
 
-                    if (dest != null) {
-                        tvName.text = if (dest.nodeName.isNotEmpty() && dest.nodeName != "Unknown") dest.nodeName else rec.name
-                        val dotColor = when (dest.health) {
-                            com.example.audiostreamer.node.DestinationHealth.HEALTHY -> ContextCompat.getColor(this, R.color.status_green)
-                            com.example.audiostreamer.node.DestinationHealth.DEGRADED -> ContextCompat.getColor(this, R.color.status_orange)
-                            com.example.audiostreamer.node.DestinationHealth.UNREACHABLE -> ContextCompat.getColor(this, R.color.status_red)
-                            else -> ContextCompat.getColor(this, R.color.status_gray)
-                        }
-                        dot.backgroundTintList = ColorStateList.valueOf(dotColor)
+                    val devName = dest?.nodeName?.takeIf { it.isNotEmpty() && it != "Unknown" } ?: rec.name.ifEmpty { "Audio Receiver" }
+                    tvName.text = devName
 
-                        val detailsSb = StringBuilder()
-                        detailsSb.append("${rec.ip}:${rec.port} • ${dest.transportType.name} • ${dest.stream.codec.name}")
-                        detailsSb.append(" • ").append(dest.health.name)
-                        val sentKBytes = dest.stats.bytesSent.get() / 1024
-                        detailsSb.append("\nTx: ${dest.stats.packetsSent.get()} pkts (${sentKBytes} KB)")
-                        if (dest.stats.rttMs > 0) {
-                            detailsSb.append(" • RTT: ${dest.stats.rttMs.toInt()}ms")
-                        }
-                        detailsSb.append(" • Target: ${dest.bufferStats.targetWatermarkMs.toInt()}ms")
-                        if (dest.stats.sendErrors.get() > 0) {
-                            detailsSb.append(" • Errors: ${dest.stats.sendErrors.get()}")
-                        }
-                        tvDetails.text = detailsSb.toString()
-                        tvTransportBadge.text = dest.transportType.name
-                    } else {
-                        tvName.text = rec.name.ifEmpty { "Audio Receiver" }
-                        val latencyStr = if (rec.latencyMs > 0) " • ${rec.latencyMs}ms" else ""
-                        tvDetails.text = "${rec.ip}:${rec.port} • ${rec.transportType}$latencyStr"
-                        dot.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_green))
-                        tvTransportBadge.text = rec.transportType
+                    val transportStr = dest?.transportType?.name ?: rec.transportType
+                    val statusText = "Connected • $transportStr"
+                    tvStatus.text = statusText
+
+                    val dotColor = when (dest?.health) {
+                        com.example.audiostreamer.node.DestinationHealth.HEALTHY -> ContextCompat.getColor(this, R.color.status_green)
+                        com.example.audiostreamer.node.DestinationHealth.DEGRADED -> ContextCompat.getColor(this, R.color.status_orange)
+                        com.example.audiostreamer.node.DestinationHealth.UNREACHABLE -> ContextCompat.getColor(this, R.color.status_red)
+                        else -> ContextCompat.getColor(this, R.color.status_green)
                     }
-
-                    tvTransportBadge.visibility = View.VISIBLE
-                    dot.visibility = View.VISIBLE
-                    btnConnect.visibility = View.GONE
-                    btnDisconnect.visibility = View.VISIBLE
+                    dot.backgroundTintList = ColorStateList.valueOf(dotColor)
 
                     // Multi-receiver Volume Control Row
                     layoutDeviceVolume.visibility = View.VISIBLE
@@ -1303,9 +1377,10 @@ class MainActivity : AppCompatActivity() {
                             val removeIntent = Intent(this, AudioCaptureService::class.java).apply {
                                 action = AudioCaptureService.ACTION_REMOVE_CLIENT
                                 putExtra(AudioCaptureService.EXTRA_TARGET_IP, rec.ip)
+                                putExtra(AudioCaptureService.EXTRA_RECEIVER_NODE_ID, rec.nodeId)
                             }
                             startService(removeIntent)
-                            Toast.makeText(this, "Disconnected ${rec.name.ifEmpty { rec.ip }}", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this, "Disconnected $devName", Toast.LENGTH_SHORT).show()
                         }
 
                         layoutConnectedDevicesContainer.addView(itemView)
@@ -1337,34 +1412,22 @@ class MainActivity : AppCompatActivity() {
                 var itemView = layoutConnectedDevicesContainer.findViewWithTag<View>("connected_transmitter")
                 val isNew = (itemView == null)
                 if (isNew) {
-                    itemView = layoutInflater.inflate(R.layout.item_connection_device, layoutConnectedDevicesContainer, false)
+                    itemView = layoutInflater.inflate(R.layout.item_connected_device, layoutConnectedDevicesContainer, false)
                     itemView.tag = "connected_transmitter"
                 }
 
                 val tvName = itemView!!.findViewById<TextView>(R.id.tv_device_name)
-                val tvDetails = itemView.findViewById<TextView>(R.id.tv_device_details)
+                val tvStatus = itemView.findViewById<TextView>(R.id.tv_device_status)
                 val dot = itemView.findViewById<View>(R.id.view_active_dot)
-                val tvTransportBadge = itemView.findViewById<TextView>(R.id.tv_device_transport_badge)
                 val layoutDeviceVolume = itemView.findViewById<LinearLayout>(R.id.layout_device_volume)
                 val btnDisconnect = itemView.findViewById<MaterialButton>(R.id.btn_device_disconnect)
-                val btnConnect = itemView.findViewById<MaterialButton>(R.id.btn_device_connect)
-
-                tvName.text = transmitter.name.ifEmpty { "Audio Transmitter" }
 
                 val activeLink = t.activeLinks.firstOrNull()
-                val activeStream = t.activeStreams.firstOrNull()
                 val transportStr = activeLink?.hatTransportType?.name ?: transmitter.transportType
-                val streamStr = activeStream?.let { " • ${it.codec.name} (Gen ${it.generation})" } ?: ""
-                val negStr = t.lastNegotiatedCapabilities?.let { "\nNegotiated: ${it.summary()}" } ?: ""
-
-                tvDetails.text = "${transmitter.ip}:${transmitter.port} • $transportStr$streamStr • Playing$negStr"
-                tvTransportBadge.visibility = View.VISIBLE
-                tvTransportBadge.text = transportStr
-                layoutDeviceVolume.visibility = View.GONE
-
+                tvName.text = transmitter.name.ifEmpty { "Audio Transmitter" }
+                tvStatus.text = "Connected • $transportStr"
                 dot.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_green))
-                dot.visibility = View.VISIBLE
-                btnConnect.visibility = View.GONE
+                layoutDeviceVolume.visibility = View.GONE
                 btnDisconnect.visibility = View.VISIBLE
 
                 if (isNew) {
@@ -1399,58 +1462,99 @@ class MainActivity : AppCompatActivity() {
         layoutDiscoveredDevicesContainer.removeAllViews()
         val devices = getUnifiedDiscoveredDevices()
 
-        // Filter out currently connected devices
-        val connectedIps = if (currentMode == Mode.TRANSMITTER) {
-            StreamState.telemetry.value.connectedReceivers.map { it.ip }.toSet()
+        // Filter out currently connected / connecting / degraded devices using Node ID as primary identity
+        val activeLinks = com.example.audiostreamer.node.HatLinkManager.activeLinks.value
+        val connectedDestinations = com.example.audiostreamer.node.HatMultiStreamManager.getAllDestinations()
+        val connectedReceivers = StreamState.telemetry.value.connectedReceivers
+        val connectedTransmitter = StreamState.telemetry.value.connectedTransmitter
+
+        val connectedNodeIds = mutableSetOf<String>()
+        val connectedIps = mutableSetOf<String>()
+
+        if (currentMode == Mode.TRANSMITTER) {
+            activeLinks.forEach { link ->
+                if (link.state in setOf(
+                        com.example.audiostreamer.node.LinkState.CONNECTED,
+                        com.example.audiostreamer.node.LinkState.CONNECTING,
+                        com.example.audiostreamer.node.LinkState.DEGRADED
+                    )) {
+                    connectedNodeIds.add(link.remoteNode.id)
+                    connectedIps.add(link.metadata.remoteAddress)
+                }
+            }
+            connectedDestinations.forEach { dest ->
+                if (dest.health != com.example.audiostreamer.node.DestinationHealth.UNREACHABLE) {
+                    connectedNodeIds.add(dest.nodeId)
+                    dest.link.metadata.remoteAddress.takeIf { it.isNotBlank() }?.let { connectedIps.add(it) }
+                }
+            }
+            connectedReceivers.forEach { rec ->
+                rec.nodeId?.takeIf { it.isNotBlank() }?.let { connectedNodeIds.add(it) }
+                rec.ip.takeIf { it.isNotBlank() }?.let { connectedIps.add(it) }
+            }
         } else {
-            setOfNotNull(StreamState.telemetry.value.connectedTransmitter?.ip)
+            connectedTransmitter?.nodeId?.takeIf { it.isNotBlank() }?.let { connectedNodeIds.add(it) }
+            connectedTransmitter?.ip?.takeIf { it.isNotBlank() }?.let { connectedIps.add(it) }
+            activeLinks.forEach { link ->
+                if (link.state in setOf(
+                        com.example.audiostreamer.node.LinkState.CONNECTED,
+                        com.example.audiostreamer.node.LinkState.CONNECTING,
+                        com.example.audiostreamer.node.LinkState.DEGRADED
+                    )) {
+                    connectedNodeIds.add(link.remoteNode.id)
+                    connectedIps.add(link.metadata.remoteAddress)
+                }
+            }
         }
 
         val availableDevices = devices.filter { dev ->
-            (dev.lanIp == null || dev.lanIp !in connectedIps) &&
-            (dev.p2pGoIp == null || dev.p2pGoIp !in connectedIps)
+            // Rule: CONNECTED / CONNECTING / DEGRADED Node must NOT appear in Available Devices.
+            // Available: only DISCONNECTED nodes.
+
+            // 1. Primary matching: dev.nodeId
+            if (dev.nodeId != null && dev.nodeId in connectedNodeIds) {
+                return@filter false
+            }
+
+            // Check registry connectionState if available
+            val regNode = com.example.audiostreamer.node.discovery.HatDiscoveryRegistry.getDiscoveredNode(dev.id)
+                ?: (dev.nodeId?.let { com.example.audiostreamer.node.discovery.HatDiscoveryRegistry.getDiscoveredNode(it) })
+            if (regNode != null && regNode.connectionState in setOf(
+                    com.example.audiostreamer.node.LinkState.CONNECTED,
+                    com.example.audiostreamer.node.LinkState.CONNECTING,
+                    com.example.audiostreamer.node.LinkState.DEGRADED
+                )) {
+                return@filter false
+            }
+
+            // 2. Fallback matching for legacy devices without Node ID: match endpoint/IP
+            val isLegacy = dev.nodeId == null || dev.nodeId.startsWith("hat-node-ep-") || dev.nodeId.startsWith("hat-node-lan-")
+            if (isLegacy) {
+                val matchesIp = (dev.lanIp != null && dev.lanIp in connectedIps) ||
+                                (dev.p2pGoIp != null && dev.p2pGoIp in connectedIps)
+                if (matchesIp) {
+                    return@filter false
+                }
+            }
+
+            true
         }
 
         for (dev in availableDevices) {
-            val itemView = layoutInflater.inflate(R.layout.item_connection_device, layoutDiscoveredDevicesContainer, false)
-            val card = itemView.findViewById<MaterialCardView>(R.id.card_connection_device)
+            val itemView = layoutInflater.inflate(R.layout.item_available_device, layoutDiscoveredDevicesContainer, false)
+            val card = itemView.findViewById<MaterialCardView>(R.id.card_available_device)
             val tvName = itemView.findViewById<TextView>(R.id.tv_device_name)
             val tvDetails = itemView.findViewById<TextView>(R.id.tv_device_details)
-            val dot = itemView.findViewById<View>(R.id.view_active_dot)
-            val btnDisconnect = itemView.findViewById<MaterialButton>(R.id.btn_device_disconnect)
-            val btnConnect = itemView.findViewById<MaterialButton>(R.id.btn_device_connect)
-
-            tvName.text = if (!dev.modelName.isNullOrEmpty() && dev.modelName != dev.displayName && !dev.discoverySources.contains(dev.modelName)) {
-                "${dev.displayName} (${dev.modelName})"
-            } else {
-                dev.displayName
-            }
-
-            val detailsSb = StringBuilder()
-            val transportLabel = when {
-                dev.useDirect || dev.lanIp == null -> "Wi-Fi Direct"
-                else -> "Local Wi-Fi (${dev.lanIp}:${dev.port})"
-            }
-            detailsSb.append(transportLabel)
-
-            if (dev.discoverySources.isNotEmpty()) {
-                detailsSb.append(" • Via: ").append(dev.discoverySources.joinToString(", "))
-            }
-            if (dev.rssi != null) {
-                detailsSb.append(" (").append(dev.rssi).append(" dBm)")
-            }
-            if (!dev.capabilitiesSummary.isNullOrEmpty()) {
-                detailsSb.append("\n").append(dev.capabilitiesSummary)
-            }
-            tvDetails.text = detailsSb.toString()
-            dot.visibility = View.GONE
-            btnDisconnect.visibility = View.GONE
-
             val tvTransportBadge = itemView.findViewById<TextView>(R.id.tv_device_transport_badge)
             val tvBadgeSecondary = itemView.findViewById<TextView>(R.id.tv_badge_secondary)
+            val btnConnect = itemView.findViewById<MaterialButton>(R.id.btn_device_connect)
 
-            val isP2p = dev.useDirect || dev.lanIp == null || dev.isDirectAvailable
+            // Section 6: Device Name Handling - never concatenate model into title
+            tvName.text = dev.displayName
+
+            // Section 4 & 5: Transport Badges
             val sources = dev.discoverySources.toMutableList()
+            val isP2p = dev.useDirect || dev.lanIp == null || dev.isDirectAvailable
             if (sources.isEmpty()) {
                 if (isP2p) sources.add("DIRECT") else sources.add("LAN")
             }
@@ -1476,32 +1580,23 @@ class MainActivity : AppCompatActivity() {
             }
             tvTransportBadge.visibility = View.VISIBLE
 
-            val secondarySource = sources.drop(1).firstOrNull()
-            if (secondarySource != null) {
+            // Optional secondary badge (e.g. "+1" or "+2")
+            if (sources.size > 1) {
                 tvBadgeSecondary.visibility = View.VISIBLE
-                when (secondarySource.uppercase()) {
-                    "WIFI_DIRECT", "DIRECT" -> {
-                        tvBadgeSecondary.text = "DIRECT"
-                        tvBadgeSecondary.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.status_orange))
-                    }
-                    "BLE" -> {
-                        tvBadgeSecondary.text = "BLE"
-                        tvBadgeSecondary.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.status_blue))
-                    }
-                    "WIFI_AWARE", "AWARE" -> {
-                        tvBadgeSecondary.text = "AWARE"
-                        tvBadgeSecondary.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.secondary))
-                    }
-                    else -> {
-                        tvBadgeSecondary.text = "LAN"
-                        tvBadgeSecondary.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.status_green))
-                    }
-                }
+                tvBadgeSecondary.text = "+${sources.size - 1}"
             } else {
                 tvBadgeSecondary.visibility = View.GONE
             }
 
-            val isAlreadyConnected = dev.nodeId != null && !HatDiscoveryRegistry.canConnect(dev.nodeId)
+            // Short endpoint / details line
+            val transportLabel = if (isP2p) "Wi-Fi Direct" else "Local Wi-Fi"
+            val ipStr = dev.lanIp ?: dev.p2pGoIp
+            val modelSub = if (!dev.modelName.isNullOrEmpty() && dev.modelName != dev.displayName && !dev.discoverySources.contains(dev.modelName)) {
+                " • ${dev.modelName}"
+            } else ""
+            tvDetails.text = if (ipStr != null) "$transportLabel • $ipStr$modelSub" else "$transportLabel$modelSub"
+
+            val isAlreadyConnected = dev.nodeId != null && !com.example.audiostreamer.node.discovery.HatDiscoveryRegistry.canConnect(dev.nodeId)
             btnConnect.visibility = View.VISIBLE
             if (isAlreadyConnected) {
                 btnConnect.text = "Connected"
@@ -1514,7 +1609,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             fun performConnect() {
-                if (dev.nodeId != null && !HatDiscoveryRegistry.canConnect(dev.nodeId)) {
+                if (dev.nodeId != null && !com.example.audiostreamer.node.discovery.HatDiscoveryRegistry.canConnect(dev.nodeId)) {
                     Toast.makeText(this@MainActivity, "Already connected to ${dev.displayName}", Toast.LENGTH_SHORT).show()
                     return
                 }
@@ -1528,6 +1623,7 @@ class MainActivity : AppCompatActivity() {
                                     action = AudioCaptureService.ACTION_ADD_CLIENT
                                     putExtra(AudioCaptureService.EXTRA_TARGET_IP, goIp)
                                     putExtra(AudioCaptureService.EXTRA_TARGET_PORT, dev.port)
+                                    putExtra(AudioCaptureService.EXTRA_RECEIVER_NODE_ID, dev.nodeId)
                                 }
                                 startService(intent)
                                 Toast.makeText(this@MainActivity, "Added ${dev.displayName} to stream", Toast.LENGTH_SHORT).show()
@@ -1546,6 +1642,7 @@ class MainActivity : AppCompatActivity() {
                                 action = AudioCaptureService.ACTION_ADD_CLIENT
                                 putExtra(AudioCaptureService.EXTRA_TARGET_IP, ip)
                                 putExtra(AudioCaptureService.EXTRA_TARGET_PORT, dev.port)
+                                putExtra(AudioCaptureService.EXTRA_RECEIVER_NODE_ID, dev.nodeId)
                             }
                             startService(intent)
                             Toast.makeText(this@MainActivity, "Added ${dev.displayName} to stream", Toast.LENGTH_SHORT).show()
