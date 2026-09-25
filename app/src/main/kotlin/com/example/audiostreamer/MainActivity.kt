@@ -491,6 +491,10 @@ class MainActivity : AppCompatActivity() {
         ivConnectedSectionChevron = findViewById(R.id.iv_connected_chevron)
 
         findViewById<View>(R.id.header_connected_devices)?.setOnClickListener {
+            if (currentMode == Mode.RECEIVER) {
+                // In receiver mode, Connected Transmitter card is not collapsible per specification
+                return@setOnClickListener
+            }
             isConnectedSectionExpanded = !isConnectedSectionExpanded
             layoutConnectedDevicesContainer.visibility = if (isConnectedSectionExpanded) View.VISIBLE else View.GONE
             ivConnectedSectionChevron?.animate()?.rotation(if (isConnectedSectionExpanded) 0f else 180f)?.setDuration(150)?.start()
@@ -1219,6 +1223,37 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
+        if (currentMode == Mode.RECEIVER) {
+            val transmitters = try { DiscoveryManager.discoveredTransmitters.value } catch (e: Exception) { emptyList() }
+            for (tx in transmitters) {
+                if (tx.ip in localIps) continue
+                if (tx.ip in seenEndpoints) continue
+                seenEndpoints.add(tx.ip)
+                val fallbackId = tx.nodeId ?: "tx-${tx.ip.replace('.', '-')}"
+                unified.add(
+                    UnifiedDevice(
+                        id = fallbackId,
+                        displayName = tx.name.ifEmpty { "Audio Transmitter" },
+                        modelName = tx.modelName,
+                        lanIp = tx.ip,
+                        port = tx.port,
+                        p2pPeer = null,
+                        p2pSsid = tx.p2pSsid,
+                        p2pPassphrase = tx.p2pPassphrase,
+                        p2pGoIp = tx.p2pGoIp,
+                        isDirectAvailable = false,
+                        useDirect = false,
+                        capabilitiesMask = tx.capabilitiesMask,
+                        nodeId = tx.nodeId,
+                        discoverySources = listOf("LAN"),
+                        transportCandidates = listOf("LOCAL_WIFI"),
+                        rssi = null,
+                        capabilitiesSummary = null
+                    )
+                )
+            }
+        }
+
         return unified
     }
 
@@ -1272,6 +1307,7 @@ class MainActivity : AppCompatActivity() {
                     val sliderDeviceVol = itemView.findViewById<Slider>(R.id.slider_device_vol)
                     val tvDeviceVolVal = itemView.findViewById<TextView>(R.id.tv_device_vol_val)
                     val btnDisconnect = itemView.findViewById<MaterialButton>(R.id.btn_device_disconnect)
+                    val btnSave = itemView.findViewById<MaterialButton>(R.id.btn_device_save)
 
                     val dest = com.example.audiostreamer.node.HatMultiStreamManager.getDestination(rec.nodeId ?: "")
                         ?: com.example.audiostreamer.node.HatMultiStreamManager.getAllDestinations().firstOrNull { it.link.metadata.remoteAddress == rec.ip }
@@ -1308,17 +1344,33 @@ class MainActivity : AppCompatActivity() {
                         btnDeviceMute.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
                     }
 
+                    val isDevSaved = SavedDevicesManager.isDeviceSaved(this, rec.ip)
+                    if (isDevSaved) {
+                        btnSave.text = "Saved ✓"
+                        btnSave.isEnabled = false
+                        btnSave.alpha = 0.7f
+                    } else {
+                        btnSave.text = "Save Device"
+                        btnSave.isEnabled = true
+                        btnSave.alpha = 1.0f
+                    }
+                    btnSave.setOnClickListener {
+                        val saved = SavedDevice(
+                            id = rec.nodeId ?: rec.ip,
+                            name = devName,
+                            ip = rec.ip,
+                            port = AudioConfig.DEFAULT_PORT,
+                            transportType = transportStr
+                        )
+                        SavedDevicesManager.saveDevice(this, saved)
+                        btnSave.text = "Saved ✓"
+                        btnSave.isEnabled = false
+                        btnSave.alpha = 0.7f
+                        Toast.makeText(this, "Saved $devName to Available Devices", Toast.LENGTH_SHORT).show()
+                        updateDiscoveredDevicesUi()
+                    }
+
                     if (isNew) {
-                        val layoutConnectedHeader = itemView.findViewById<View>(R.id.layout_connected_header)
-                        val layoutExpandedDetails = itemView.findViewById<View>(R.id.layout_connected_expanded_details)
-                        val ivChevron = itemView.findViewById<ImageView>(R.id.iv_connected_chevron)
-
-                        layoutConnectedHeader?.setOnClickListener {
-                            val isExp = layoutExpandedDetails?.visibility == View.VISIBLE
-                            layoutExpandedDetails?.visibility = if (isExp) View.GONE else View.VISIBLE
-                            ivChevron?.animate()?.rotation(if (isExp) 0f else 90f)?.setDuration(150)?.start()
-                        }
-
                         sliderDeviceVol.clearOnChangeListeners()
                         sliderDeviceVol.addOnChangeListener { _, value, fromUser ->
                             if (fromUser) {
@@ -1375,6 +1427,8 @@ class MainActivity : AppCompatActivity() {
                 layoutConnectedDevicesSection.visibility = View.VISIBLE
                 tvConnectedDevicesTitle.text = "CONNECTED TRANSMITTER"
                 tvConnectedCountBadge.text = "1 active"
+                ivConnectedSectionChevron?.visibility = View.GONE
+                layoutConnectedDevicesContainer.visibility = View.VISIBLE
 
                 // Remove any non-receiver views if present
                 val toRemove = mutableListOf<View>()
@@ -1398,14 +1452,46 @@ class MainActivity : AppCompatActivity() {
                 val dot = itemView.findViewById<View>(R.id.view_active_dot)
                 val layoutDeviceVolume = itemView.findViewById<LinearLayout>(R.id.layout_device_volume)
                 val btnDisconnect = itemView.findViewById<MaterialButton>(R.id.btn_device_disconnect)
+                val btnSave = itemView.findViewById<MaterialButton>(R.id.btn_device_save)
 
                 val activeLink = t.activeLinks.firstOrNull()
                 val transportStr = activeLink?.hatTransportType?.name ?: transmitter.transportType
-                tvName.text = transmitter.name.ifEmpty { "Audio Transmitter" }
+                val resolvedTxName = DiscoveryManager.getDeviceNameForIp(transmitter.ip)
+                    ?: transmitter.name.takeIf { it != transmitter.ip && it.isNotBlank() }
+                    ?: SavedDevicesManager.getSavedDevices(this).firstOrNull { it.ip == transmitter.ip }?.name
+                    ?: "Audio Transmitter"
+
+                tvName.text = resolvedTxName
                 tvStatus.text = "Connected • $transportStr"
                 dot.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_green))
                 layoutDeviceVolume.visibility = View.GONE
                 btnDisconnect.visibility = View.VISIBLE
+
+                val isTxSaved = SavedDevicesManager.isDeviceSaved(this, transmitter.ip)
+                if (isTxSaved) {
+                    btnSave.text = "Saved ✓"
+                    btnSave.isEnabled = false
+                    btnSave.alpha = 0.7f
+                } else {
+                    btnSave.text = "Save Device"
+                    btnSave.isEnabled = true
+                    btnSave.alpha = 1.0f
+                }
+                btnSave.setOnClickListener {
+                    val saved = SavedDevice(
+                        id = transmitter.nodeId ?: transmitter.ip,
+                        name = resolvedTxName,
+                        ip = transmitter.ip,
+                        port = transmitter.port,
+                        transportType = transportStr
+                    )
+                    SavedDevicesManager.saveDevice(this, saved)
+                    btnSave.text = "Saved ✓"
+                    btnSave.isEnabled = false
+                    btnSave.alpha = 0.7f
+                    Toast.makeText(this, "Saved $resolvedTxName to Available Devices", Toast.LENGTH_SHORT).show()
+                    updateDiscoveredDevicesUi()
+                }
 
                 if (isNew) {
                     btnDisconnect.setOnClickListener {
@@ -1517,14 +1603,89 @@ class MainActivity : AppCompatActivity() {
             true
         }
 
-        for (dev in availableDevices) {
+        // 1. Load and display permanently Saved Devices at the top of Available Devices
+        val savedDevices = SavedDevicesManager.getSavedDevices(this)
+        val savedToShow = savedDevices.filter { saved ->
+            saved.ip !in connectedIps && (saved.id.isBlank() || saved.id !in connectedNodeIds)
+        }
+
+        val savedIps = savedToShow.map { it.ip.trim() }.toSet()
+        val savedIds = savedToShow.map { it.id.trim() }.filter { it.isNotBlank() }.toSet()
+
+        for (saved in savedToShow) {
             val itemView = layoutInflater.inflate(R.layout.item_available_device, layoutDiscoveredDevicesContainer, false)
             val card = itemView.findViewById<MaterialCardView>(R.id.card_available_device)
             val tvName = itemView.findViewById<TextView>(R.id.tv_device_name)
             val tvTransport = itemView.findViewById<TextView>(R.id.tv_device_transport)
             val btnConnect = itemView.findViewById<MaterialButton>(R.id.btn_device_connect)
+            val btnRemove = itemView.findViewById<MaterialButton>(R.id.btn_device_remove)
             val ivIcon = itemView.findViewById<ImageView>(R.id.iv_device_icon)
 
+            tvName.text = saved.name
+            tvTransport.text = "Saved • ${saved.transportType}"
+
+            btnRemove.visibility = View.VISIBLE
+            btnRemove.setOnClickListener {
+                SavedDevicesManager.removeDevice(this@MainActivity, saved.id)
+                Toast.makeText(this@MainActivity, "Removed ${saved.name}", Toast.LENGTH_SHORT).show()
+                updateDiscoveredDevicesUi()
+            }
+
+            fun performConnectSaved() {
+                if (currentMode == Mode.TRANSMITTER) {
+                    val isRunning = AudioCaptureService.isRunning.get()
+                    val ip = saved.ip
+                    val port = saved.port
+                    if (isRunning) {
+                        DiscoveryManager.sendStreamInvite(ip, port, DiscoveryManager.getLocalDeviceName())
+                        val intent = Intent(this@MainActivity, AudioCaptureService::class.java).apply {
+                            action = AudioCaptureService.ACTION_ADD_CLIENT
+                            putExtra(AudioCaptureService.EXTRA_TARGET_IP, ip)
+                            putExtra(AudioCaptureService.EXTRA_TARGET_PORT, port)
+                            putExtra(AudioCaptureService.EXTRA_RECEIVER_NODE_ID, saved.id)
+                        }
+                        startService(intent)
+                        Toast.makeText(this@MainActivity, "Added ${saved.name} to stream", Toast.LENGTH_SHORT).show()
+                    } else {
+                        etTargetIp.setText(ip)
+                        etPort.setText(port.toString())
+                        DiscoveryManager.sendStreamInvite(ip, port, DiscoveryManager.getLocalDeviceName())
+                        startTransmitterWorkflow()
+                    }
+                } else {
+                    etTargetIp.setText(saved.ip)
+                    etPort.setText(saved.port.toString())
+                    startReceiverWorkflow()
+                }
+            }
+
+            btnConnect.text = "CONNECT"
+            btnConnect.isEnabled = true
+            btnConnect.alpha = 1.0f
+            btnConnect.setOnClickListener { performConnectSaved() }
+            card.setOnClickListener { performConnectSaved() }
+
+            layoutDiscoveredDevicesContainer.addView(itemView)
+        }
+
+        // 2. Newly scanned devices appear directly under saved devices (excluding any already saved)
+        val unSavedAvailableDevices = availableDevices.filter { dev ->
+            val matchesSaved = (dev.lanIp != null && dev.lanIp.trim() in savedIps) ||
+                               (dev.p2pGoIp != null && dev.p2pGoIp.trim() in savedIps) ||
+                               (dev.nodeId != null && dev.nodeId.trim() in savedIds)
+            !matchesSaved
+        }
+
+        for (dev in unSavedAvailableDevices) {
+            val itemView = layoutInflater.inflate(R.layout.item_available_device, layoutDiscoveredDevicesContainer, false)
+            val card = itemView.findViewById<MaterialCardView>(R.id.card_available_device)
+            val tvName = itemView.findViewById<TextView>(R.id.tv_device_name)
+            val tvTransport = itemView.findViewById<TextView>(R.id.tv_device_transport)
+            val btnConnect = itemView.findViewById<MaterialButton>(R.id.btn_device_connect)
+            val btnRemove = itemView.findViewById<MaterialButton>(R.id.btn_device_remove)
+            val ivIcon = itemView.findViewById<ImageView>(R.id.iv_device_icon)
+
+            btnRemove.visibility = View.GONE
             tvName.text = dev.displayName
 
             val sources = dev.discoverySources.toMutableList()
@@ -1663,9 +1824,9 @@ class MainActivity : AppCompatActivity() {
             layoutDiscoveredDevicesContainer.addView(itemView)
         }
 
-        layoutDiscoveredDevicesContainer.visibility = if (availableDevices.isEmpty()) View.GONE else View.VISIBLE
+        layoutDiscoveredDevicesContainer.visibility = if (savedToShow.isEmpty() && unSavedAvailableDevices.isEmpty()) View.GONE else View.VISIBLE
         renderDiscoveryScanState(com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.scanState.value)
-        layoutDiscoverySection.visibility = if (currentMode == Mode.TRANSMITTER) View.VISIBLE else View.GONE
+        layoutDiscoverySection.visibility = View.VISIBLE
     }
 
     private fun connectToUnifiedDeviceDirect(dev: UnifiedDevice, onConnected: ((String) -> Unit)? = null) {
@@ -2480,7 +2641,7 @@ class MainActivity : AppCompatActivity() {
                 tvModeGuide?.text = "Accept and play audio streams from nearby transmitters"
                 cardReceiverDiscoverable.visibility = View.VISIBLE
                 updateReceiverDiscoverableBanner()
-                layoutDiscoverySection.visibility = View.GONE
+                layoutDiscoverySection.visibility = View.VISIBLE
                 layoutSavedProfilesSection.visibility = View.GONE
                 layoutReceiverP2p.visibility = View.GONE
                 layoutVolumeControl.visibility = View.GONE

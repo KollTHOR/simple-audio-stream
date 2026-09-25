@@ -213,7 +213,6 @@
                 android:focusable="true"
                 android:layout_marginEnd="6dp" />
 
-            <!-- Individual Volume Slider -->
             <com.google.android.material.slider.Slider
                 android:id="@+id/slider_device_vol"
                 android:layout_width="0dp"
@@ -226,7 +225,11 @@
                 app:thumbColor="@color/primary"
                 app:trackColorActive="@color/primary"
                 app:trackColorInactive="#2A2A38"
-                app:thumbRadius="7dp" />
+                app:trackHeight="4dp"
+                app:thumbWidth="14dp"
+                app:thumbHeight="14dp"
+                app:thumbRadius="7dp"
+                app:haloRadius="14dp" />
 
             <!-- Volume Percent Label -->
             <TextView

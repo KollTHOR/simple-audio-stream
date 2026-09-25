@@ -1006,6 +1006,11 @@ class AudioSinkService : Service() {
                             }
                             val links = HatLinkManager.activeLinks.value
                             val streams = HatLinkManager.activeStreams.value
+                            val existingTx = StreamState.telemetry.value.connectedTransmitter
+                            val existingName = existingTx?.takeIf { it.ip == lastSenderHost && it.name != lastSenderHost && it.name.isNotBlank() }?.name
+                            val resolvedTxName = DiscoveryManager.getDeviceNameForIp(lastSenderHost)
+                                ?: existingName
+                                ?: "Audio Transmitter"
 
                             StreamState.update {
                                 it.copy(
@@ -1032,7 +1037,7 @@ class AudioSinkService : Service() {
                                     connectedTransmitter = ConnectedDevice(
                                         ip = lastSenderHost,
                                         port = packet.port,
-                                        name = DiscoveryManager.getDeviceNameForIp(lastSenderHost) ?: lastSenderHost,
+                                        name = resolvedTxName,
                                         isDirectP2p = lastSenderHost.startsWith("192.168.49."),
                                         packetsTransferred = totalPackets,
                                         nodeId = "${com.example.audiostreamer.node.NodeIdentity.ID_PREFIX}ep-${lastSenderHost.replace(".", "-")}"
