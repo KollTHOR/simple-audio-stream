@@ -391,7 +391,9 @@ class MainActivity : AppCompatActivity() {
                 role = "receiver",
                 p2pSsid = resolvedSsid,
                 p2pPassphrase = resolvedPassphrase,
-                p2pGoIp = resolvedGoIp
+                p2pGoIp = resolvedGoIp,
+                p2pPort = etPort.text.toString().toIntOrNull() ?: AudioConfig.DEFAULT_PORT,
+                deviceName = LocalNodeManager.getLocalNode().name
             )
         }
         updateReceiverDiscoverableBanner()
@@ -606,7 +608,6 @@ class MainActivity : AppCompatActivity() {
             } else {
                 WifiDirectManager.removeGroup(this)
                 BleDiscoveryManager.stopAdvertising()
-                startReceiverBleAdvertisements()
                 layoutReceiverP2pInfo.visibility = View.GONE
                 tvReceiverP2pStatus.text = "Autonomous Wi-Fi Direct stopped"
             }
@@ -697,11 +698,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 launch {
                     LanDiscoveryProvider.isScanning.collect {
-                        updateScanningIndicator()
-                    }
-                }
-                launch {
-                    com.example.audiostreamer.node.discovery.HatBlePresenceProvider.isScanning.collect {
                         updateScanningIndicator()
                     }
                 }
@@ -885,7 +881,6 @@ class MainActivity : AppCompatActivity() {
         DiscoveryManager.stopDiscovery()
         DiscoveryManager.stopReceiverResponder()
         LanDiscoveryProvider.stopAll()
-        com.example.audiostreamer.node.discovery.HatBlePresenceProvider.stopAll()
         BleDiscoveryManager.stopScanning()
         BleDiscoveryManager.stopAdvertising()
         HatNfcBootstrapProvider.stopAll()
@@ -900,7 +895,6 @@ class MainActivity : AppCompatActivity() {
                 DiscoveryManager.stopReceiverResponder()
                 LanDiscoveryProvider.stopAdvertisement()
                 BleDiscoveryManager.stopAdvertising()
-                com.example.audiostreamer.node.discovery.HatBlePresenceProvider.stopAdvertising()
 
                 // 2. Stop any active scan
                 com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.stopScan(this)
@@ -911,7 +905,6 @@ class MainActivity : AppCompatActivity() {
                 DiscoveryManager.stopDiscovery()
                 LanDiscoveryProvider.stopDiscovery()
                 BleDiscoveryManager.stopScanning()
-                com.example.audiostreamer.node.discovery.HatBlePresenceProvider.stopScanning()
 
                 // Advertise on the local network. When offline, start a Wi-Fi Direct
                 // group so nearby transmitters have a real audio network to join.
@@ -996,23 +989,18 @@ class MainActivity : AppCompatActivity() {
 
     private fun startReceiverBleAdvertisements() {
         if (currentMode != Mode.RECEIVER) return
-        if (BleDiscoveryManager.hasPermissions(this)) {
+        if (WifiDirectManager.isGroupCreated.value && BleDiscoveryManager.hasPermissions(this)) {
             BleDiscoveryManager.startAdvertising(
                 context = this,
                 role = "receiver",
                 p2pSsid = WifiDirectManager.networkSsid.value,
                 p2pPassphrase = WifiDirectManager.networkPassphrase.value,
-                p2pGoIp = WifiDirectManager.groupOwnerIp.value
+                p2pGoIp = WifiDirectManager.groupOwnerIp.value,
+                p2pPort = etPort.text.toString().toIntOrNull() ?: AudioConfig.DEFAULT_PORT,
+                deviceName = LocalNodeManager.getLocalNode().name
             )
         } else {
             BleDiscoveryManager.stopAdvertising()
-        }
-        if (WifiDirectManager.isGroupCreated.value &&
-            packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
-        ) {
-            com.example.audiostreamer.node.discovery.HatBlePresenceProvider.startAdvertising(this)
-        } else {
-            com.example.audiostreamer.node.discovery.HatBlePresenceProvider.stopAdvertising()
         }
     }
 
@@ -1184,7 +1172,7 @@ class MainActivity : AppCompatActivity() {
                 else -> regNode.name.ifEmpty { "Audio Receiver" }
             }
 
-            val port = lanEp?.port ?: wdEp?.port ?: nfcEp?.port ?: AudioConfig.DEFAULT_PORT
+            val port = lanEp?.port ?: wdEp?.port ?: nfcEp?.port ?: bleEp?.port ?: AudioConfig.DEFAULT_PORT
 
             unified.add(
                 UnifiedDevice(
@@ -1902,7 +1890,6 @@ class MainActivity : AppCompatActivity() {
     private fun onModeSwitched(oldMode: Mode, newMode: Mode) {
         layoutConnectedDevicesContainer.removeAllViews()
         if (oldMode == Mode.RECEIVER && newMode == Mode.TRANSMITTER) {
-            com.example.audiostreamer.node.discovery.HatBlePresenceProvider.stopAdvertising()
             BleDiscoveryManager.stopAdvertising()
 
             // 1. If receiver autonomous P2P group was active, tear it down
@@ -2206,7 +2193,7 @@ class MainActivity : AppCompatActivity() {
         // BLE
         if (hasBle) {
             badgeTransportBle.visibility = View.VISIBLE
-            val isBleScanning = com.example.audiostreamer.node.discovery.HatBlePresenceProvider.isScanning.value
+            val isBleScanning = BleDiscoveryManager.isScanning.value || BleDiscoveryManager.isAdvertising.value
             badgeTransportBle.setTextColor(
                 ContextCompat.getColor(this, if (isBleScanning) R.color.status_green else R.color.pill_text)
             )

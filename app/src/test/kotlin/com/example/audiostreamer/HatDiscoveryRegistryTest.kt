@@ -10,11 +10,9 @@ import com.example.audiostreamer.node.NodeInfo
 import com.example.audiostreamer.node.NodeState
 import com.example.audiostreamer.node.NodeTransportType
 import com.example.audiostreamer.node.StreamRole
-import com.example.audiostreamer.node.discovery.BlePresenceNode
 import com.example.audiostreamer.node.discovery.DiscoveredEndpoint
 import com.example.audiostreamer.node.discovery.DiscoveredNodeEntry
 import com.example.audiostreamer.node.discovery.DiscoverySource
-import com.example.audiostreamer.node.discovery.HatBlePresenceProvider
 import com.example.audiostreamer.node.discovery.HatDiscoveryRegistry
 import com.example.audiostreamer.node.discovery.HatNfcBootstrapPayload
 import com.example.audiostreamer.node.discovery.HatNfcBootstrapProvider
@@ -37,7 +35,6 @@ class HatDiscoveryRegistryTest {
     fun setUp() {
         HatDiscoveryRegistry.clear()
         HatLinkManager.clear()
-        HatBlePresenceProvider.clearDiscoveredNodes()
         HatNfcBootstrapProvider.clearDiscoveredNodes()
     }
 
