@@ -64,13 +64,6 @@ class AudioSinkService : Service() {
         var onMediaMetadataChanged: ((title: String, artist: String, album: String, isPlaying: Boolean, art: android.graphics.Bitmap?) -> Unit)? = null
 
         /**
-         * Speaker-correction EQ for this device's output. Applied on the playback thread after
-         * decode, so the encoder on the sending device never sees an equalized signal and every
-         * receiver can be tuned independently.
-         */
-        val playbackEqualizer = Equalizer12Band()
-
-        /**
          * Obtains an immediate, thread-safe snapshot of the receiver's runtime diagnostics
          * without acquiring audio playback locks or allocating memory on audio threads.
          *
@@ -231,7 +224,6 @@ class AudioSinkService : Service() {
         super.onCreate()
         currentInstance = this
         createNotificationChannel()
-        playbackEqualizer.loadFromPreferences(getSharedPreferences("stream_prefs", Context.MODE_PRIVATE))
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -421,8 +413,6 @@ class AudioSinkService : Service() {
             requestedPerformanceMode = perfMode
             currentBufferSizeInBytes = bufferSize
         }
-
-        playbackEqualizer.sampleRate = sampleRate
 
         if (oldTrack != null) {
             Thread({
@@ -1709,13 +1699,6 @@ class AudioSinkService : Service() {
         val bytesPerFrame = if (currentEncoding == AudioFormat.ENCODING_PCM_24BIT_PACKED) 6 else 4
         val safeLen = (length / bytesPerFrame) * bytesPerFrame
         if (safeLen <= 0) return
-        if (playbackEqualizer.isEnabled) {
-            if (bytesPerFrame == 6) {
-                playbackEqualizer.process24BitStereo(buffer, 0, safeLen)
-            } else {
-                playbackEqualizer.process16BitStereo(buffer, 0, safeLen)
-            }
-        }
         val startNs = SystemClock.elapsedRealtimeNanos()
         try {
             val written = track.write(buffer, 0, safeLen, AudioTrack.WRITE_BLOCKING)
