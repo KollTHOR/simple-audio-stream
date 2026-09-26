@@ -18,7 +18,6 @@ import com.example.audiostreamer.node.transport.LanTransport
 import com.example.audiostreamer.node.transport.NfcBootstrapTransport
 import com.example.audiostreamer.node.transport.TransportAddress
 import com.example.audiostreamer.node.transport.TransportState
-import com.example.audiostreamer.node.transport.WifiAwareTransport
 import com.example.audiostreamer.node.transport.WifiDirectTransport
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -34,7 +33,7 @@ class HatTransportTest {
 
     @Test
     fun testTransportTypesClassification() {
-        // Requirement: LAN, WIFI_DIRECT, WIFI_AWARE are high-bandwidth IP audio transports
+        // LAN and Wi-Fi Direct are the high-bandwidth IP audio transports.
         assertTrue(HatTransportType.LAN.isAudioTransport)
         assertTrue(HatTransportType.LAN.isIpBased)
         assertFalse(HatTransportType.LAN.isBootstrapOnly)
@@ -42,10 +41,6 @@ class HatTransportTest {
         assertTrue(HatTransportType.WIFI_DIRECT.isAudioTransport)
         assertTrue(HatTransportType.WIFI_DIRECT.isIpBased)
         assertFalse(HatTransportType.WIFI_DIRECT.isBootstrapOnly)
-
-        assertTrue(HatTransportType.WIFI_AWARE.isAudioTransport)
-        assertTrue(HatTransportType.WIFI_AWARE.isIpBased)
-        assertFalse(HatTransportType.WIFI_AWARE.isBootstrapOnly)
 
         // Requirement: BLE and NFC are NOT audio transports. They are discovery/bootstrap mechanisms.
         assertFalse("BLE is NOT an audio transport", HatTransportType.BLE.isAudioTransport)
@@ -59,7 +54,6 @@ class HatTransportTest {
         // Verify mapping to NodeTransportType
         assertEquals(NodeTransportType.LOCAL_WIFI, HatTransportType.LAN.toNodeTransportType())
         assertEquals(NodeTransportType.WIFI_DIRECT, HatTransportType.WIFI_DIRECT.toNodeTransportType())
-        assertEquals(NodeTransportType.WIFI_AWARE, HatTransportType.WIFI_AWARE.toNodeTransportType())
         assertEquals(NodeTransportType.BLUETOOTH_LE, HatTransportType.BLE.toNodeTransportType())
         assertEquals(NodeTransportType.NFC, HatTransportType.NFC_BOOTSTRAP.toNodeTransportType())
     }
@@ -150,25 +144,6 @@ class HatTransportTest {
 
         wifiDirectTransport.close()
         assertEquals(TransportState.CLOSED, wifiDirectTransport.state)
-    }
-
-    @Test
-    fun testWifiAwareTransportRejection() {
-        val wifiAwareTransport = WifiAwareTransport()
-        assertEquals(HatTransportType.WIFI_AWARE, wifiAwareTransport.type)
-        assertFalse("Wi-Fi Aware not implemented yet", wifiAwareTransport.isAvailable)
-        assertEquals(TransportState.UNAVAILABLE, wifiAwareTransport.state)
-
-        val connectResult = wifiAwareTransport.connect(TransportAddress("192.168.1.1", 19850))
-        assertTrue(connectResult.isFailure)
-        assertTrue(connectResult.exceptionOrNull() is UnsupportedOperationException)
-
-        val listenResult = wifiAwareTransport.listen(19850)
-        assertTrue(listenResult.isFailure)
-        assertTrue(listenResult.exceptionOrNull() is UnsupportedOperationException)
-
-        val diag = wifiAwareTransport.getDiagnostics()
-        assertEquals("NOT_IMPLEMENTED", diag["status"])
     }
 
     @Test
@@ -271,7 +246,6 @@ class HatTransportTest {
         val diagSnapshot = HatTransportRegistry.getDiagnosticsSnapshot()
         assertTrue(diagSnapshot.containsKey("LAN"))
         assertTrue(diagSnapshot.containsKey("WIFI_DIRECT"))
-        assertTrue(diagSnapshot.containsKey("WIFI_AWARE"))
         assertTrue(diagSnapshot.containsKey("BLE"))
         assertTrue(diagSnapshot.containsKey("NFC_BOOTSTRAP"))
 

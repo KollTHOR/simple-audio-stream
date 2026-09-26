@@ -291,7 +291,7 @@ object HatDiagnostics {
 
     /** Ordered sections that make up the diagnostic snapshot. Providers are optional per section. */
     private val SNAPSHOT_SECTIONS = listOf(
-        "NODE", "CAPABILITIES", "TRANSPORTS", "LAN_DISCOVERY", "WIFI_DIRECT_DISCOVERY", "WIFI_AWARE_DISCOVERY", "BLE_PRESENCE", "NFC_BOOTSTRAP", "DISCOVERY_REGISTRY", "LINKS", "STREAMS", "CONFIG", "GENERATION", "TX", "RX", "CAPTURE", "JITTER", "PLAYBACK", "RECEIVERS"
+        "NODE", "CAPABILITIES", "TRANSPORTS", "LAN_DISCOVERY", "WIFI_DIRECT_DISCOVERY", "BLE_PRESENCE", "NFC_BOOTSTRAP", "DISCOVERY_REGISTRY", "LINKS", "STREAMS", "CONFIG", "GENERATION", "TX", "RX", "CAPTURE", "JITTER", "PLAYBACK", "RECEIVERS"
     )
 
     @Volatile
@@ -384,18 +384,18 @@ object HatDiagnostics {
             }
         }
         registerSection("WIFI_DIRECT_DISCOVERY") {
-            try {
-                com.example.audiostreamer.node.discovery.WifiDirectDiscoveryProvider.getDiagnosticsSnapshot()
-            } catch (e: Exception) {
-                emptyMap()
-            }
-        }
-        registerSection("WIFI_AWARE_DISCOVERY") {
-            try {
-                com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.getDiagnosticsSnapshot()
-            } catch (e: Exception) {
-                emptyMap()
-            }
+            linkedMapOf(
+                "supported" to com.example.audiostreamer.WifiDirectManager.isP2pSupported.value,
+                "enabled" to com.example.audiostreamer.WifiDirectManager.isP2pEnabled.value,
+                "groupCreated" to com.example.audiostreamer.WifiDirectManager.isGroupCreated.value,
+                "connected" to com.example.audiostreamer.WifiDirectManager.isConnected.value,
+                "scanningPeers" to com.example.audiostreamer.WifiDirectManager.isScanningPeers.value,
+                "status" to com.example.audiostreamer.WifiDirectManager.statusMessage.value,
+                "peerCount" to com.example.audiostreamer.WifiDirectManager.discoveredPeers.value.size,
+                "peers" to com.example.audiostreamer.WifiDirectManager.discoveredPeers.value.map {
+                    "${it.deviceName} (${it.deviceAddress}) status=${it.status}"
+                }
+            )
         }
         registerSection("BLE_PRESENCE") {
             try {

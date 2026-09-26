@@ -51,6 +51,14 @@ class NetworkUtilsConnectivityTest {
     }
 
     @Test
+    fun testP2pNetworkInterfaceIsNotClassifiedAsLan() {
+        assertTrue(NetworkUtils.isP2pInterfaceName("p2p-wlan0-0"))
+        assertTrue(NetworkUtils.isP2pInterfaceName("P2P0"))
+        assertFalse(NetworkUtils.isP2pInterfaceName("wlan0"))
+        assertFalse(NetworkUtils.isP2pInterfaceName(null))
+    }
+
+    @Test
     fun testFindMatchingLocalIpPrefersP2pWhenTargetIsP2p() {
         val target = "192.168.49.1"
         val matched = NetworkUtils.findMatchingLocalIp(target)

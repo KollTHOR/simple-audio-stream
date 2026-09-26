@@ -13,7 +13,7 @@ import java.util.UUID
 enum class TransportAvailability {
     /** The transport is reachable, verified, and ready for connection. */
     AVAILABLE,
-    /** The transport is being probed or negotiated (e.g. Wi-Fi Aware attach, P2P discovery). */
+    /** The transport is being probed or negotiated (for example, Wi-Fi Direct discovery). */
     PROBING,
     /** The transport was previously established but is experiencing degradation or packet loss. */
     DEGRADED,
@@ -27,7 +27,7 @@ enum class TransportAvailability {
  * A concrete candidate transport evaluated for establishing a [HatLink] to a specific remote Node.
  *
  * **Architecture Rules:**
- * - Candidate transports for audio links are strictly: `LAN`, `WIFI_AWARE`, `WIFI_DIRECT`.
+ * - Candidate transports for audio links are strictly: `LAN`, `WIFI_DIRECT`.
  * - BLE and NFC are non-audio discovery/bootstrap mechanisms and must NOT be used as audio transport candidates.
  */
 data class TransportCandidate(
@@ -43,7 +43,7 @@ data class TransportCandidate(
 ) {
     init {
         require(type.isAudioTransport) {
-            "TransportCandidate type must be a high-bandwidth audio transport (LAN, WIFI_AWARE, WIFI_DIRECT). $type is bootstrap/discovery only."
+            "TransportCandidate type must be a high-bandwidth audio transport (LAN, WIFI_DIRECT). $type is bootstrap/discovery only."
         }
     }
 
@@ -86,24 +86,19 @@ enum class TransportPriority(
     override val preferredOrder: List<HatTransportType>
 ) : TransportPriorityPolicy {
     /**
-     * Priority: Wi-Fi Aware -> Wi-Fi Direct -> LAN.
+     * Priority: Wi-Fi Direct -> LAN.
      */
-    WIFI_AWARE_FIRST(listOf(HatTransportType.WIFI_AWARE, HatTransportType.WIFI_DIRECT, HatTransportType.LAN)),
+    WIFI_DIRECT_FIRST(listOf(HatTransportType.WIFI_DIRECT, HatTransportType.LAN)),
 
     /**
-     * Priority: Wi-Fi Direct -> Wi-Fi Aware -> LAN.
+     * Priority: LAN -> Wi-Fi Direct.
      */
-    WIFI_DIRECT_FIRST(listOf(HatTransportType.WIFI_DIRECT, HatTransportType.WIFI_AWARE, HatTransportType.LAN)),
+    LAN_FIRST(listOf(HatTransportType.LAN, HatTransportType.WIFI_DIRECT)),
 
     /**
-     * Priority: LAN -> Wi-Fi Aware -> Wi-Fi Direct.
+     * Balanced default policy prefers an available local network, then Wi-Fi Direct.
      */
-    LAN_FIRST(listOf(HatTransportType.LAN, HatTransportType.WIFI_AWARE, HatTransportType.WIFI_DIRECT)),
-
-    /**
-     * Balanced default policy preferring direct high-bandwidth paths: Wi-Fi Aware -> Wi-Fi Direct -> LAN.
-     */
-    BALANCED(listOf(HatTransportType.WIFI_AWARE, HatTransportType.WIFI_DIRECT, HatTransportType.LAN));
+    BALANCED(listOf(HatTransportType.LAN, HatTransportType.WIFI_DIRECT));
 
     companion object {
         val DEFAULT = BALANCED

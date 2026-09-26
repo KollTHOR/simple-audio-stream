@@ -6,7 +6,7 @@ import java.net.DatagramSocket
 /**
  * IP-based high-bandwidth audio transport abstraction.
  *
- * Unifies normal Wi-Fi LAN, Wi-Fi Direct, and future Wi-Fi Aware.
+ * Unifies normal Wi-Fi LAN and Wi-Fi Direct.
  * The Link layer exposes the same interface regardless of the underlying IP vector.
  */
 interface HatIpTransport : HatTransport {

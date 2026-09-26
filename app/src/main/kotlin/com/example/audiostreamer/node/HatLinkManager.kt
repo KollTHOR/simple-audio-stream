@@ -65,13 +65,13 @@ object HatLinkManager {
 
     /**
      * Sets or updates candidate audio transports for the given remote node.
-     * Enforces that all candidates are high-bandwidth audio transports (LAN, WIFI_AWARE, WIFI_DIRECT).
+     * Enforces that all candidates are high-bandwidth audio transports (LAN, WIFI_DIRECT).
      * BLE and NFC are rejected.
      */
     fun setNodeCandidates(remoteNode: NodeInfo, candidates: List<TransportCandidate>) {
         candidates.forEach {
             require(it.type.isAudioTransport) {
-                "Transport ${it.type} is not an audio transport. Only high-bandwidth transports (LAN, WIFI_AWARE, WIFI_DIRECT) can be candidates."
+                "Transport ${it.type} is not an audio transport. Only high-bandwidth transports (LAN, WIFI_DIRECT) can be candidates."
             }
         }
         val context = nodeContexts.computeIfAbsent(remoteNode.id) {
@@ -98,28 +98,7 @@ object HatLinkManager {
         synchronized(lock) {
             val candidateList = mutableListOf<TransportCandidate>()
 
-            // 1. Wi-Fi Aware
-            val wifiAwareEp = entry.getWifiAwareEndpoint()
-            if (wifiAwareEp != null || entry.hasTransport(NodeTransportType.WIFI_AWARE)) {
-                val availability = when {
-                    wifiAwareEp?.address != null -> TransportAvailability.AVAILABLE
-                    entry.hasTransport(NodeTransportType.WIFI_AWARE) -> TransportAvailability.PROBING
-                    else -> TransportAvailability.UNAVAILABLE
-                }
-                candidateList.add(
-                    TransportCandidate(
-                        type = HatTransportType.WIFI_AWARE,
-                        availability = availability,
-                        endpointAddress = wifiAwareEp?.address,
-                        endpointPort = wifiAwareEp?.port ?: AudioConfig.DEFAULT_PORT,
-                        isDirect = true,
-                        lastVerifiedEpochMs = wifiAwareEp?.lastSeenEpochMs ?: entry.lastSeenEpochMs,
-                        details = wifiAwareEp?.details ?: emptyMap()
-                    )
-                )
-            }
-
-            // 2. Wi-Fi Direct
+            // 1. Wi-Fi Direct
             val wifiDirectEp = entry.getWifiDirectEndpoint()
             if (wifiDirectEp != null || entry.hasTransport(NodeTransportType.WIFI_DIRECT)) {
                 val availability = when {
@@ -140,7 +119,7 @@ object HatLinkManager {
                 )
             }
 
-            // 3. LAN
+            // 2. LAN
             val lanEp = entry.getLanEndpoint()
             if (lanEp != null || entry.hasTransport(NodeTransportType.LOCAL_WIFI)) {
                 val isLanAvail = com.example.audiostreamer.NetworkUtils.isLanAvailable()

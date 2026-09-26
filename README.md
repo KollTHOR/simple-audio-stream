@@ -13,7 +13,7 @@ Simple Audio Stream sends audio playing on one Android device to another device 
 - Can show track information and album artwork on the receiver when optional Notification access is enabled.
 - Includes an in-app update center for stable and nightly builds.
 
-Bluetooth Low Energy and Wi-Fi Aware can help discover or connect supported devices. NFC is an optional tap-to-bootstrap feature on supported devices; it does not carry the audio stream.
+Bluetooth Low Energy is optional discovery only; Wi-Fi Direct is the router-free audio connection. NFC is an optional tap-to-bootstrap feature on supported devices and does not carry the audio stream.
 
 ## Install
 
@@ -35,10 +35,10 @@ Bluetooth Low Energy and Wi-Fi Aware can help discover or connect supported devi
 
 ### With Wi-Fi Direct
 
-1. On the receiving device, select **Receive** and enable its Wi-Fi Direct option.
+1. On the receiving device, select **Receive**. If it is not connected to a local Wi-Fi network, the app starts a Wi-Fi Direct group automatically.
 2. Grant the nearby Wi-Fi/location permissions Android requests. Some devices also require Location to be turned on in Android settings for Wi-Fi Direct discovery.
-3. On the transmitting device, scan for the receiver and connect. Follow any Wi-Fi Direct connection prompt shown by Android.
-4. Start streaming and approve Android's system audio-sharing prompt.
+3. On the transmitting device, tap **Scan**. The receiver should appear in the device list; select it and accept Android's Wi-Fi Direct connection prompt.
+4. Tap **Start Streaming** and approve Android's system audio-sharing prompt.
 
 Tap **Stop Streaming** or **Stop Listening** to end a session.
 
@@ -52,7 +52,7 @@ Android requests permissions when you use the feature that needs them. You do no
 |---|---|---|
 | **Microphone** (`RECORD_AUDIO`) | When transmitting | Android requires this permission for playback capture. The app captures eligible audio playing on the device—not sound from the room. Android separately asks you to approve system audio sharing when you start a stream. |
 | **Notifications** (`POST_NOTIFICATIONS`, Android 13+) | When starting a transmitter or receiver | Allows Android to show the ongoing streaming/playback notification and its controls. On earlier Android versions, the system notification appears without this runtime prompt. |
-| **Nearby Wi-Fi devices** (`NEARBY_WIFI_DEVICES`, Android 13+) | When using Wi-Fi Direct or Wi-Fi Aware | Allows Android's nearby Wi-Fi discovery and connection features. |
+| **Nearby Wi-Fi devices** (`NEARBY_WIFI_DEVICES`, Android 13+) | When using Wi-Fi Direct | Allows Android's nearby Wi-Fi discovery and connection features. |
 | **Location** (`ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`) | When discovering with Wi-Fi Direct; also used for Bluetooth discovery on older Android versions | Android requires location permission for some nearby-device discovery APIs. The app uses it for discovery, not to include location in the audio stream. Some Android devices also require the system Location setting to be on for Wi-Fi Direct discovery. |
 | **Bluetooth scan, advertise, and connect** (Android 12+) | When using Bluetooth Low Energy discovery | Lets the app find and announce nearby Simple Audio Stream devices. On Android 11 and earlier, the app uses the older Bluetooth permissions and Location permission instead. Bluetooth is for discovery, not audio transport. |
 
@@ -74,7 +74,7 @@ These permissions do not normally show a runtime prompt:
 |---|---|
 | `INTERNET` | Sends and receives audio/control packets on the local network and connects to GitHub for the update center. |
 | `ACCESS_NETWORK_STATE`, `ACCESS_WIFI_STATE` | Checks network availability and Wi-Fi state so devices can discover and connect to each other. |
-| `CHANGE_WIFI_STATE` | Supports Wi-Fi Direct/Wi-Fi Aware connection setup. |
+| `CHANGE_WIFI_STATE` | Supports Wi-Fi Direct connection setup. |
 | `CHANGE_WIFI_MULTICAST_STATE` | Lets the receiver listen for local-network discovery broadcasts. |
 | `WAKE_LOCK` | Keeps the CPU awake during an active stream, including with the screen off. |
 | `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PROJECTION`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK` | Let Android keep audio capture and playback running as visible foreground services. |

@@ -15,7 +15,6 @@ enum class NodeTransportType {
     WIFI_DIRECT,
     BLUETOOTH_LE,
     CELLULAR,
-    WIFI_AWARE,
     NFC
 }
 

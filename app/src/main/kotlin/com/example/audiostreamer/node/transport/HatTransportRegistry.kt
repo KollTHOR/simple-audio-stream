@@ -14,14 +14,12 @@ import com.example.audiostreamer.WifiDirectManager
 object HatTransportRegistry {
     private val lanTransportInstance = LanTransport()
     private val wifiDirectTransportInstance = WifiDirectTransport()
-    private val wifiAwareTransportInstance = WifiAwareTransport()
     private val bleTransportInstance = BleTransport()
     private val nfcBootstrapTransportInstance = NfcBootstrapTransport()
 
     fun getTransport(type: HatTransportType): HatTransport = when (type) {
         HatTransportType.LAN -> lanTransportInstance
         HatTransportType.WIFI_DIRECT -> wifiDirectTransportInstance
-        HatTransportType.WIFI_AWARE -> wifiAwareTransportInstance
         HatTransportType.BLE -> bleTransportInstance
         HatTransportType.NFC_BOOTSTRAP -> nfcBootstrapTransportInstance
     }
@@ -29,7 +27,6 @@ object HatTransportRegistry {
     fun getIpTransport(type: HatTransportType): HatIpTransport = when (type) {
         HatTransportType.LAN -> lanTransportInstance
         HatTransportType.WIFI_DIRECT -> wifiDirectTransportInstance
-        HatTransportType.WIFI_AWARE -> wifiAwareTransportInstance
         else -> throw IllegalArgumentException("Transport type $type is not an IP audio transport")
     }
 
@@ -37,8 +34,8 @@ object HatTransportRegistry {
      * Determines and returns the appropriate IP-based audio transport based on the remote address
      * or active Wi-Fi Direct connection status.
      *
-     * Invariant: The Link layer does not care whether the IP network is normal LAN,
-     * Wi-Fi Direct, or Wi-Fi Aware. It receives a unified [HatIpTransport] interface.
+     * Invariant: The Link layer does not care whether the IP network is normal LAN
+     * or Wi-Fi Direct. It receives a unified [HatIpTransport] interface.
      */
     fun selectBestAudioTransport(remoteAddress: String? = null): HatIpTransport {
         val isDirectP2p = remoteAddress?.startsWith("192.168.49.") == true ||
@@ -53,7 +50,6 @@ object HatTransportRegistry {
     fun allTransports(): List<HatTransport> = listOf(
         lanTransportInstance,
         wifiDirectTransportInstance,
-        wifiAwareTransportInstance,
         bleTransportInstance,
         nfcBootstrapTransportInstance
     )

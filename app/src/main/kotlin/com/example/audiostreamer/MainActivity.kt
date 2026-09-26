@@ -58,7 +58,6 @@ import java.util.UUID
 import com.example.audiostreamer.node.LocalNodeManager
 import com.example.audiostreamer.node.NodeTransportType
 import com.example.audiostreamer.node.discovery.LanDiscoveryProvider
-import com.example.audiostreamer.node.discovery.WifiDirectDiscoveryProvider
 import com.example.audiostreamer.node.discovery.HatNfcBootstrapProvider
 import com.example.audiostreamer.node.discovery.HatDiscoveryRegistry
 import com.example.audiostreamer.node.discovery.NfcBootstrapState
@@ -79,7 +78,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var layoutTransportBadges: ChipGroup
     private lateinit var badgeTransportLan: Chip
     private lateinit var badgeTransportP2p: Chip
-    private lateinit var badgeTransportNan: Chip
     private lateinit var badgeTransportBle: Chip
     private lateinit var badgeTransportNfc: Chip
 
@@ -174,6 +172,8 @@ class MainActivity : AppCompatActivity() {
     private var detectedLocalIp: String? = null
     private var isStarting: Boolean = false
     private var isStopping: Boolean = false
+    private var receiverP2pGroupStarting: Boolean = false
+    private var resumeOfflineDiscoveryScanAfterPermission: Boolean = false
 
     private val screenCaptureLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -280,11 +280,15 @@ class MainActivity : AppCompatActivity() {
         if (allGranted) {
             if (currentMode == Mode.RECEIVER && switchReceiverP2p.isChecked) {
                 startReceiverP2pGroup()
+            } else if (currentMode == Mode.TRANSMITTER && resumeOfflineDiscoveryScanAfterPermission) {
+                resumeOfflineDiscoveryScanAfterPermission = false
+                startUnifiedScan()
             } else if (currentMode == Mode.TRANSMITTER && currentConnType == ConnectionType.WIFI_DIRECT) {
                 WifiDirectManager.discoverPeers(this)
                 Toast.makeText(this, "Scanning for Wi-Fi Direct receivers...", Toast.LENGTH_SHORT).show()
             }
         } else {
+            resumeOfflineDiscoveryScanAfterPermission = false
             Toast.makeText(this, "Nearby Wi-Fi / Location permission required for Wi-Fi Direct", Toast.LENGTH_SHORT).show()
             if (currentMode == Mode.RECEIVER) {
                 switchReceiverP2p.isChecked = false
@@ -302,6 +306,7 @@ class MainActivity : AppCompatActivity() {
         if (!isLocationServiceEnabled()) {
             AppLogger.w("MainActivity", "Location Service (GPS) is DISABLED. Android requires Location to be ON for Wi-Fi Direct peer discovery.")
             Toast.makeText(this, "Please turn ON Location (GPS) in phone settings for Wi-Fi Direct", Toast.LENGTH_LONG).show()
+            return false
         }
 
         val permissions = mutableListOf<String>()
@@ -334,20 +339,24 @@ class MainActivity : AppCompatActivity() {
 
     private fun startReceiverP2pGroup() {
         if (!checkAndRequestP2pPermissions()) return
+        if (receiverP2pGroupStarting) return
+        if (WifiDirectManager.isGroupCreated.value) {
+            publishReceiverP2pCredentials()
+            return
+        }
+        receiverP2pGroupStarting = true
         layoutReceiverP2pInfo.visibility = View.VISIBLE
         tvReceiverP2pStatus.text = "Initializing Autonomous Wi-Fi Direct Group..."
         AppLogger.i("MainActivity", "Starting Autonomous Wi-Fi Direct Group...")
         WifiDirectManager.createAutonomousGroup(this) { success, ssid, goIp ->
             runOnUiThread {
+                receiverP2pGroupStarting = false
                 if (success) {
-                    layoutReceiverP2pInfo.visibility = View.VISIBLE
-                    tvP2pSsid.text = "Group SSID: ${ssid ?: WifiDirectManager.P2P_DEFAULT_SSID}"
-                    val pass = WifiDirectManager.networkPassphrase.value ?: WifiDirectManager.P2P_DEFAULT_PASSPHRASE
-                    tvP2pPassphrase.text = "Passphrase: $pass"
-                    tvP2pIp.text = "Direct IP: $goIp (Port 50005)"
-                    tvReceiverP2pStatus.text = "Broadcasting & Listening for Transmitter Connections"
+                    publishReceiverP2pCredentials(ssid, goIp)
                     AppLogger.i("MainActivity", "Autonomous Wi-Fi Direct Active: SSID=$ssid, Passphrase=******, IP=$goIp")
-                    Toast.makeText(this, "Wi-Fi Direct Active: $ssid", Toast.LENGTH_SHORT).show()
+                    if (NetworkUtils.isLanAvailable(this)) {
+                        Toast.makeText(this, "Wi-Fi Direct Active: $ssid", Toast.LENGTH_SHORT).show()
+                    }
                 } else {
                     switchReceiverP2p.isChecked = false
                     layoutReceiverP2pInfo.visibility = View.GONE
@@ -357,6 +366,35 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    private fun publishReceiverP2pCredentials(
+        ssid: String? = WifiDirectManager.networkSsid.value,
+        goIp: String? = WifiDirectManager.groupOwnerIp.value
+    ) {
+        val resolvedSsid = ssid ?: WifiDirectManager.P2P_DEFAULT_SSID
+        val resolvedPassphrase = WifiDirectManager.networkPassphrase.value ?: WifiDirectManager.P2P_DEFAULT_PASSPHRASE
+        val resolvedGoIp = goIp ?: WifiDirectManager.DEFAULT_GO_IP
+
+        layoutReceiverP2pInfo.visibility = View.VISIBLE
+        tvP2pSsid.text = "Group SSID: $resolvedSsid"
+        tvP2pPassphrase.text = "Passphrase: $resolvedPassphrase"
+        tvP2pIp.text = "Direct IP: $resolvedGoIp (Port 50005)"
+        tvReceiverP2pStatus.text = "Direct connection ready"
+
+        // Refresh the BLE beacon after group creation so fallback discovery includes
+        // the active Wi-Fi Direct credentials rather than advertising an empty group.
+        if (WifiDirectManager.isGroupCreated.value && BleDiscoveryManager.hasPermissions(this)) {
+            BleDiscoveryManager.stopAdvertising()
+            BleDiscoveryManager.startAdvertising(
+                context = this,
+                role = "receiver",
+                p2pSsid = resolvedSsid,
+                p2pPassphrase = resolvedPassphrase,
+                p2pGoIp = resolvedGoIp
+            )
+        }
+        updateReceiverDiscoverableBanner()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -385,7 +423,6 @@ class MainActivity : AppCompatActivity() {
         layoutTransportBadges = findViewById(R.id.layout_transport_badges)
         badgeTransportLan = findViewById(R.id.badge_transport_lan)
         badgeTransportP2p = findViewById(R.id.badge_transport_p2p)
-        badgeTransportNan = findViewById(R.id.badge_transport_nan)
         badgeTransportBle = findViewById(R.id.badge_transport_ble)
         badgeTransportNfc = findViewById(R.id.badge_transport_nfc)
 
@@ -569,9 +606,7 @@ class MainActivity : AppCompatActivity() {
             } else {
                 WifiDirectManager.removeGroup(this)
                 BleDiscoveryManager.stopAdvertising()
-                if (BleDiscoveryManager.hasPermissions(this)) {
-                    BleDiscoveryManager.startAdvertising(this, role = "receiver")
-                }
+                startReceiverBleAdvertisements()
                 layoutReceiverP2pInfo.visibility = View.GONE
                 tvReceiverP2pStatus.text = "Autonomous Wi-Fi Direct stopped"
             }
@@ -616,11 +651,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 launch {
                     LanDiscoveryProvider.discoveredEndpoints.collect {
-                        updateDiscoveredDevicesUi()
-                    }
-                }
-                launch {
-                    WifiDirectDiscoveryProvider.discoveredEndpoints.collect {
                         updateDiscoveredDevicesUi()
                     }
                 }
@@ -671,17 +701,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 launch {
-                    WifiDirectDiscoveryProvider.isScanning.collect {
-                        updateScanningIndicator()
-                    }
-                }
-                launch {
                     com.example.audiostreamer.node.discovery.HatBlePresenceProvider.isScanning.collect {
-                        updateScanningIndicator()
-                    }
-                }
-                launch {
-                    com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.isSubscribing.collect {
                         updateScanningIndicator()
                     }
                 }
@@ -865,8 +885,6 @@ class MainActivity : AppCompatActivity() {
         DiscoveryManager.stopDiscovery()
         DiscoveryManager.stopReceiverResponder()
         LanDiscoveryProvider.stopAll()
-        WifiDirectDiscoveryProvider.stopAll()
-        com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.stopAll()
         com.example.audiostreamer.node.discovery.HatBlePresenceProvider.stopAll()
         BleDiscoveryManager.stopScanning()
         BleDiscoveryManager.stopAdvertising()
@@ -881,8 +899,6 @@ class MainActivity : AppCompatActivity() {
                 // 1. Stop all receiver advertisements & responders
                 DiscoveryManager.stopReceiverResponder()
                 LanDiscoveryProvider.stopAdvertisement()
-                WifiDirectDiscoveryProvider.stopAdvertisement()
-                com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.stopPublishing()
                 BleDiscoveryManager.stopAdvertising()
                 com.example.audiostreamer.node.discovery.HatBlePresenceProvider.stopAdvertising()
 
@@ -894,46 +910,30 @@ class MainActivity : AppCompatActivity() {
                 com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.stopScan(this)
                 DiscoveryManager.stopDiscovery()
                 LanDiscoveryProvider.stopDiscovery()
-                WifiDirectDiscoveryProvider.stopDiscovery()
-                WifiDirectManager.stopPeerDiscovery(this)
-                com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.stopSubscribing()
                 BleDiscoveryManager.stopScanning()
                 com.example.audiostreamer.node.discovery.HatBlePresenceProvider.stopScanning()
 
-                // 2. Start continuous advertisements on ALL supported transports simultaneously
+                // Advertise on the local network. When offline, start a Wi-Fi Direct
+                // group so nearby transmitters have a real audio network to join.
                 val localNode = LocalNodeManager.getLocalNode()
                 val port = etPort.text.toString().toIntOrNull() ?: AudioConfig.DEFAULT_PORT
 
-                // LAN advertisement & responder
                 DiscoveryManager.startReceiverResponder(this, lifecycleScope)
                 LanDiscoveryProvider.advertiseNode(this, localNode, port)
 
-                // Wi-Fi Direct DNS-SD advertisement
-                if (checkAndRequestP2pPermissions()) {
-                    WifiDirectDiscoveryProvider.advertiseNode(this, localNode, port)
-                    if (!WifiDirectManager.isGroupCreated.value) {
-                        WifiDirectManager.discoverPeers(this)
+                if (DirectReceiverPolicy.shouldHostWifiDirectGroup(
+                        localLanAvailable = NetworkUtils.isLanAvailable(this),
+                        wifiDirectSupported = packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)
+                    )
+                ) {
+                    if (!switchReceiverP2p.isChecked) {
+                        switchReceiverP2p.isChecked = true
+                    } else if (!WifiDirectManager.isGroupCreated.value) {
+                        startReceiverP2pGroup()
                     }
                 }
 
-                // Wi-Fi Aware publish
-                com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.probeCapability(this)
-                com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.startPublishing(this)
-
-                // BLE HAT presence & legacy advertising
-                if (BleDiscoveryManager.hasPermissions(this)) {
-                    val ssid = WifiDirectManager.networkSsid.value
-                    val pass = WifiDirectManager.networkPassphrase.value
-                    val ip = WifiDirectManager.groupOwnerIp.value
-                    BleDiscoveryManager.startAdvertising(
-                        context = this,
-                        role = "receiver",
-                        p2pSsid = ssid,
-                        p2pPassphrase = pass,
-                        p2pGoIp = ip
-                    )
-                    com.example.audiostreamer.node.discovery.HatBlePresenceProvider.startAdvertising(this)
-                }
+                startReceiverBleAdvertisements()
             }
         }
         updateReceiverDiscoverableBanner()
@@ -952,13 +952,13 @@ class MainActivity : AppCompatActivity() {
         if (NetworkUtils.isLanAvailable(this)) {
             availableTransports.add("Local Wi-Fi")
         }
-        if (packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)) {
+        if (WifiDirectManager.isGroupCreated.value) {
             availableTransports.add("Wi-Fi Direct")
         }
-        if (com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.isSupported(this)) {
-            availableTransports.add("Aware")
-        }
-        if (packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE) && BleDiscoveryManager.hasPermissions(this)) {
+        if (WifiDirectManager.isGroupCreated.value &&
+            packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE) &&
+            BleDiscoveryManager.hasPermissions(this)
+        ) {
             availableTransports.add("Bluetooth")
         }
 
@@ -973,7 +973,7 @@ class MainActivity : AppCompatActivity() {
         }
         tvReceiverTransportsList?.text = transportsStr
 
-        val localIp = NetworkUtils.getLocalIpAddress() ?: "0.0.0.0"
+        val localIp = WifiDirectManager.groupOwnerIp.value ?: NetworkUtils.getLocalIpAddress() ?: "0.0.0.0"
         val port = etPort.text.toString().toIntOrNull() ?: AudioConfig.DEFAULT_PORT
         val localNodeId = try { LocalNodeManager.getLocalNode().id } catch (_: Exception) { "" }
         val idShort = if (localNodeId.isNotBlank()) " • ${localNodeId.takeLast(6)}" else ""
@@ -984,7 +984,36 @@ class MainActivity : AppCompatActivity() {
 
     private fun startUnifiedScan() {
         if (currentMode == Mode.RECEIVER) return
+        if (!NetworkUtils.isLanAvailable(this) &&
+            packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)
+        ) {
+            resumeOfflineDiscoveryScanAfterPermission = true
+            if (!checkAndRequestP2pPermissions()) return
+            resumeOfflineDiscoveryScanAfterPermission = false
+        }
         com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.startScan(this, lifecycleScope)
+    }
+
+    private fun startReceiverBleAdvertisements() {
+        if (currentMode != Mode.RECEIVER) return
+        if (BleDiscoveryManager.hasPermissions(this)) {
+            BleDiscoveryManager.startAdvertising(
+                context = this,
+                role = "receiver",
+                p2pSsid = WifiDirectManager.networkSsid.value,
+                p2pPassphrase = WifiDirectManager.networkPassphrase.value,
+                p2pGoIp = WifiDirectManager.groupOwnerIp.value
+            )
+        } else {
+            BleDiscoveryManager.stopAdvertising()
+        }
+        if (WifiDirectManager.isGroupCreated.value &&
+            packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
+        ) {
+            com.example.audiostreamer.node.discovery.HatBlePresenceProvider.startAdvertising(this)
+        } else {
+            com.example.audiostreamer.node.discovery.HatBlePresenceProvider.stopAdvertising()
+        }
     }
 
     private fun stopUnifiedScan() {
@@ -1011,7 +1040,6 @@ class MainActivity : AppCompatActivity() {
                 val phaseName = when (state.currentPhase) {
                     com.example.audiostreamer.node.discovery.DiscoveryScanPhase.LOCAL_WIFI -> "Local Wi-Fi"
                     com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_DIRECT -> "Wi-Fi Direct"
-                    com.example.audiostreamer.node.discovery.DiscoveryScanPhase.WIFI_AWARE -> "Wi-Fi Aware"
                     com.example.audiostreamer.node.discovery.DiscoveryScanPhase.BLE -> "Bluetooth"
                     else -> "Local Wi-Fi"
                 }
@@ -1097,7 +1125,6 @@ class MainActivity : AppCompatActivity() {
 
             val lanEp = regNode.getLanEndpoint()
             val wdEp = regNode.getWifiDirectEndpoint()
-            val awareEp = regNode.getWifiAwareEndpoint()
             val bleEp = regNode.getBleEndpoint()
             val nfcEp = regNode.getNfcEndpoint()
 
@@ -1571,6 +1598,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         val availableDevices = devices.filter { dev ->
+            if (!ConnectionRoutePolicy.isConnectable(
+                    lanAddress = dev.lanIp,
+                    hasWifiDirectPeer = dev.p2pPeer != null,
+                    p2pSsid = dev.p2pSsid,
+                    p2pPassphrase = dev.p2pPassphrase
+                )
+            ) return@filter false
+
             // Rule: CONNECTED / CONNECTING / DEGRADED Node must NOT appear in Available Devices.
             // Available: only DISCONNECTED nodes.
 
@@ -1698,7 +1733,6 @@ class MainActivity : AppCompatActivity() {
             val transportLabel = when (primarySource.uppercase()) {
                 "WIFI_DIRECT", "DIRECT" -> "Wi-Fi Direct"
                 "BLE" -> "Bluetooth"
-                "WIFI_AWARE", "AWARE" -> "Wi-Fi Aware"
                 else -> "Local Wi-Fi"
             }
             tvTransport.text = transportLabel
@@ -1833,7 +1867,6 @@ class MainActivity : AppCompatActivity() {
         if (!checkAndRequestP2pPermissions()) return
         currentConnType = ConnectionType.WIFI_DIRECT
         val connStartMs = System.currentTimeMillis()
-        val targetNodeId = dev.nodeId ?: dev.id
 
         if (!dev.p2pSsid.isNullOrEmpty()) {
             val pass = dev.p2pPassphrase ?: WifiDirectManager.P2P_DEFAULT_PASSPHRASE
@@ -1841,7 +1874,6 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Direct-linking to ${dev.displayName}...", Toast.LENGTH_SHORT).show()
             WifiDirectManager.connectWithCredentials(this, dev.p2pSsid, pass) { goIp ->
                 val durationMs = System.currentTimeMillis() - connStartMs
-                WifiDirectDiscoveryProvider.recordConnectionAttempt(targetNodeId, dev.p2pSsid, durationMs, true)
                 runOnUiThread {
                     etTargetIp.setText(goIp)
                     etPort.setText(dev.port.toString())
@@ -1855,7 +1887,6 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Connecting to ${dev.displayName}...", Toast.LENGTH_SHORT).show()
             WifiDirectManager.connectToPeer(this, dev.p2pPeer) { goIp ->
                 val durationMs = System.currentTimeMillis() - connStartMs
-                WifiDirectDiscoveryProvider.recordConnectionAttempt(targetNodeId, peerAddr, durationMs, true)
                 runOnUiThread {
                     etTargetIp.setText(goIp)
                     etPort.setText(dev.port.toString())
@@ -1864,8 +1895,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         } else {
-            val durationMs = System.currentTimeMillis() - connStartMs
-            WifiDirectDiscoveryProvider.recordConnectionAttempt(targetNodeId, "None", durationMs, false, "Missing credentials or P2P peer")
             Toast.makeText(this, "No Wi-Fi Direct credentials found for ${dev.displayName}", Toast.LENGTH_SHORT).show()
         }
     }
@@ -1873,7 +1902,6 @@ class MainActivity : AppCompatActivity() {
     private fun onModeSwitched(oldMode: Mode, newMode: Mode) {
         layoutConnectedDevicesContainer.removeAllViews()
         if (oldMode == Mode.RECEIVER && newMode == Mode.TRANSMITTER) {
-            com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider.stopPublishing()
             com.example.audiostreamer.node.discovery.HatBlePresenceProvider.stopAdvertising()
             BleDiscoveryManager.stopAdvertising()
 
@@ -2151,7 +2179,6 @@ class MainActivity : AppCompatActivity() {
     private fun updateTransportBadges() {
         val hasLan = NetworkUtils.getAllLocalIpAddresses().isNotEmpty()
         val hasP2p = packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)
-        val hasNan = packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)
         val hasBle = packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
         val nfcState = HatNfcBootstrapProvider.state.value
 
@@ -2174,17 +2201,6 @@ class MainActivity : AppCompatActivity() {
             )
         } else {
             badgeTransportP2p.visibility = View.GONE
-        }
-
-        // Wi-Fi Aware (NAN)
-        if (hasNan) {
-            badgeTransportNan.visibility = View.VISIBLE
-            val isNanActive = com.example.audiostreamer.node.HatLinkManager.activeLinks.value.any { it.hatTransportType == com.example.audiostreamer.node.transport.HatTransportType.WIFI_AWARE }
-            badgeTransportNan.setTextColor(
-                ContextCompat.getColor(this, if (isNanActive) R.color.status_green else R.color.pill_text)
-            )
-        } else {
-            badgeTransportNan.visibility = View.GONE
         }
 
         // BLE
@@ -2249,7 +2265,6 @@ class MainActivity : AppCompatActivity() {
         val transports = mutableListOf<String>()
         if (allIps.isNotEmpty()) transports.add("LAN (Local Network)")
         if (packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)) transports.add("Wi-Fi Direct (P2P)")
-        if (packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)) transports.add("Wi-Fi Aware (NAN)")
         if (packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)) transports.add("BLE Proximity")
         if (HatNfcBootstrapProvider.isSupported) transports.add("NFC Out-of-Band Bootstrap")
 
