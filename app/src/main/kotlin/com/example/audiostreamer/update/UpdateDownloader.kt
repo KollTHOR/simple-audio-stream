@@ -27,8 +27,8 @@ class UpdateDownloader(private val context: Context) {
     )
 
     /**
-     * Downloads an APK asset with progress reporting, verifies SHA-256 (if checksum asset exists),
-     * and ensures the APK belongs strictly to [EXPECTED_PACKAGE_NAME].
+     * Downloads an APK asset with progress reporting, requires a valid SHA-256 checksum,
+     * and verifies both package identity and signing identity before returning it.
      */
     suspend fun downloadAndVerify(
         release: GithubRelease,
@@ -98,33 +98,47 @@ class UpdateDownloader(private val context: Context) {
                 )
             }
 
-            // 2. Checksum verification
-            var checksumVerified = false
-            if (release.checksumAsset != null) {
-                val checksumText = fetchChecksumText(release.checksumAsset.downloadUrl)
-                if (!checksumText.isNullOrBlank()) {
-                    val matches = ChecksumVerifier.verify(destinationFile, checksumText)
-                    if (!matches) {
-                        val expected = ChecksumVerifier.parseExpectedHash(checksumText)
-                        val actual = ChecksumVerifier.calculateSha256(destinationFile)
-                        destinationFile.delete()
-                        return@withContext Result.failure(
-                            SecurityException("SHA-256 checksum mismatch!\nExpected: $expected\nActual: $actual")
-                        )
-                    }
-                    checksumVerified = true
-                }
-            }
+            // 2. Checksum verification is mandatory for release installs.
+            val checksumAsset = release.checksumAsset
+                ?: throw SecurityException("Release ${release.tagName} has no SHA-256 checksum asset.")
+            val checksumText = fetchChecksumText(checksumAsset.downloadUrl)
+                ?: throw SecurityException("Unable to download the SHA-256 checksum for ${release.tagName}.")
+            ChecksumVerifier.verifyRequired(destinationFile, checksumText)
 
-            // 3. Package Identity & Version Verification
+            // 3. Package, signing identity, and version verification
             val pm = context.packageManager
-            val pkgInfo = pm.getPackageArchiveInfo(destinationFile.absolutePath, 0)
+            val signingFlags = PackageManager.GET_SIGNING_CERTIFICATES
+            val pkgInfo = pm.getPackageArchiveInfo(destinationFile.absolutePath, signingFlags)
                 ?: run {
                     destinationFile.delete()
                     return@withContext Result.failure(
                         SecurityException("Package parser failed to read APK archive metadata.")
                     )
                 }
+
+            val archiveSigningInfo = pkgInfo.signingInfo
+            val installedSigningInfo = pm.getPackageInfo(context.packageName, signingFlags).signingInfo
+            val archiveCurrentSigners = archiveSigningInfo?.apkContentsSigners
+                ?.map { ApkSigningCertificateVerifier.fingerprint(it.toByteArray()) }
+                ?.toSet()
+                .orEmpty()
+            val archiveSigningHistory = archiveSigningInfo?.signingCertificateHistory
+                ?.map { ApkSigningCertificateVerifier.fingerprint(it.toByteArray()) }
+                ?.toSet()
+                .orEmpty()
+            val installedCurrentSigners = installedSigningInfo?.apkContentsSigners
+                ?.map { ApkSigningCertificateVerifier.fingerprint(it.toByteArray()) }
+                ?.toSet()
+                .orEmpty()
+
+            if (!ApkSigningCertificateVerifier.matchesInstalledSigner(
+                    archiveCurrentSigners = archiveCurrentSigners,
+                    archiveSigningHistory = archiveSigningHistory,
+                    installedCurrentSigners = installedCurrentSigners
+                )
+            ) {
+                throw SecurityException("Downloaded APK signing certificate does not match the installed app.")
+            }
 
             if (pkgInfo.packageName != EXPECTED_PACKAGE_NAME) {
                 destinationFile.delete()
@@ -148,7 +162,7 @@ class UpdateDownloader(private val context: Context) {
                     verifiedPackageName = pkgInfo.packageName,
                     archiveVersionCode = rawVersionCode,
                     archiveVersionName = versionName,
-                    isChecksumVerified = checksumVerified
+                    isChecksumVerified = true
                 )
             )
         } catch (e: Exception) {

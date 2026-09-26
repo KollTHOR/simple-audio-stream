@@ -1531,7 +1531,7 @@ class SettingsActivity : AppCompatActivity() {
             btnLatestAction.isEnabled = true
 
             result.onSuccess { downloadInfo ->
-                tvUpdateStatus.text = "Download verified (SHA-256: ${if (downloadInfo.isChecksumVerified) "Valid" else "N/A"}). Opening installer..."
+                tvUpdateStatus.text = "APK checksum and signing certificate verified. Opening installer..."
                 pendingInstallApk = downloadInfo.apkFile
 
                 val preCheck = updateInstaller.checkPreInstall(
