@@ -26,11 +26,9 @@ captures/
 *.class
 
 # Keystores & Certificates
-keystore/*
-!keystore/release.keystore
+keystore/
 *.jks
 *.keystore
-!keystore/release.keystore
 *.p12
 *.bks
 *.pem

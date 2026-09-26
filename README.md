@@ -131,11 +131,7 @@ Output APK:
 app/build/outputs/apk/release/app-release.apk
 ```
 
-> [!NOTE]
-> When private release keystore properties (`keystore.properties`) are not present in the workspace, Gradle automatically signs the release build with the standard debug key. This produces a valid, installable signed APK (`app-release.apk`) that updates seamlessly over existing debug installations without signature conflict.
-
-#### Optional: Custom Release Signing Key
-To sign with a custom private release key, copy `keystore.properties.example` to `keystore.properties` (gitignored) or set environment variables:
+Release builds require a private release keystore. Gradle never falls back to the debug key. For local builds, copy `keystore.properties.example` to the gitignored `keystore.properties` and fill in your own signing details, or set environment variables:
 ```bash
 export RELEASE_KEYSTORE_PATH="/path/to/your/release.keystore"
 export RELEASE_KEYSTORE_PASSWORD="your_keystore_password"
@@ -143,6 +139,30 @@ export RELEASE_KEY_ALIAS="your_key_alias"
 export RELEASE_KEY_PASSWORD="your_key_password"
 ./gradlew assembleRelease
 ```
+
+#### GitHub Actions Signing Secrets
+The stable and nightly workflows require these repository Actions secrets:
+
+- `RELEASE_KEYSTORE_BASE64`: Base64-encoded private keystore file
+- `RELEASE_KEYSTORE_PASSWORD`
+- `RELEASE_KEY_ALIAS`
+- `RELEASE_KEY_PASSWORD`
+
+Generate the key once outside the repository and keep a secure backup. The command prompts for the keystore and key passwords; save them for the corresponding Actions secrets:
+
+```bash
+mkdir -p "$HOME/.local/share/simple-audio-stream"
+keytool -genkeypair -v \
+  -keystore "$HOME/.local/share/simple-audio-stream/release.jks" \
+  -storetype JKS \
+  -alias simple-audio-stream \
+  -keyalg RSA -keysize 2048 -validity 10000
+base64 -w 0 "$HOME/.local/share/simple-audio-stream/release.jks"
+```
+
+Copy the final command's output into `RELEASE_KEYSTORE_BASE64`. In GitHub, add all four values under **Settings → Secrets and variables → Actions → New repository secret**. Use `simple-audio-stream` for `RELEASE_KEY_ALIAS`. The workflows decode the keystore into the runner's temporary directory and fail early if any secret is missing. Never commit the keystore or its passwords.
+
+Changing the signing certificate prevents Android from updating installations signed with the old certificate. If replacing an exposed signing key, existing users may need to export any needed settings, uninstall the current app, and install the new release.
 
 ### Running Unit Tests
 ```bash

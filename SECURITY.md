@@ -8,22 +8,24 @@ If you discover a security vulnerability in Simple Audio Stream, please report i
 
 ## Security Audit & Vulnerability Disclosures
 
-### Disclosure: Compromised Historical Release Signing Key (v1.6.3 - v1.8.5)
+### Disclosure: Exposed Release Signing Keystore
 
 #### Summary
-In commit `2287b3b3` (version v1.6.3), an Android keystore file (`keystore/release.keystore`) and its credentials (`storePassword = "android"`, `keyAlias = "androiddebugkey"`, `keyPassword = "android"`) were committed into the git repository to address in-app update signature mismatches. This keystore remained tracked in source control through version v1.8.5.
+In commit `2287b3b3` (version v1.6.3), an Android keystore and its credentials (`storePassword = "android"`, `keyAlias = "androiddebugkey"`, `keyPassword = "android"`) were committed into the git repository to address in-app update signature mismatches. The keystore remained tracked through v1.8.5. Although it was later removed from the working tree, commit `8268319` added a release keystore back to the repository for deterministic CI signing. The release workflows therefore had access to a signing key from the repository checkout even when no external signing secrets were configured.
 
 #### Risk Assessment & Impact
-Because the private signing key and passwords were exposed in a public Git repository:
+Because release signing material was exposed in repository history and a keystore was reintroduced into the tracked tree:
 - Anyone with access to the repository could extract the private key and sign arbitrary modified APKs with the identical signature.
-- An attacker could create a malicious APK that Android would treat as a valid upgrade to any existing installation of Simple Audio Stream (v1.6.3 through v1.8.5).
+- An attacker could create a malicious APK that Android would treat as a valid upgrade to installations signed by the exposed key.
 
 #### Remediation
-1. **Keystore Removed from Source Control**: The file `keystore/release.keystore` was untracked and permanently removed from repository tracking.
-2. **Git Ignore Updated**: All keystores (`*.keystore`, `*.jks`, `*.p12`, `*.bks`) and local properties files (`keystore.properties`, `signing.properties`) are strictly excluded in `.gitignore`.
-3. **Decoupled Signing Pipeline**: `app/build.gradle.kts` no longer contains hardcoded signing credentials. It reads signing keys from local gitignored files (`keystore.properties` / `local.properties`) or secure environment variables (`RELEASE_KEYSTORE_PATH`, etc.).
-4. **Graceful Build Fallback**: Debug builds continue to function without any special configuration. Release builds without configured credentials build unsigned APKs cleanly without failing.
-5. **Key Invalidation & Future Releases**: The historical signing key is permanently invalidated. All subsequent releases must be signed with a fresh, private release key. Users upgrading from v1.6.3 - v1.8.5 must uninstall the existing app before installing new releases.
+1. **Tracked Keystore Removed**: The current source tree no longer contains `keystore/release.keystore`. The exposed binary remains in Git history and must be treated as compromised; deleting it from the latest revision does not make it secret again.
+2. **No Release Fallback**: Gradle no longer falls back to a repository keystore or the Android debug key for release builds. Release packaging fails when signing credentials are absent.
+3. **Protected CI Signing**: Stable and nightly workflows require `RELEASE_KEYSTORE_BASE64`, `RELEASE_KEYSTORE_PASSWORD`, `RELEASE_KEY_ALIAS`, and `RELEASE_KEY_PASSWORD` Actions secrets. The workflows decode the keystore only into the runner's temporary directory. These secrets must be configured with a newly generated keystore before another release can be published.
+4. **Local Signing**: Developers may use a private keystore configured in gitignored `keystore.properties` or environment variables. Keystore files and signing properties are excluded from Git.
+5. **User Migration**: A new, unrelated signing certificate cannot update installations signed by the exposed key in place. Users on those builds will need to export any needed settings, uninstall, and install a release signed by the replacement key. Do not distribute another APK signed by the exposed key as the long-term fix.
+
+History rewriting can remove the keystore blob from future clones, but cannot revoke copies already obtained; key replacement is still required.
 
 ---
 
