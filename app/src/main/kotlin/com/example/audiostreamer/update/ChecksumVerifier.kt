@@ -42,4 +42,17 @@ object ChecksumVerifier {
         val actual = calculateSha256(file)
         return expected.equals(actual, ignoreCase = true)
     }
+
+    /**
+     * Verifies a checksum required for installation. Missing, malformed, or mismatched
+     * checksum data is an error rather than a reason to continue without verification.
+     */
+    fun verifyRequired(file: File, expectedRawHashOrText: String?) {
+        val expected = expectedRawHashOrText?.let(::parseExpectedHash)
+            ?: throw SecurityException("Missing or invalid SHA-256 checksum")
+        val actual = calculateSha256(file)
+        if (!expected.equals(actual, ignoreCase = true)) {
+            throw SecurityException("SHA-256 checksum mismatch. Expected: $expected; actual: $actual")
+        }
+    }
 }

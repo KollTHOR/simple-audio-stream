@@ -518,6 +518,40 @@ class UpdateCenterTest {
     }
 
     @Test
+    fun checksumVerifier_requiredChecksumAcceptsValidHashAndChecksumFileFormat() {
+        val testFile = tempFolder.newFile("required_checksum.apk")
+        testFile.writeText("release payload")
+        val expectedHash = ChecksumVerifier.calculateSha256(testFile)
+
+        ChecksumVerifier.verifyRequired(testFile, expectedHash)
+        ChecksumVerifier.verifyRequired(testFile, "$expectedHash  release.apk\n")
+    }
+
+    @Test
+    fun checksumVerifier_requiredChecksumRejectsMissingMalformedAndMismatchedValues() {
+        val testFile = tempFolder.newFile("required_checksum_invalid.apk")
+        testFile.writeText("release payload")
+
+        assertSecurityException { ChecksumVerifier.verifyRequired(testFile, null) }
+        assertSecurityException { ChecksumVerifier.verifyRequired(testFile, "not a checksum") }
+        assertSecurityException {
+            ChecksumVerifier.verifyRequired(
+                testFile,
+                "0000000000000000000000000000000000000000000000000000000000000000"
+            )
+        }
+    }
+
+    private fun assertSecurityException(block: () -> Unit) {
+        try {
+            block()
+            throw AssertionError("Expected SecurityException")
+        } catch (_: SecurityException) {
+            // Expected: installations must fail closed when checksum verification fails.
+        }
+    }
+
+    @Test
     fun checksumVerifier_parseExpectedHash() {
         val validHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
