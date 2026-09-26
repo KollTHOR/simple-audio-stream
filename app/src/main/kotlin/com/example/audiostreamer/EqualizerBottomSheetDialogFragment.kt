@@ -32,8 +32,11 @@ class EqualizerBottomSheetDialogFragment : BottomSheetDialogFragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        val eq = AudioCaptureService.masterEqualizer
+        val eq = AudioSinkService.playbackEqualizer
         val prefs = requireContext().getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
+        // Re-read persisted state so the panel always reflects what is saved, not a stale
+        // in-memory snapshot from a previous stream.
+        eq.loadFromPreferences(prefs)
 
         val switchEnabled = view.findViewById<MaterialSwitch>(R.id.switch_eq_enabled)
         val tvStatus = view.findViewById<TextView>(R.id.tv_eq_status)
@@ -129,7 +132,7 @@ class EqualizerBottomSheetDialogFragment : BottomSheetDialogFragment() {
 
     private fun updateSlidersFromEq() {
         isUpdatingUi = true
-        val eq = AudioCaptureService.masterEqualizer
+        val eq = AudioSinkService.playbackEqualizer
         for (i in 0 until Equalizer12Band.BAND_COUNT) {
             val gain = eq.getBandGain(i)
             sliders[i].value = gain
@@ -140,7 +143,7 @@ class EqualizerBottomSheetDialogFragment : BottomSheetDialogFragment() {
 
     private fun updateStatusLabel(tv: TextView, isEnabled: Boolean, preset: String) {
         tv.text = if (isEnabled) {
-            "Active ($preset)"
+            "Active on this device's output ($preset)"
         } else {
             "Disabled (Flat bypass)"
         }

@@ -2573,6 +2573,11 @@ class MainActivity : AppCompatActivity() {
         btnModeTransmitter.isEnabled = !isAnyActive
         btnModeReceiver.isEnabled = !isAnyActive
 
+        // Speaker EQ is a receiver-side function, so it is only offered in receiver mode.
+        if (::fabEqualizer.isInitialized) {
+            fabEqualizer.visibility = if (currentMode == Mode.RECEIVER) View.VISIBLE else View.GONE
+        }
+
         // Update Toggle buttons styling for dark mode clarity
         val colorPrimary = ContextCompat.getColor(this, R.color.primary)
         val colorGreen = ContextCompat.getColor(this, R.color.status_green)
