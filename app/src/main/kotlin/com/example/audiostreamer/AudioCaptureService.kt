@@ -80,7 +80,6 @@ class AudioCaptureService : Service() {
         val remoteVolumePercent = AtomicInteger(100)
         val receiverVolumes = ConcurrentHashMap<String, Int>()
         val currentStreamGeneration = java.util.concurrent.atomic.AtomicLong(0L)
-        val masterEqualizer = Equalizer12Band()
         @Volatile var currentTrackMetadata: HatPacket.MediaMetadataPayload? = null
 
         fun getReceiverVolume(ip: String, nodeId: String? = null): Int {
@@ -708,14 +707,10 @@ class AudioCaptureService : Service() {
         ensureSocketAndControlListener(targetIp, targetPort)
 
         val prefs = getSharedPreferences("stream_prefs", Context.MODE_PRIVATE)
-        masterEqualizer.loadFromPreferences(prefs)
         val profileStr = prefs.getString(AudioConfig.PREF_KEY_PROFILE, AudioConfig.PROFILE_AUTO) ?: AudioConfig.PROFILE_AUTO
         val initialTarget = LatencyTarget.fromString(profileStr)
 
         performProfileChange(initialTarget)
-        activeNegotiatedConfig?.sampleRateHz?.let { rate ->
-            masterEqualizer.sampleRate = rate
-        }
 
         // Wire into MediaSessionTracker — the single source of truth for media metadata.
         // Immediately snapshot current state if tracking is already running.
@@ -1613,7 +1608,6 @@ class AudioCaptureService : Service() {
                             consecutiveCaptureErrors.set(0L)
                             diagCaptureFrames.addAndGet((pcmBytesRead / 4).toLong())
                             diagCapturePcmBytes.addAndGet(pcmBytesRead.toLong())
-                            masterEqualizer.process16BitStereo(pcmReadBuffer, 0, pcmBytesRead)
                             val metrics = audioMeter.analyze(pcmReadBuffer, 0, pcmBytesRead, is24Bit = false)
                             val chunkPeak = metrics.peak
 
@@ -1798,11 +1792,6 @@ class AudioCaptureService : Service() {
                             consecutiveCaptureErrors.set(0L)
                             diagCapturePcmBytes.addAndGet(bytesRead.toLong())
                             val isEffective24 = is24BitActive
-                            if (isEffective24) {
-                                masterEqualizer.process24BitStereo(rawPcmBuffer, 0, bytesRead)
-                            } else {
-                                masterEqualizer.process16BitStereo(rawPcmBuffer, 0, bytesRead)
-                            }
                             val bytesPerFrame = if (isEffective24) 6 else 4
                             val framesRead = bytesRead / bytesPerFrame
                             val currentTimestamp = streamTimelineFrames

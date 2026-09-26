@@ -9,7 +9,7 @@ Simple Audio Stream sends audio playing on one Android device to another device 
 - Streams eligible system playback from Android 10 or later. Android shows a system screen/audio-sharing confirmation before capture starts; the app captures playback audio, not ambient microphone sound.
 - Finds nearby receivers on the local network. You can also connect manually by IP address or use Wi-Fi Direct when there is no router or hotspot.
 - Offers adaptive, music/reliable, and low-latency video profiles. Audio quality and sample-rate options depend on the devices and selected profile.
-- Supports receiver volume control, an equalizer, saved connection profiles, and playback controls.
+- Supports receiver volume control, a receiver-side speaker equalizer, saved connection profiles, and playback controls.
 - Can show track information and album artwork on the receiver when optional Notification access is enabled.
 - Includes an in-app update center for stable and nightly builds.
 

@@ -44,7 +44,7 @@
                 android:id="@+id/tv_eq_status"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Master stream DSP"
+                android:text="Speaker correction for this device"
                 android:textSize="12sp"
                 android:textColor="@color/text_secondary" />
         </LinearLayout>
