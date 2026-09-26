@@ -1079,22 +1079,6 @@
         </LinearLayout>
     </ScrollView>
 
-    <!-- Equalizer Button at Bottom Left (receiver mode only) -->
-    <com.google.android.material.floatingactionbutton.FloatingActionButton
-        android:id="@+id/fab_equalizer"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom|start"
-        android:layout_marginStart="16dp"
-        android:layout_marginBottom="16dp"
-        android:visibility="gone"
-        app:srcCompat="@drawable/ic_equalizer"
-        app:tint="@color/white"
-        app:backgroundTint="@color/card_bg"
-        app:rippleColor="@color/primary"
-        app:elevation="6dp"
-        android:contentDescription="Speaker equalizer" />
-
     <!-- Settings Button at Bottom Right -->
     <com.google.android.material.floatingactionbutton.FloatingActionButton
         android:id="@+id/fab_settings"

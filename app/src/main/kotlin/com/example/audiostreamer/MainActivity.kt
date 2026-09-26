@@ -155,8 +155,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvRemoteVolLabel: TextView
     private lateinit var sliderRemoteVol: Slider
 
-    // Equalizer & Media Playback Controls
-    private lateinit var fabEqualizer: FloatingActionButton
+    // Media Playback Controls
     private lateinit var cardMediaPlayback: MaterialCardView
     private lateinit var ivMediaCardBg: ImageView
     private lateinit var viewMediaCardScrim: View
@@ -433,11 +432,6 @@ class MainActivity : AppCompatActivity() {
         }
         layoutTransportBadges.setOnClickListener {
             showNodeDetailsDialog()
-        }
-
-        fabEqualizer = findViewById(R.id.fab_equalizer)
-        fabEqualizer.setOnClickListener {
-            EqualizerBottomSheetDialogFragment().show(supportFragmentManager, "EqualizerBottomSheet")
         }
 
         cardMediaPlayback = findViewById(R.id.card_media_playback)
@@ -2572,11 +2566,6 @@ class MainActivity : AppCompatActivity() {
 
         btnModeTransmitter.isEnabled = !isAnyActive
         btnModeReceiver.isEnabled = !isAnyActive
-
-        // Speaker EQ is a receiver-side function, so it is only offered in receiver mode.
-        if (::fabEqualizer.isInitialized) {
-            fabEqualizer.visibility = if (currentMode == Mode.RECEIVER) View.VISIBLE else View.GONE
-        }
 
         // Update Toggle buttons styling for dark mode clarity
         val colorPrimary = ContextCompat.getColor(this, R.color.primary)
