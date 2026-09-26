@@ -30,7 +30,6 @@ import java.util.concurrent.ConcurrentHashMap
 enum class DiscoverySource {
     LAN,
     WIFI_DIRECT,
-    WIFI_AWARE,
     BLE,
     NFC
 }
@@ -52,7 +51,7 @@ data class DiscoveredEndpoint(
  *
  * **Architecture Invariants:**
  * - A physical Node appears exactly once in the registry, even if discovered through multiple mechanisms
- *   (LAN, BLE, Wi-Fi Direct, Wi-Fi Aware, NFC).
+ *   (LAN, BLE, Wi-Fi Direct, NFC).
  * - [identity].[NodeIdentity.id] is the stable HAT Node ID (`hat-node-...`). It is NEVER overwritten with
  *   a transport-specific identifier (IP address, MAC address, PeerHandle, or NFC tag UID).
  * - Tracks [discoverySources] as a set of all mechanisms that have reported this node.
@@ -84,9 +83,6 @@ data class DiscoveredNodeEntry(
     fun getWifiDirectEndpoint(): DiscoveredEndpoint? =
         resolvedEndpoints.firstOrNull { it.transportType == NodeTransportType.WIFI_DIRECT }
 
-    fun getWifiAwareEndpoint(): DiscoveredEndpoint? =
-        resolvedEndpoints.firstOrNull { it.transportType == NodeTransportType.WIFI_AWARE }
-
     fun getBleEndpoint(): DiscoveredEndpoint? =
         resolvedEndpoints.firstOrNull { it.transportType == NodeTransportType.BLUETOOTH_LE }
 
@@ -103,8 +99,7 @@ data class DiscoveredNodeEntry(
  *
  * Merges discovery events from:
  * - LAN NSD ([LanDiscoveryProvider])
- * - Wi-Fi Direct DNS-SD ([WifiDirectDiscoveryProvider])
- * - Wi-Fi Aware ([WifiAwareDiscoveryProvider])
+ * - Wi-Fi Direct peer discovery ([com.example.audiostreamer.WifiDirectManager])
  * - BLE Presence ([HatBlePresenceProvider])
  * - NFC Bootstrap ([HatNfcBootstrapProvider])
  *
@@ -149,13 +144,7 @@ object HatDiscoveryRegistry {
                     com.example.audiostreamer.DiscoveryManager.discoveredDevices.collect { recomputeRegistry() }
                 }
                 launch {
-                    WifiDirectDiscoveryProvider.discoveredEndpoints.collect { recomputeRegistry() }
-                }
-                launch {
                     com.example.audiostreamer.WifiDirectManager.discoveredPeers.collect { recomputeRegistry() }
-                }
-                launch {
-                    WifiAwareDiscoveryProvider.discoveredNodes.collect { recomputeRegistry() }
                 }
                 launch {
                     HatBlePresenceProvider.discoveredNodes.collect { recomputeRegistry() }
@@ -361,29 +350,7 @@ object HatDiscoveryRegistry {
                 )
             }
 
-            // 3. Ingest Wi-Fi Direct endpoints
-            val wdEndpoints = WifiDirectDiscoveryProvider.discoveredEndpoints.value
-            for (wd in wdEndpoints) {
-                val id = wd.nodeInfo.id
-                if (id == localNodeId || isInvalidIdentity(id)) continue
-                val builder = getOrCreateBuilder(nodeMap, id, wd.nodeInfo.name)
-                builder.discoverySources.add(DiscoverySource.WIFI_DIRECT)
-                builder.transportCandidates.add(NodeTransportType.WIFI_DIRECT)
-                builder.nodeInfo = mergeNodeInfo(builder.nodeInfo, wd.nodeInfo)
-                builder.firstSeenEpochMs = minOf(builder.firstSeenEpochMs, wd.firstDiscoveredEpochMs)
-                builder.lastSeenEpochMs = maxOf(builder.lastSeenEpochMs, wd.lastSeenEpochMs)
-                builder.endpoints.add(
-                    DiscoveredEndpoint(
-                        transportType = NodeTransportType.WIFI_DIRECT,
-                        address = wd.deviceAddress,
-                        description = "Wi-Fi Direct (${wd.deviceAddress})",
-                        details = wd.txtRecord,
-                        lastSeenEpochMs = wd.lastSeenEpochMs
-                    )
-                )
-            }
-
-            // 3b. Correlate raw P2P peers from WifiDirectManager
+            // 3. Ingest raw Wi-Fi Direct peers from WifiDirectManager
             val p2pPeers = try { com.example.audiostreamer.WifiDirectManager.discoveredPeers.value } catch (e: Exception) { emptyList() }
             val thisP2pMac = try { com.example.audiostreamer.WifiDirectManager.thisDeviceAddress } catch (_: Exception) { null }
             val thisP2pName = try { com.example.audiostreamer.WifiDirectManager.thisDeviceName } catch (_: Exception) { null }
@@ -419,29 +386,7 @@ object HatDiscoveryRegistry {
                 }
             }
 
-            // 4. Ingest Wi-Fi Aware endpoints
-            val awareEndpoints = WifiAwareDiscoveryProvider.discoveredNodes.value
-            for (aware in awareEndpoints) {
-                val id = aware.nodeInfo.id
-                if (id == localNodeId || isInvalidIdentity(id)) continue
-                val builder = getOrCreateBuilder(nodeMap, id, aware.nodeInfo.name)
-                builder.discoverySources.add(DiscoverySource.WIFI_AWARE)
-                builder.transportCandidates.add(NodeTransportType.WIFI_AWARE)
-                builder.nodeInfo = mergeNodeInfo(builder.nodeInfo, aware.nodeInfo)
-                builder.firstSeenEpochMs = minOf(builder.firstSeenEpochMs, aware.firstSeenEpochMs)
-                builder.lastSeenEpochMs = maxOf(builder.lastSeenEpochMs, aware.lastSeenEpochMs)
-                builder.endpoints.add(
-                    DiscoveredEndpoint(
-                        transportType = NodeTransportType.WIFI_AWARE,
-                        address = aware.peerHandle.toString(),
-                        description = "Wi-Fi Aware (${aware.serviceName})",
-                        details = mapOf("peerHandle" to aware.peerHandle.toString()),
-                        lastSeenEpochMs = aware.lastSeenEpochMs
-                    )
-                )
-            }
-
-            // 5. Ingest BLE Presence endpoints (with suffix-based matching)
+            // 4. Ingest BLE Presence endpoints (with suffix-based matching)
             val bleEndpoints = HatBlePresenceProvider.discoveredNodes.value
             for (ble in bleEndpoints) {
                 val bleNodeId = ble.nodeInfo.id
@@ -470,7 +415,7 @@ object HatDiscoveryRegistry {
                 )
             }
 
-            // 5b. Correlate legacy BLE peers from BleDiscoveryManager
+            // 4b. Correlate legacy BLE peers from BleDiscoveryManager
             val bleLegacy = try { com.example.audiostreamer.BleDiscoveryManager.bleDevices.value } catch (e: Exception) { emptyList() }
             for (ble in bleLegacy) {
                 if (ble.role != "receiver") continue
@@ -502,7 +447,7 @@ object HatDiscoveryRegistry {
                 }
             }
 
-            // 6. Ingest NFC Bootstrap endpoints
+            // 5. Ingest NFC Bootstrap endpoints
             val nfcEndpoints = HatNfcBootstrapProvider.discoveredNodes.value
             for (nfc in nfcEndpoints) {
                 val id = nfc.nodeInfo.id
@@ -527,7 +472,7 @@ object HatDiscoveryRegistry {
                 )
             }
 
-            // 7. Resolve live connection states from HatLinkManager
+            // 6. Resolve live connection states from HatLinkManager
             val activeLinks = HatLinkManager.activeLinks.value
             val resultList = nodeMap.values.map { builder ->
                 val link = activeLinks.firstOrNull { it.remoteNode.id == builder.id }

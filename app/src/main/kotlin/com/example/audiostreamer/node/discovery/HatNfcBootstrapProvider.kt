@@ -272,8 +272,7 @@ data class NfcOperationTiming(
  * 1. NFC is NOT an audio transport. It is exclusively an out-of-band bootstrap mechanism.
  * 2. Tapping two devices exchanges compact bootstrap payloads (Node ID, name, transport hints, session token).
  * 3. Identifies the remote node without relying on IP, MAC, or NFC tag hardware IDs.
- * 4. Hands the identified peer to [HatLinkManager], selecting the preferred high-bandwidth transport in order:
- *    **Wi-Fi Aware -> then Wi-Fi Direct -> then LAN if applicable**.
+ * 4. Hands the identified peer to [HatLinkManager], selecting Wi-Fi Direct first, then LAN.
  * 5. Does NOT automatically connect or start audio; discovery informs the Link layer.
  * 6. If NFC hardware is absent or disabled, reports unsupported cleanly without crashing.
  */
@@ -283,7 +282,6 @@ object HatNfcBootstrapProvider {
 
     /** Preference priority for high-bandwidth transports negotiated via NFC. */
     val PREFERRED_TRANSPORT_PRIORITY = listOf(
-        NodeTransportType.WIFI_AWARE,
         NodeTransportType.WIFI_DIRECT,
         NodeTransportType.LOCAL_WIFI
     )
@@ -418,7 +416,6 @@ object HatNfcBootstrapProvider {
 
         // Filter local node's supported transports for high-bandwidth hints
         val highBandwidthHints = localNode.capabilities.supportedTransports.filter {
-            it == NodeTransportType.WIFI_AWARE ||
             it == NodeTransportType.WIFI_DIRECT ||
             it == NodeTransportType.LOCAL_WIFI
         }.toSet().ifEmpty {
@@ -451,8 +448,8 @@ object HatNfcBootstrapProvider {
         createLocalBootstrapPayload(sessionToken, portHint).toNdefMessage()
 
     /**
-     * Evaluates high-bandwidth transport hints according to the strict priority:
-     * **1. Wi-Fi Aware -> 2. Wi-Fi Direct -> 3. LAN (LOCAL_WIFI)**.
+     * Evaluates high-bandwidth transport hints according to the priority:
+     * **1. Wi-Fi Direct -> 2. LAN (LOCAL_WIFI)**.
      */
     fun selectBestHighBandwidthTransport(
         remoteHints: Set<NodeTransportType>,

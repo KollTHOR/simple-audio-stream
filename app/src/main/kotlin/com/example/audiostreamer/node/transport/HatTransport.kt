@@ -5,7 +5,7 @@ package com.example.audiostreamer.node.transport
  *
  * Requirements:
  * - The Link layer interacts with [HatTransport] uniformly without needing
- *   to know whether the underlying IP network is LAN, Wi-Fi Direct, or Wi-Fi Aware.
+ *   to know whether the underlying IP network is LAN or Wi-Fi Direct.
  * - BLE and NFC are non-audio bootstrap/discovery mechanisms.
  */
 interface HatTransport : AutoCloseable {

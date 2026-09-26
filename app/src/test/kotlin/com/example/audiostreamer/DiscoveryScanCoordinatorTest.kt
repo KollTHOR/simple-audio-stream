@@ -38,11 +38,9 @@ class DiscoveryScanCoordinatorTest {
 
     @Test
     fun testPhaseTimeoutConstants() {
-        // Suggested timeouts in specification:
-        // LAN: 30 seconds, Wi-Fi Direct: 30 seconds, Wi-Fi Aware: 30 seconds, BLE: 30 seconds
+        // LAN, Wi-Fi Direct, and BLE each have a bounded scan window.
         assertEquals(30000L, DiscoveryScanCoordinator.TIMEOUT_LAN_MS)
         assertEquals(30000L, DiscoveryScanCoordinator.TIMEOUT_WIFI_DIRECT_MS)
-        assertEquals(30000L, DiscoveryScanCoordinator.TIMEOUT_WIFI_AWARE_MS)
         assertEquals(30000L, DiscoveryScanCoordinator.TIMEOUT_BLE_MS)
     }
 
@@ -51,13 +49,12 @@ class DiscoveryScanCoordinatorTest {
         val phases = listOf(
             DiscoveryScanPhase.LOCAL_WIFI,
             DiscoveryScanPhase.WIFI_DIRECT,
-            DiscoveryScanPhase.WIFI_AWARE,
             DiscoveryScanPhase.BLE
         )
         assertEquals(DiscoveryScanPhase.LOCAL_WIFI, phases[0])
         assertEquals(DiscoveryScanPhase.WIFI_DIRECT, phases[1])
-        assertEquals(DiscoveryScanPhase.WIFI_AWARE, phases[2])
-        assertEquals(DiscoveryScanPhase.BLE, phases[3])
+        assertEquals(DiscoveryScanPhase.BLE, phases[2])
+        assertEquals(3, phases.size)
     }
 
     @Test
@@ -123,7 +120,7 @@ class DiscoveryScanCoordinatorTest {
         assertEquals(2, foundReport.discoveredCount)
         assertEquals(1200L, foundReport.durationMs)
 
-        val skippedReport = PhaseReport(DiscoveryScanPhase.WIFI_AWARE, PhaseStatus.SKIPPED, reason = "Unsupported on device")
+        val skippedReport = PhaseReport(DiscoveryScanPhase.BLE, PhaseStatus.SKIPPED, reason = "Unsupported on device")
         assertEquals(PhaseStatus.SKIPPED, skippedReport.status)
         assertEquals("Unsupported on device", skippedReport.reason)
 
@@ -145,19 +142,16 @@ class DiscoveryScanCoordinatorTest {
         val reports = mapOf(
             DiscoveryScanPhase.LOCAL_WIFI to PhaseReport(DiscoveryScanPhase.LOCAL_WIFI, PhaseStatus.FOUND, 1200L, 2),
             DiscoveryScanPhase.WIFI_DIRECT to PhaseReport(DiscoveryScanPhase.WIFI_DIRECT, PhaseStatus.WAITING),
-            DiscoveryScanPhase.WIFI_AWARE to PhaseReport(DiscoveryScanPhase.WIFI_AWARE, PhaseStatus.SKIPPED, reason = "Unsupported"),
             DiscoveryScanPhase.BLE to PhaseReport(DiscoveryScanPhase.BLE, PhaseStatus.WAITING)
         )
 
-        assertEquals(4, reports.size)
+        assertEquals(3, reports.size)
         assertEquals(PhaseStatus.FOUND, reports[DiscoveryScanPhase.LOCAL_WIFI]?.status)
         assertEquals(2, reports[DiscoveryScanPhase.LOCAL_WIFI]?.discoveredCount)
-        assertEquals(PhaseStatus.SKIPPED, reports[DiscoveryScanPhase.WIFI_AWARE]?.status)
-        assertEquals("Unsupported", reports[DiscoveryScanPhase.WIFI_AWARE]?.reason)
     }
 
     @Test
-    fun testDiscoveredNodeDeduplicationWithAllFourTransports() {
+    fun testDiscoveredNodeDeduplicationAcrossLanDirectAndBle() {
         val nodeId = "hat-node-universal-999"
         val identity = NodeIdentity(nodeId, "Universal Receiver")
 
@@ -169,7 +163,6 @@ class DiscoveryScanCoordinatorTest {
                     supportedTransports = setOf(
                         NodeTransportType.LOCAL_WIFI,
                         NodeTransportType.WIFI_DIRECT,
-                        NodeTransportType.WIFI_AWARE,
                         NodeTransportType.BLUETOOTH_LE
                     )
                 ),
@@ -180,7 +173,6 @@ class DiscoveryScanCoordinatorTest {
             discoverySources = setOf(
                 DiscoverySource.LAN,
                 DiscoverySource.WIFI_DIRECT,
-                DiscoverySource.WIFI_AWARE,
                 DiscoverySource.BLE
             ),
             firstSeenEpochMs = 1000L,
@@ -188,13 +180,11 @@ class DiscoveryScanCoordinatorTest {
             transportCandidates = setOf(
                 NodeTransportType.LOCAL_WIFI,
                 NodeTransportType.WIFI_DIRECT,
-                NodeTransportType.WIFI_AWARE,
                 NodeTransportType.BLUETOOTH_LE
             ),
             resolvedEndpoints = listOf(
                 DiscoveredEndpoint(NodeTransportType.LOCAL_WIFI, address = "192.168.1.50", port = 50005),
                 DiscoveredEndpoint(NodeTransportType.WIFI_DIRECT, address = "12:34:56:78:9A:BC"),
-                DiscoveredEndpoint(NodeTransportType.WIFI_AWARE, address = "aware-handle-1"),
                 DiscoveredEndpoint(NodeTransportType.BLUETOOTH_LE, address = "DE:AD:BE:EF:00:01")
             )
         )
@@ -203,14 +193,12 @@ class DiscoveryScanCoordinatorTest {
         val registryNodes = HatDiscoveryRegistry.recomputeRegistry()
         assertEquals(1, registryNodes.size)
         val single = registryNodes.first()
-        assertEquals(4, single.discoverySources.size)
+        assertEquals(3, single.discoverySources.size)
         assertTrue(single.hasSource(DiscoverySource.LAN))
         assertTrue(single.hasSource(DiscoverySource.WIFI_DIRECT))
-        assertTrue(single.hasSource(DiscoverySource.WIFI_AWARE))
         assertTrue(single.hasSource(DiscoverySource.BLE))
         assertNotNull(single.getLanEndpoint())
         assertNotNull(single.getWifiDirectEndpoint())
-        assertNotNull(single.getWifiAwareEndpoint())
         assertNotNull(single.getBleEndpoint())
     }
 }

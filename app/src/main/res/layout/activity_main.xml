@@ -138,22 +138,6 @@
                         app:ensureMinTouchTargetSize="false" />
 
                     <com.google.android.material.chip.Chip
-                        android:id="@+id/badge_transport_nan"
-                        style="@style/Widget.Material3.Chip.Assist"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Aware"
-                        android:textSize="10sp"
-                        android:textColor="@color/text_hint"
-                        app:chipBackgroundColor="@color/input_bg"
-                        app:chipStrokeColor="@color/card_stroke"
-                        app:chipStrokeWidth="1dp"
-                        app:chipMinHeight="26dp"
-                        android:clickable="false"
-                        android:focusable="false"
-                        app:ensureMinTouchTargetSize="false" />
-
-                    <com.google.android.material.chip.Chip
                         android:id="@+id/badge_transport_ble"
                         style="@style/Widget.Material3.Chip.Assist"
                         android:layout_width="wrap_content"

@@ -72,6 +72,9 @@ object NetworkUtils {
         }.distinct()
     }
 
+    internal fun isP2pInterfaceName(interfaceName: String?): Boolean =
+        interfaceName?.contains("p2p", ignoreCase = true) == true
+
     /**
      * Discovers active LAN interfaces by inspecting Android [ConnectivityManager] and [NetworkCapabilities],
      * with support for local Wi-Fi Hotspot (SoftAP) and unit-test environments.
@@ -99,6 +102,13 @@ object NetworkUtils {
                     val ifName = linkProps?.interfaceName
                     val linkAddrs = linkProps?.linkAddresses?.mapNotNull { it.address as? Inet4Address } ?: emptyList()
                     val ipStrings = linkAddrs.mapNotNull { it.hostAddress }
+
+                    // Wi-Fi Direct creates its own Wi-Fi transport. Keep it out of LAN
+                    // availability so offline receivers still enter the Direct-group path.
+                    if (isP2pInterfaceName(ifName)) {
+                        Log.d(TAG, "Kept Wi-Fi Direct interface separate from LAN: $ifName ($ipStrings)")
+                        continue
+                    }
 
                     if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
                         if (ifName != null) {
@@ -153,7 +163,7 @@ object NetworkUtils {
                     }
 
                     // Exclude P2P virtual interfaces from general LAN
-                    if (ifName.contains("p2p", ignoreCase = true)) {
+                    if (isP2pInterfaceName(ifName)) {
                         continue
                     }
 

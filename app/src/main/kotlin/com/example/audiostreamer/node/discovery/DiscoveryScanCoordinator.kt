@@ -6,10 +6,9 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.net.wifi.WifiManager
-import android.os.Build
-import androidx.core.content.ContextCompat
 import com.example.audiostreamer.AppLogger as Log
 import com.example.audiostreamer.BleDiscoveryManager
+import com.example.audiostreamer.ConnectionRoutePolicy
 import com.example.audiostreamer.DiscoveryManager
 import com.example.audiostreamer.HatDiagnostics
 import com.example.audiostreamer.NetworkUtils
@@ -32,7 +31,6 @@ enum class DiscoveryScanPhase {
     IDLE,
     LOCAL_WIFI,
     WIFI_DIRECT,
-    WIFI_AWARE,
     BLE,
     COMPLETE
 }
@@ -80,10 +78,9 @@ data class DiscoveryScanState(
  * Dedicated coordinator and state machine orchestrating sequential HAT discovery.
  *
  * Sequence:
- * 1. LOCAL WI-FI (3s)
- * 2. WI-FI DIRECT (4s)
- * 3. WI-FI AWARE (4s)
- * 4. BLE (5s)
+ * 1. Local Wi-Fi (up to 30s)
+ * 2. Wi-Fi Direct peers (up to 30s)
+ * 3. BLE group bootstrap fallback (up to 30s)
  *
  * Invariants:
  * - Starts only the current provider for that phase.
@@ -97,13 +94,11 @@ object DiscoveryScanCoordinator {
 
     const val TIMEOUT_LAN_MS = 30_000L
     const val TIMEOUT_WIFI_DIRECT_MS = 30_000L
-    const val TIMEOUT_WIFI_AWARE_MS = 30_000L
     const val TIMEOUT_BLE_MS = 30_000L
 
-    // When at least one device is found during a phase, allow 5000ms for secondary nodes
-    // on the same transport to finish DNS-SD TXT / beacon resolution
-    const val SETTLE_WINDOW_MS = 5_000L
-    const val MIN_SEARCH_MS = 5_000L
+    // Let nearby peer results settle briefly, then show a connectable result promptly.
+    const val SETTLE_WINDOW_MS = 1_500L
+    const val MIN_SEARCH_MS = 2_000L
 
     private val lock = Any()
     private val isScanActive = AtomicBoolean(false)
@@ -126,7 +121,6 @@ object DiscoveryScanCoordinator {
             val initialReports = linkedMapOf(
                 DiscoveryScanPhase.LOCAL_WIFI to PhaseReport(DiscoveryScanPhase.LOCAL_WIFI, PhaseStatus.WAITING),
                 DiscoveryScanPhase.WIFI_DIRECT to PhaseReport(DiscoveryScanPhase.WIFI_DIRECT, PhaseStatus.WAITING),
-                DiscoveryScanPhase.WIFI_AWARE to PhaseReport(DiscoveryScanPhase.WIFI_AWARE, PhaseStatus.WAITING),
                 DiscoveryScanPhase.BLE to PhaseReport(DiscoveryScanPhase.BLE, PhaseStatus.WAITING)
             )
 
@@ -138,7 +132,7 @@ object DiscoveryScanCoordinator {
                 phaseTimeRemainingMs = TIMEOUT_LAN_MS,
                 statusMessage = "Checking Local Wi-Fi...",
                 phaseReports = initialReports,
-                totalDiscoveredNodes = HatDiscoveryRegistry.discoveredNodes.value,
+                totalDiscoveredNodes = connectableDiscoveredNodes(),
                 isScanning = true,
                 scanSummary = null
             )
@@ -177,7 +171,7 @@ object DiscoveryScanCoordinator {
         stopAllProviders(context)
 
         if (notifyComplete) {
-            val finalNodes = HatDiscoveryRegistry.discoveredNodes.value
+            val finalNodes = connectableDiscoveredNodes()
             val summary = generateCompactSummary(_scanState.value.phaseReports)
             val msg = if (finalNodes.isNotEmpty()) {
                 "Found ${finalNodes.size} nearby device(s)"
@@ -203,7 +197,7 @@ object DiscoveryScanCoordinator {
 
     private suspend fun executeSequentialScan(context: Context, scope: CoroutineScope) {
         // ── Phase 1: Local Wi-Fi ─────────────────────────────────────────────
-        val lanCompleted = runPhase(
+        val lanFound = runPhase(
             context = context,
             phase = DiscoveryScanPhase.LOCAL_WIFI,
             timeoutMs = TIMEOUT_LAN_MS,
@@ -221,10 +215,13 @@ object DiscoveryScanCoordinator {
                 HatDiscoveryRegistry.discoveredNodes.value.count { it.hasSource(DiscoverySource.LAN) }
             }
         )
-        Log.i(TAG, "Local Wi-Fi phase complete (found=$lanCompleted); advancing to Wi-Fi Direct")
+        if (lanFound) {
+            Log.i(TAG, "Local Wi-Fi discovery found a device; skipping fallback scans")
+            return
+        }
 
         // ── Phase 2: Wi-Fi Direct ────────────────────────────────────────────
-        val directCompleted = runPhase(
+        val directFound = runPhase(
             context = context,
             phase = DiscoveryScanPhase.WIFI_DIRECT,
             timeoutMs = TIMEOUT_WIFI_DIRECT_MS,
@@ -232,39 +229,20 @@ object DiscoveryScanCoordinator {
             checkAvailability = { checkWifiDirectAvailability(context) },
             startProvider = {
                 WifiDirectManager.discoverPeers(context)
-                WifiDirectDiscoveryProvider.startDiscovery(context)
             },
             stopProvider = {
-                WifiDirectDiscoveryProvider.stopDiscovery()
                 WifiDirectManager.stopPeerDiscovery(context)
             },
             countDiscovered = {
                 HatDiscoveryRegistry.discoveredNodes.value.count { it.hasSource(DiscoverySource.WIFI_DIRECT) }
             }
         )
-        Log.i(TAG, "Wi-Fi Direct phase complete (found=$directCompleted); advancing to Wi-Fi Aware")
+        if (directFound) {
+            Log.i(TAG, "Wi-Fi Direct discovery found a device; skipping BLE fallback scan")
+            return
+        }
 
-        // ── Phase 3: Wi-Fi Aware ─────────────────────────────────────────────
-        val awareCompleted = runPhase(
-            context = context,
-            phase = DiscoveryScanPhase.WIFI_AWARE,
-            timeoutMs = TIMEOUT_WIFI_AWARE_MS,
-            searchingMessage = "Searching nearby Wi-Fi Aware devices...",
-            checkAvailability = { checkWifiAwareAvailability(context) },
-            startProvider = {
-                WifiAwareDiscoveryProvider.probeCapability(context)
-                WifiAwareDiscoveryProvider.startSubscribing(context)
-            },
-            stopProvider = {
-                WifiAwareDiscoveryProvider.stopSubscribing()
-            },
-            countDiscovered = {
-                HatDiscoveryRegistry.discoveredNodes.value.count { it.hasSource(DiscoverySource.WIFI_AWARE) }
-            }
-        )
-        Log.i(TAG, "Wi-Fi Aware phase complete (found=$awareCompleted); advancing to BLE")
-
-        // ── Phase 4: BLE Presence ────────────────────────────────────────────
+        // ── Phase 3: BLE Presence ────────────────────────────────────────────
         val bleCompleted = runPhase(
             context = context,
             phase = DiscoveryScanPhase.BLE,
@@ -280,10 +258,12 @@ object DiscoveryScanCoordinator {
                 HatBlePresenceProvider.stopScanning()
             },
             countDiscovered = {
-                HatDiscoveryRegistry.discoveredNodes.value.count { it.hasSource(DiscoverySource.BLE) }
+                HatDiscoveryRegistry.discoveredNodes.value.count {
+                    it.hasSource(DiscoverySource.BLE) && ConnectionRoutePolicy.isConnectable(it)
+                }
             }
         )
-        Log.i(TAG, "BLE phase complete (found=$bleCompleted); all sequential phases executed")
+        Log.i(TAG, "BLE phase complete (found=$bleCompleted); all discovery phases executed")
     }
 
     private suspend fun runPhase(
@@ -334,7 +314,6 @@ object DiscoveryScanCoordinator {
             return false
         }
 
-        var foundEarly = false
         var settleStartMs = 0L
         val intervalMs = 200L
         var elapsedMs = 0L
@@ -354,7 +333,6 @@ object DiscoveryScanCoordinator {
                 }
                 // Allow a settle window for secondary nodes to resolve, ensuring at least MIN_SEARCH_MS
                 if ((System.currentTimeMillis() - settleStartMs >= SETTLE_WINDOW_MS && elapsedMs >= MIN_SEARCH_MS) || elapsedMs >= timeoutMs) {
-                    foundEarly = true
                     break
                 }
             }
@@ -397,7 +375,7 @@ object DiscoveryScanCoordinator {
             stopAllProviders(context)
 
             val totalDurationMs = System.currentTimeMillis() - scanStartTimeMs
-            val finalNodes = HatDiscoveryRegistry.discoveredNodes.value
+            val finalNodes = connectableDiscoveredNodes()
             val totalCount = finalNodes.size
 
             val summary = generateCompactSummary(_scanState.value.phaseReports)
@@ -434,9 +412,7 @@ object DiscoveryScanCoordinator {
     private fun stopAllProviders(context: Context) {
         try { LanDiscoveryProvider.stopDiscovery() } catch (_: Exception) {}
         try { DiscoveryManager.stopDiscovery() } catch (_: Exception) {}
-        try { WifiDirectDiscoveryProvider.stopDiscovery() } catch (_: Exception) {}
         try { WifiDirectManager.stopPeerDiscovery(context) } catch (_: Exception) {}
-        try { WifiAwareDiscoveryProvider.stopSubscribing() } catch (_: Exception) {}
         try { BleDiscoveryManager.stopScanning() } catch (_: Exception) {}
         try { HatBlePresenceProvider.stopScanning() } catch (_: Exception) {}
     }
@@ -468,24 +444,8 @@ object DiscoveryScanCoordinator {
         if (!locationEnabled) {
             return false to "Location (GPS) is turned off"
         }
-        val hasNearby = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.checkSelfPermission(context, android.Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
-        } else {
-            ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        }
-        if (!hasNearby) {
+        if (!WifiDirectManager.hasPermissions(context)) {
             return false to "Permission required"
-        }
-        return true to null
-    }
-
-    private fun checkWifiAwareAvailability(context: Context): Pair<Boolean, String?> {
-        if (!WifiAwareDiscoveryProvider.isSupported(context)) {
-            return false to "Unsupported on device"
-        }
-        val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-        if (wm != null && !wm.isWifiEnabled) {
-            return false to "Wi-Fi is turned off"
         }
         return true to null
     }
@@ -523,7 +483,7 @@ object DiscoveryScanCoordinator {
             phaseTimeRemainingMs = timeoutMs,
             statusMessage = message,
             phaseReports = currentReports,
-            totalDiscoveredNodes = HatDiscoveryRegistry.discoveredNodes.value,
+            totalDiscoveredNodes = connectableDiscoveredNodes(),
             isScanning = true
         )
     }
@@ -544,7 +504,7 @@ object DiscoveryScanCoordinator {
             phaseTimeRemainingMs = timeRemainingMs,
             statusMessage = message,
             phaseReports = currentReports,
-            totalDiscoveredNodes = HatDiscoveryRegistry.discoveredNodes.value
+            totalDiscoveredNodes = connectableDiscoveredNodes()
         )
     }
 
@@ -566,7 +526,7 @@ object DiscoveryScanCoordinator {
 
         _scanState.value = _scanState.value.copy(
             phaseReports = currentReports,
-            totalDiscoveredNodes = HatDiscoveryRegistry.discoveredNodes.value
+            totalDiscoveredNodes = connectableDiscoveredNodes()
         )
     }
 
@@ -584,7 +544,9 @@ object DiscoveryScanCoordinator {
         }
         return "Local Wi-Fi: ${formatReport(DiscoveryScanPhase.LOCAL_WIFI)} • " +
                 "Wi-Fi Direct: ${formatReport(DiscoveryScanPhase.WIFI_DIRECT)} • " +
-                "Wi-Fi Aware: ${formatReport(DiscoveryScanPhase.WIFI_AWARE)} • " +
                 "Bluetooth: ${formatReport(DiscoveryScanPhase.BLE)}"
     }
+
+    private fun connectableDiscoveredNodes(): List<DiscoveredNodeEntry> =
+        HatDiscoveryRegistry.discoveredNodes.value.filter(ConnectionRoutePolicy::isConnectable)
 }

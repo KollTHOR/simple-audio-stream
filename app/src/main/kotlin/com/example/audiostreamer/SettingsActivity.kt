@@ -221,9 +221,6 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var tvDiagDirectSupport: TextView
     private lateinit var tvDiagDirectState: TextView
     private lateinit var tvDiagDirectDetails: TextView
-    private lateinit var tvDiagAwareSupport: TextView
-    private lateinit var tvDiagAwareState: TextView
-    private lateinit var tvDiagAwareDetails: TextView
     private lateinit var tvDiagBleSupport: TextView
     private lateinit var tvDiagBleState: TextView
     private lateinit var tvDiagBleDetails: TextView
@@ -474,9 +471,6 @@ class SettingsActivity : AppCompatActivity() {
         tvDiagDirectSupport = findViewById(R.id.tv_diag_direct_support)
         tvDiagDirectState = findViewById(R.id.tv_diag_direct_state)
         tvDiagDirectDetails = findViewById(R.id.tv_diag_direct_details)
-        tvDiagAwareSupport = findViewById(R.id.tv_diag_aware_support)
-        tvDiagAwareState = findViewById(R.id.tv_diag_aware_state)
-        tvDiagAwareDetails = findViewById(R.id.tv_diag_aware_details)
         tvDiagBleSupport = findViewById(R.id.tv_diag_ble_support)
         tvDiagBleState = findViewById(R.id.tv_diag_ble_state)
         tvDiagBleDetails = findViewById(R.id.tv_diag_ble_details)
@@ -953,12 +947,6 @@ class SettingsActivity : AppCompatActivity() {
         tvDiagDirectSupport.text = if (isDirectSupported) "Supported" else "Unsupported"
         tvDiagDirectSupport.setTextColor(if (isDirectSupported) greenColor else hintColor)
 
-        val isAwareSupported = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            pm.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)
-        } else false
-        tvDiagAwareSupport.text = if (isAwareSupported) "Supported" else "Unsupported"
-        tvDiagAwareSupport.setTextColor(if (isAwareSupported) greenColor else hintColor)
-
         val isBleSupported = pm.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
         tvDiagBleSupport.text = if (isBleSupported) "Supported" else "Unsupported"
         tvDiagBleSupport.setTextColor(if (isBleSupported) greenColor else hintColor)
@@ -975,7 +963,6 @@ class SettingsActivity : AppCompatActivity() {
                 when (phase) {
                     DiscoveryScanPhase.LOCAL_WIFI -> node.hasSource(DiscoverySource.LAN)
                     DiscoveryScanPhase.WIFI_DIRECT -> node.hasSource(DiscoverySource.WIFI_DIRECT)
-                    DiscoveryScanPhase.WIFI_AWARE -> node.hasSource(DiscoverySource.WIFI_AWARE)
                     DiscoveryScanPhase.BLE -> node.hasSource(DiscoverySource.BLE)
                     else -> false
                 }
@@ -1027,7 +1014,6 @@ class SettingsActivity : AppCompatActivity() {
 
         renderProvider(DiscoveryScanPhase.LOCAL_WIFI, tvDiagLanState, tvDiagLanDetails, DiscoveryScanCoordinator.TIMEOUT_LAN_MS)
         renderProvider(DiscoveryScanPhase.WIFI_DIRECT, tvDiagDirectState, tvDiagDirectDetails, DiscoveryScanCoordinator.TIMEOUT_WIFI_DIRECT_MS)
-        renderProvider(DiscoveryScanPhase.WIFI_AWARE, tvDiagAwareState, tvDiagAwareDetails, DiscoveryScanCoordinator.TIMEOUT_WIFI_AWARE_MS)
         renderProvider(DiscoveryScanPhase.BLE, tvDiagBleState, tvDiagBleDetails, DiscoveryScanCoordinator.TIMEOUT_BLE_MS)
     }
 

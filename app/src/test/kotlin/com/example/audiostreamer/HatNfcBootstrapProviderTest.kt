@@ -36,7 +36,7 @@ class HatNfcBootstrapProviderTest {
             protocolVersion = HatPacket.PROTOCOL_VERSION.toInt(),
             nodeId = "hat-node-abc-123456",
             nodeName = "Studio Monitor",
-            transportHints = setOf(NodeTransportType.WIFI_AWARE, NodeTransportType.WIFI_DIRECT, NodeTransportType.LOCAL_WIFI),
+            transportHints = setOf(NodeTransportType.WIFI_DIRECT, NodeTransportType.LOCAL_WIFI),
             sessionToken = "session-token-9988",
             portHint = 50005,
             extraHints = mapOf("zone" to "living_room")
@@ -174,10 +174,9 @@ class HatNfcBootstrapProviderTest {
     // ─── High-Bandwidth Transport Preference Order ────────────────────────────
 
     @Test
-    fun testTransportPreferenceWiFiAwareFirst() {
-        // Requirement: Prefer Wi-Fi Aware -> then Wi-Fi Direct -> then LAN
+    fun testTransportPreferenceWiFiDirectFirst() {
+        // Prefer Wi-Fi Direct, then the local network.
         val allSupported = setOf(
-            NodeTransportType.WIFI_AWARE,
             NodeTransportType.WIFI_DIRECT,
             NodeTransportType.LOCAL_WIFI
         )
@@ -186,12 +185,11 @@ class HatNfcBootstrapProviderTest {
             remoteHints = allSupported,
             localSupported = allSupported
         )
-        assertEquals(NodeTransportType.WIFI_AWARE, selected)
+        assertEquals(NodeTransportType.WIFI_DIRECT, selected)
     }
 
     @Test
-    fun testTransportPreferenceWiFiDirectSecond() {
-        // Wi-Fi Direct preferred when Wi-Fi Aware is not available on both sides
+    fun testTransportPreferenceFallsBackToLan() {
         val directAndLan = setOf(
             NodeTransportType.WIFI_DIRECT,
             NodeTransportType.LOCAL_WIFI
@@ -205,8 +203,7 @@ class HatNfcBootstrapProviderTest {
     }
 
     @Test
-    fun testTransportPreferenceLanThird() {
-        // LAN preferred when neither Aware nor Direct is common
+    fun testTransportPreferenceLanWhenItIsTheOnlyCommonTransport() {
         val lanOnly = setOf(NodeTransportType.LOCAL_WIFI)
 
         val selected = HatNfcBootstrapProvider.selectBestHighBandwidthTransport(
@@ -343,7 +340,7 @@ class HatNfcBootstrapProviderTest {
         assertEquals(50005, payload.portHint)
         assertFalse(payload.transportHints.isEmpty())
         assertTrue("Hints must contain at least one high-bandwidth transport",
-            payload.transportHints.any { it == NodeTransportType.WIFI_AWARE || it == NodeTransportType.WIFI_DIRECT || it == NodeTransportType.LOCAL_WIFI })
+            payload.transportHints.any { it == NodeTransportType.WIFI_DIRECT || it == NodeTransportType.LOCAL_WIFI })
     }
 
     // ─── Diagnostics Snapshot & HatDiagnostics Integration ────────────────────

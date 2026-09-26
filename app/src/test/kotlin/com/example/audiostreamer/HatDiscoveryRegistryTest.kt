@@ -21,10 +21,6 @@ import com.example.audiostreamer.node.discovery.HatNfcBootstrapProvider
 import com.example.audiostreamer.node.discovery.HatNfcDiscoveredNode
 import com.example.audiostreamer.node.discovery.LanDiscoveredNode
 import com.example.audiostreamer.node.discovery.LanDiscoveryProvider
-import com.example.audiostreamer.node.discovery.WifiAwareDiscoveredNode
-import com.example.audiostreamer.node.discovery.WifiAwareDiscoveryProvider
-import com.example.audiostreamer.node.discovery.WifiDirectDiscoveredNode
-import com.example.audiostreamer.node.discovery.WifiDirectDiscoveryProvider
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -56,8 +52,7 @@ class HatDiscoveryRegistryTest {
     @Test
     fun testSingleNodeDiscoveredAcrossMultipleSourcesMergesIntoOneEntry() {
         // Requirement example:
-        // Node ABC discovered through LAN, BLE, and Wi-Fi Aware -> one Node entry with:
-        // discoverySources: [LAN, BLE, WIFI_AWARE]
+        // Node ABC discovered through LAN and BLE -> one merged Node entry.
         val nodeId = "hat-node-abc-7788"
         val nodeName = "Studio Monitor ABC"
         val identity = NodeIdentity(nodeId, nodeName)
@@ -99,28 +94,9 @@ class HatDiscoveryRegistryTest {
             )
         )
 
-        val awareEntry = DiscoveredNodeEntry(
-            identity = identity,
-            nodeInfo = NodeInfo(
-                identity = identity,
-                capabilities = NodeCapabilities(supportedTransports = setOf(NodeTransportType.WIFI_AWARE)),
-                deviceInfo = DevicePlatformInfo(),
-                state = NodeState.AVAILABLE,
-                activeRole = StreamRole.RECEIVER
-            ),
-            discoverySources = setOf(DiscoverySource.WIFI_AWARE),
-            firstSeenEpochMs = 1200L,
-            lastSeenEpochMs = 2500L,
-            transportCandidates = setOf(NodeTransportType.WIFI_AWARE),
-            resolvedEndpoints = listOf(
-                DiscoveredEndpoint(NodeTransportType.WIFI_AWARE, address = "peer-handle-aware-42", description = "Wi-Fi Aware")
-            )
-        )
-
-        // Register all three events for Node ABC
+        // Register both events for Node ABC
         HatDiscoveryRegistry.registerNode(lanEntry)
         HatDiscoveryRegistry.registerNode(bleEntry)
-        HatDiscoveryRegistry.registerNode(awareEntry)
 
         val mergedList = HatDiscoveryRegistry.recomputeRegistry()
 
@@ -131,29 +107,26 @@ class HatDiscoveryRegistryTest {
         assertEquals(nodeId, node.id)
         assertEquals(nodeName, node.name)
 
-        // Verify discoverySources contains all three
-        assertEquals(3, node.discoverySources.size)
+        // Verify discoverySources contains both sources
+        assertEquals(2, node.discoverySources.size)
         assertTrue(node.hasSource(DiscoverySource.LAN))
         assertTrue(node.hasSource(DiscoverySource.BLE))
-        assertTrue(node.hasSource(DiscoverySource.WIFI_AWARE))
 
-        // Verify transportCandidates combines all three
+        // Verify transportCandidates combines both transports
         assertTrue(node.hasTransport(NodeTransportType.LOCAL_WIFI))
         assertTrue(node.hasTransport(NodeTransportType.BLUETOOTH_LE))
-        assertTrue(node.hasTransport(NodeTransportType.WIFI_AWARE))
 
-        // Verify timestamps: earliest firstSeen (800L), latest lastSeen (2500L)
+        // Verify timestamps: earliest firstSeen (800L), latest lastSeen (2000L)
         assertEquals(800L, node.firstSeenEpochMs)
-        assertEquals(2500L, node.lastSeenEpochMs)
+        assertEquals(2000L, node.lastSeenEpochMs)
 
         // Verify RSSI from BLE
         assertEquals(-62, node.rssi)
 
-        // Verify resolved endpoints list has all 3 endpoints
-        assertEquals(3, node.resolvedEndpoints.size)
+        // Verify both resolved endpoints are retained
+        assertEquals(2, node.resolvedEndpoints.size)
         assertNotNull(node.getLanEndpoint())
         assertNotNull(node.getBleEndpoint())
-        assertNotNull(node.getWifiAwareEndpoint())
         assertEquals("192.168.1.150", node.getLanEndpoint()?.address)
         assertEquals("AA:BB:CC:DD:EE:11", node.getBleEndpoint()?.address)
     }
@@ -225,18 +198,17 @@ class HatDiscoveryRegistryTest {
         assertEquals(p2pMac, retrieved?.getWifiDirectEndpoint()?.address)
     }
 
-    // ─── Merge All Five Discovery Sources ─────────────────────────────────────
+    // ─── Merge Available Discovery Sources ────────────────────────────────────
 
     @Test
     fun testAllFiveDiscoverySourcesMergedCorrectly() {
         val nodeId = "hat-node-universal-001"
         val identity = NodeIdentity(nodeId, "Universal HAT Node")
 
-        // Register 5 separate discoveries for the same node
+        // Register 4 separate discoveries for the same node
         val sources = listOf(
             DiscoverySource.LAN to NodeTransportType.LOCAL_WIFI,
             DiscoverySource.WIFI_DIRECT to NodeTransportType.WIFI_DIRECT,
-            DiscoverySource.WIFI_AWARE to NodeTransportType.WIFI_AWARE,
             DiscoverySource.BLE to NodeTransportType.BLUETOOTH_LE,
             DiscoverySource.NFC to NodeTransportType.NFC
         )
@@ -266,15 +238,14 @@ class HatDiscoveryRegistryTest {
 
         val node = list[0]
         assertEquals(nodeId, node.id)
-        assertEquals(5, node.discoverySources.size)
+        assertEquals(4, node.discoverySources.size)
         assertTrue(node.hasSource(DiscoverySource.LAN))
         assertTrue(node.hasSource(DiscoverySource.WIFI_DIRECT))
-        assertTrue(node.hasSource(DiscoverySource.WIFI_AWARE))
         assertTrue(node.hasSource(DiscoverySource.BLE))
         assertTrue(node.hasSource(DiscoverySource.NFC))
 
-        assertEquals(5, node.transportCandidates.size)
-        assertEquals(5, node.resolvedEndpoints.size)
+        assertEquals(4, node.transportCandidates.size)
+        assertEquals(4, node.resolvedEndpoints.size)
         assertEquals(-55, node.rssi)
     }
 

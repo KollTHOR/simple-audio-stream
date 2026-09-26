@@ -220,56 +220,20 @@ object WifiDirectManager {
         mgr.requestGroupInfo(ch) { existingGroup ->
             if (existingGroup != null && existingGroup.isGroupOwner) {
                 _isGroupCreated.value = true
-                _groupOwnerIp.value = DEFAULT_GO_IP
+                val goIp = NetworkUtils.getP2pIpAddresses().firstOrNull() ?: DEFAULT_GO_IP
+                _groupOwnerIp.value = goIp
                 _networkSsid.value = existingGroup.networkName
                 _networkPassphrase.value = existingGroup.passphrase ?: P2P_DEFAULT_PASSPHRASE
-                _statusMessage.value = "Group Active: ${existingGroup.networkName} (IP: $DEFAULT_GO_IP)"
+                _statusMessage.value = "Group Active: ${existingGroup.networkName} (IP: $goIp)"
                 Log.i(TAG, "Reusing existing autonomous group: SSID=${existingGroup.networkName}, Pass=******")
-                mgr.discoverPeers(ch, null) // ensure discoverable
-                onResult(true, existingGroup.networkName, DEFAULT_GO_IP)
+                onResult(true, existingGroup.networkName, goIp)
             } else {
-                // 2. Create new autonomous group
-                createGroupWithConfig(mgr, ch, onResult)
+                // Use Android's standard group creation path. It negotiates device-specific
+                // SSID/passphrase settings and is more interoperable than supplying custom
+                // group credentials to OEM Wi-Fi Direct stacks.
+                createStandardGroup(mgr, ch, onResult)
             }
         }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun createGroupWithConfig(
-        mgr: WifiP2pManager,
-        ch: WifiP2pManager.Channel,
-        onResult: (success: Boolean, ssid: String?, goIp: String?) -> Unit
-    ) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            try {
-                val config = WifiP2pConfig.Builder()
-                    .setNetworkName(P2P_DEFAULT_SSID)
-                    .setPassphrase(P2P_DEFAULT_PASSPHRASE)
-                    .build()
-                Log.i(TAG, "Creating autonomous group with credentials: SSID=$P2P_DEFAULT_SSID...")
-                mgr.createGroup(ch, config, object : WifiP2pManager.ActionListener {
-                    override fun onSuccess() {
-                        _isGroupCreated.value = true
-                        _groupOwnerIp.value = DEFAULT_GO_IP
-                        _networkSsid.value = P2P_DEFAULT_SSID
-                        _networkPassphrase.value = P2P_DEFAULT_PASSPHRASE
-                        _statusMessage.value = "Group Active: $P2P_DEFAULT_SSID (IP: $DEFAULT_GO_IP)"
-                        Log.i(TAG, "Autonomous group created successfully with SSID: $P2P_DEFAULT_SSID, Pass=******")
-                        mgr.discoverPeers(ch, null)
-                        onResult(true, P2P_DEFAULT_SSID, DEFAULT_GO_IP)
-                    }
-
-                    override fun onFailure(reason: Int) {
-                        Log.w(TAG, "createGroup with custom config failed (code $reason). Trying standard createGroup...")
-                        createStandardGroup(mgr, ch, onResult)
-                    }
-                })
-                return
-            } catch (e: Exception) {
-                Log.w(TAG, "createGroup with config threw: ${e.message}. Falling back to standard createGroup...")
-            }
-        }
-        createStandardGroup(mgr, ch, onResult)
     }
 
     @SuppressLint("MissingPermission")
@@ -282,16 +246,16 @@ object WifiDirectManager {
         mgr.createGroup(ch, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
                 _isGroupCreated.value = true
-                _groupOwnerIp.value = DEFAULT_GO_IP
                 mgr.requestGroupInfo(ch) { group ->
                     val ssid = group?.networkName ?: P2P_DEFAULT_SSID
                     val passphrase = group?.passphrase ?: P2P_DEFAULT_PASSPHRASE
+                    val goIp = NetworkUtils.getP2pIpAddresses().firstOrNull() ?: DEFAULT_GO_IP
+                    _groupOwnerIp.value = goIp
                     _networkSsid.value = ssid
                     _networkPassphrase.value = passphrase
-                    _statusMessage.value = "Group Active: $ssid (IP: $DEFAULT_GO_IP)"
-                    Log.i(TAG, "Autonomous group created. SSID: $ssid, Passphrase=******, IP: $DEFAULT_GO_IP")
-                    mgr.discoverPeers(ch, null)
-                    onResult(true, ssid, DEFAULT_GO_IP)
+                    _statusMessage.value = "Group Active: $ssid (IP: $goIp)"
+                    Log.i(TAG, "Autonomous group created. SSID: $ssid, Passphrase=******, IP: $goIp")
+                    onResult(true, ssid, goIp)
                 }
             }
 
@@ -327,16 +291,16 @@ object WifiDirectManager {
         mgr.createGroup(ch, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
                 _isGroupCreated.value = true
-                _groupOwnerIp.value = DEFAULT_GO_IP
                 mgr.requestGroupInfo(ch) { group ->
                     val ssid = group?.networkName ?: P2P_DEFAULT_SSID
                     val passphrase = group?.passphrase ?: P2P_DEFAULT_PASSPHRASE
+                    val goIp = NetworkUtils.getP2pIpAddresses().firstOrNull() ?: DEFAULT_GO_IP
+                    _groupOwnerIp.value = goIp
                     _networkSsid.value = ssid
                     _networkPassphrase.value = passphrase
-                    _statusMessage.value = "Group Active: $ssid (IP: $DEFAULT_GO_IP)"
+                    _statusMessage.value = "Group Active: $ssid (IP: $goIp)"
                     Log.i(TAG, "Autonomous group created on retry. SSID: $ssid, Passphrase=******")
-                    mgr.discoverPeers(ch, null)
-                    onResult(true, ssid, DEFAULT_GO_IP)
+                    onResult(true, ssid, goIp)
                 }
             }
 
@@ -387,6 +351,7 @@ object WifiDirectManager {
             return
         }
 
+        _discoveredPeers.value = emptyList()
         _isScanningPeers.value = true
         _statusMessage.value = "Scanning Wi-Fi Direct peers..."
         Log.i(TAG, "Initiating WifiP2pManager.discoverPeers()...")
@@ -431,6 +396,32 @@ object WifiDirectManager {
         }
     }
 
+    @SuppressLint("MissingPermission")
+    private fun stopPeerDiscoveryBeforeConnect(
+        mgr: WifiP2pManager,
+        ch: WifiP2pManager.Channel,
+        connect: () -> Unit
+    ) {
+        try {
+            mgr.stopPeerDiscovery(ch, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    _isScanningPeers.value = false
+                    connect()
+                }
+
+                override fun onFailure(reason: Int) {
+                    _isScanningPeers.value = false
+                    Log.w(TAG, "stopPeerDiscovery before connect returned ${parseReason(reason)}; continuing connection")
+                    connect()
+                }
+            })
+        } catch (e: Exception) {
+            _isScanningPeers.value = false
+            Log.w(TAG, "Unable to stop peer scan before connect: ${e.message}; continuing connection")
+            connect()
+        }
+    }
+
 
     @SuppressLint("MissingPermission")
     fun connectWithCredentials(
@@ -466,18 +457,20 @@ object WifiDirectManager {
 
             _statusMessage.value = "Connecting to $ssid..."
             Log.i(TAG, "Calling WifiP2pManager.connect() with WPA2 passphrase config...")
-            mgr.connect(ch, config, object : WifiP2pManager.ActionListener {
-                override fun onSuccess() {
-                    _statusMessage.value = "Connecting to $ssid..."
-                    Log.i(TAG, "WifiP2pManager.connect() accepted! Waiting for connection event...")
-                }
+            stopPeerDiscoveryBeforeConnect(mgr, ch) {
+                mgr.connect(ch, config, object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() {
+                        _statusMessage.value = "Connecting to $ssid..."
+                        Log.i(TAG, "WifiP2pManager.connect() accepted! Waiting for connection event...")
+                    }
 
-                override fun onFailure(reason: Int) {
-                    val reasonStr = parseReason(reason)
-                    _statusMessage.value = "Direct connect failed ($reasonStr)"
-                    Log.w(TAG, "WifiP2pManager.connect() failed: $reasonStr for $ssid")
-                }
-            })
+                    override fun onFailure(reason: Int) {
+                        val reasonStr = parseReason(reason)
+                        _statusMessage.value = "Direct connect failed ($reasonStr)"
+                        Log.w(TAG, "WifiP2pManager.connect() failed: $reasonStr for $ssid")
+                    }
+                })
+            }
         } else {
             Log.i(TAG, "Pre-Android 10: falling back to peer discovery")
             discoverPeers(context)
@@ -510,18 +503,20 @@ object WifiDirectManager {
 
         _statusMessage.value = "Connecting to ${device.deviceName}..."
         Log.i(TAG, "Initiating WPS-PBC connect to ${device.deviceName}...")
-        mgr.connect(ch, config, object : WifiP2pManager.ActionListener {
-            override fun onSuccess() {
-                Log.i(TAG, "WPS connection handshake initiated to ${device.deviceName}")
-                _statusMessage.value = "Connecting to ${device.deviceName}..."
-            }
+        stopPeerDiscoveryBeforeConnect(mgr, ch) {
+            mgr.connect(ch, config, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    Log.i(TAG, "WPS connection handshake initiated to ${device.deviceName}")
+                    _statusMessage.value = "Connecting to ${device.deviceName}..."
+                }
 
-            override fun onFailure(reason: Int) {
-                val reasonStr = parseReason(reason)
-                _statusMessage.value = "Connection failed ($reasonStr)"
-                Log.w(TAG, "Connection failed to ${device.deviceName}: $reasonStr")
-            }
-        })
+                override fun onFailure(reason: Int) {
+                    val reasonStr = parseReason(reason)
+                    _statusMessage.value = "Connection failed ($reasonStr)"
+                    Log.w(TAG, "Connection failed to ${device.deviceName}: $reasonStr")
+                }
+            })
+        }
     }
 
     fun disconnect(context: Context) {

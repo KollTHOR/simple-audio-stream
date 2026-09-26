@@ -48,7 +48,7 @@ class HatLinkManagerTest {
             identity = NodeIdentity("hat-node-local-001", "Local Pixel"),
             deviceInfo = DevicePlatformInfo(manufacturer = "Google", model = "Pixel 8"),
             capabilities = NodeCapabilities(
-                supportedTransports = setOf(NodeTransportType.LOCAL_WIFI, NodeTransportType.WIFI_DIRECT, NodeTransportType.WIFI_AWARE)
+                supportedTransports = setOf(NodeTransportType.LOCAL_WIFI, NodeTransportType.WIFI_DIRECT)
             ),
             state = NodeState.AVAILABLE
         )
@@ -57,7 +57,7 @@ class HatLinkManagerTest {
             identity = NodeIdentity("hat-node-remote-aaa", "Remote Node A"),
             deviceInfo = DevicePlatformInfo(manufacturer = "Sony", model = "WH-1000XM5"),
             capabilities = NodeCapabilities(
-                supportedTransports = setOf(NodeTransportType.LOCAL_WIFI, NodeTransportType.WIFI_DIRECT, NodeTransportType.WIFI_AWARE)
+                supportedTransports = setOf(NodeTransportType.LOCAL_WIFI, NodeTransportType.WIFI_DIRECT)
             ),
             state = NodeState.AVAILABLE,
             activeRole = StreamRole.RECEIVER
@@ -96,18 +96,11 @@ class HatLinkManagerTest {
             endpointPort = 50005,
             isDirect = true
         )
-        val awareCand = TransportCandidate(
-            type = HatTransportType.WIFI_AWARE,
-            availability = TransportAvailability.PROBING,
-            isDirect = true
-        )
-
-        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(lanCand, p2pCand, awareCand))
+        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(lanCand, p2pCand))
         val candidates = HatLinkManager.getCandidatesForNode(remoteNodeA.id)
-        assertEquals(3, candidates.size)
+        assertEquals(2, candidates.size)
         assertTrue(candidates.any { it.type == HatTransportType.LAN })
         assertTrue(candidates.any { it.type == HatTransportType.WIFI_DIRECT })
-        assertTrue(candidates.any { it.type == HatTransportType.WIFI_AWARE })
     }
 
     @Test
@@ -148,19 +141,7 @@ class HatLinkManagerTest {
             endpointAddress = "192.168.49.2",
             isDirect = true
         )
-        val awareCand = TransportCandidate(
-            type = HatTransportType.WIFI_AWARE,
-            availability = TransportAvailability.AVAILABLE,
-            endpointAddress = "fe80::1",
-            isDirect = true
-        )
-
-        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(lanCand, directCand, awareCand))
-
-        // Policy: WIFI_AWARE_FIRST -> Wi-Fi Aware selected
-        val awareFirst = HatLinkManager.selectTransport(remoteNodeA.id, TransportPriority.WIFI_AWARE_FIRST)
-        assertNotNull(awareFirst)
-        assertEquals(HatTransportType.WIFI_AWARE, awareFirst!!.type)
+        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(lanCand, directCand))
 
         // Policy: WIFI_DIRECT_FIRST -> Wi-Fi Direct selected
         val directFirst = HatLinkManager.selectTransport(remoteNodeA.id, TransportPriority.WIFI_DIRECT_FIRST)
@@ -181,11 +162,6 @@ class HatLinkManagerTest {
 
     @Test
     fun testUnusableCandidatesIgnoredByPolicySelection() {
-        val failedAware = TransportCandidate(
-            type = HatTransportType.WIFI_AWARE,
-            availability = TransportAvailability.FAILED,
-            failureReason = "Attach timed out"
-        )
         val unavailDirect = TransportCandidate(
             type = HatTransportType.WIFI_DIRECT,
             availability = TransportAvailability.UNAVAILABLE
@@ -196,10 +172,10 @@ class HatLinkManagerTest {
             endpointAddress = "192.168.1.50"
         )
 
-        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(failedAware, unavailDirect, readyLan))
+        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(unavailDirect, readyLan))
 
-        // Even with WIFI_AWARE_FIRST policy, unusable candidates are skipped and LAN is selected
-        val selected = HatLinkManager.selectTransport(remoteNodeA.id, TransportPriority.WIFI_AWARE_FIRST)
+        // An unavailable direct path is skipped in favor of the available LAN endpoint.
+        val selected = HatLinkManager.selectTransport(remoteNodeA.id, TransportPriority.WIFI_DIRECT_FIRST)
         assertNotNull(selected)
         assertEquals(HatTransportType.LAN, selected!!.type)
     }
@@ -329,44 +305,13 @@ class HatLinkManagerTest {
         assertEquals(AttemptState.FAILED, context!!.currentAttempt?.state)
     }
 
-    @Test
-    fun testExactFailureReasonWhenTransportConnectFails() = runBlocking {
-        // Wi-Fi Aware connect returns UnsupportedOperationException("Wi-Fi Aware transport is not implemented yet")
-        val awareCand = TransportCandidate(
-            type = HatTransportType.WIFI_AWARE,
-            availability = TransportAvailability.AVAILABLE,
-            endpointAddress = "192.168.49.20"
-        )
-        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(awareCand))
-
-        val result = HatLinkManager.connectToNode(remoteNodeA, TransportPriority.WIFI_AWARE_FIRST, allowFallback = false)
-        assertTrue(result.isFailure)
-        val ex = result.exceptionOrNull()
-        assertNotNull(ex)
-        assertTrue(ex!!.message!!.contains("Wi-Fi Aware transport is not implemented yet"))
-
-        val context = HatLinkManager.getNodeLinkContext(remoteNodeA.id)
-        assertNotNull(context)
-        val lastAttempt = context!!.currentAttempt
-        assertNotNull(lastAttempt)
-        assertEquals(AttemptState.FAILED, lastAttempt!!.state)
-        assertTrue(lastAttempt.failureReason!!.contains("Wi-Fi Aware transport is not implemented yet"))
-
-        // Candidate marked as FAILED in context
-        val candidateInContext = context.candidateTransports.first { it.type == HatTransportType.WIFI_AWARE }
-        assertEquals(TransportAvailability.FAILED, candidateInContext.availability)
-    }
-
     // ─── 7. Candidate Fallback ────────────────────────────────────────────────
 
     @Test
-    fun testCandidateFallbackWhenPreferredTransportFails() = runBlocking {
-        // Preferred: Wi-Fi Aware (will fail because not implemented)
-        // Fallback: LAN (will succeed connecting to 127.0.0.1)
-        val awareCand = TransportCandidate(
-            type = HatTransportType.WIFI_AWARE,
-            availability = TransportAvailability.AVAILABLE,
-            endpointAddress = "192.168.49.20"
+    fun testCandidateSelectionFallsBackToLanWhenDirectIsUnavailable() = runBlocking {
+        val unavailableDirect = TransportCandidate(
+            type = HatTransportType.WIFI_DIRECT,
+            availability = TransportAvailability.UNAVAILABLE
         )
         val lanCand = TransportCandidate(
             type = HatTransportType.LAN,
@@ -375,22 +320,18 @@ class HatLinkManagerTest {
             endpointPort = 50005
         )
 
-        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(awareCand, lanCand))
+        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(unavailableDirect, lanCand))
 
-        // Policy prefers WIFI_AWARE first, then LAN
-        val result = HatLinkManager.connectToNode(remoteNodeA, TransportPriority.WIFI_AWARE_FIRST, allowFallback = true)
+        val result = HatLinkManager.connectToNode(remoteNodeA, TransportPriority.WIFI_DIRECT_FIRST, allowFallback = true)
         assertTrue(result.isSuccess)
         val link = result.getOrThrow()
         assertEquals(HatTransportType.LAN, link.activeTransportType)
 
         val context = HatLinkManager.getNodeLinkContext(remoteNodeA.id)
         assertNotNull(context)
-        // History should have 2 attempts: first FAILED (WIFI_AWARE), second SUCCESS (LAN)
-        assertEquals(2, context!!.attemptHistory.size)
-        assertEquals(HatTransportType.WIFI_AWARE, context.attemptHistory[0].candidate.type)
-        assertEquals(AttemptState.FAILED, context.attemptHistory[0].state)
-        assertEquals(HatTransportType.LAN, context.attemptHistory[1].candidate.type)
-        assertEquals(AttemptState.SUCCESS, context.attemptHistory[1].state)
+        assertEquals(1, context!!.attemptHistory.size)
+        assertEquals(HatTransportType.LAN, context.attemptHistory[0].candidate.type)
+        assertEquals(AttemptState.SUCCESS, context.attemptHistory[0].state)
     }
 
     // ─── 8. Retain Discovered Node State Across Disconnections ────────────────

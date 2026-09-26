@@ -1646,7 +1646,7 @@
                                 android:layout_marginTop="4dp" />
                         </LinearLayout>
 
-                        <!-- Wi-Fi Direct Provider -->
+                        <!-- Wi-Fi Direct Peer Scan -->
                         <LinearLayout
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
@@ -1665,7 +1665,7 @@
                                     android:layout_width="0dp"
                                     android:layout_height="wrap_content"
                                     android:layout_weight="1"
-                                    android:text="Wi-Fi Direct"
+                                    android:text="Wi-Fi Direct Peer Scan"
                                     android:textSize="13sp"
                                     android:textStyle="bold"
                                     android:textColor="@color/text_primary" />
@@ -1692,60 +1692,6 @@
 
                             <TextView
                                 android:id="@+id/tv_diag_direct_details"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:text="0 devices • 30s timeout"
-                                android:textSize="11sp"
-                                android:textColor="@color/text_secondary"
-                                android:layout_marginTop="4dp" />
-                        </LinearLayout>
-
-                        <!-- Wi-Fi Aware Provider -->
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="vertical"
-                            android:background="@drawable/bg_stat_badge"
-                            android:padding="10dp"
-                            android:layout_marginBottom="8dp">
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:orientation="horizontal"
-                                android:gravity="center_vertical">
-
-                                <TextView
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_weight="1"
-                                    android:text="Wi-Fi Aware"
-                                    android:textSize="13sp"
-                                    android:textStyle="bold"
-                                    android:textColor="@color/text_primary" />
-
-                                <TextView
-                                    android:id="@+id/tv_diag_aware_support"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:text="Supported"
-                                    android:textSize="10sp"
-                                    android:textStyle="bold"
-                                    android:textColor="@color/status_green"
-                                    android:layout_marginEnd="8dp" />
-
-                                <TextView
-                                    android:id="@+id/tv_diag_aware_state"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:text="Idle"
-                                    android:textSize="11sp"
-                                    android:textStyle="bold"
-                                    android:textColor="@color/text_secondary" />
-                            </LinearLayout>
-
-                            <TextView
-                                android:id="@+id/tv_diag_aware_details"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
                                 android:text="0 devices • 30s timeout"
