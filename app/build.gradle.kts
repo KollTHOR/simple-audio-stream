@@ -11,6 +11,8 @@ plugins {
     alias(libs.plugins.kotlin.android)
 }
 
+var releaseSigningConfigured = false
+
 android {
     namespace = "com.example.audiostreamer"
     compileSdk = 35
@@ -115,36 +117,24 @@ android {
     val keyAlias = findProp("RELEASE_KEY_ALIAS", "KEY_ALIAS", "releaseKeyAlias")
     val keyPassword = findProp("RELEASE_KEY_PASSWORD", "KEY_PASSWORD", "releaseKeyPassword")
 
-    val defaultKeystoreFile = rootProject.file("keystore/release.keystore")
     val resolvedKeystoreFile = storeFilePath?.let {
         val f = file(it)
         if (f.exists()) f else rootProject.file(it).takeIf { rf -> rf.exists() }
-    } ?: defaultKeystoreFile.takeIf { it.exists() }
-
-    val resolvedStorePassword = if (storePassword.isNullOrBlank() && resolvedKeystoreFile == defaultKeystoreFile) "android" else storePassword
-    val resolvedKeyAlias = if (keyAlias.isNullOrBlank() && resolvedKeystoreFile == defaultKeystoreFile) "androiddebugkey" else keyAlias
-    val resolvedKeyPassword = if (keyPassword.isNullOrBlank() && resolvedKeystoreFile == defaultKeystoreFile) "android" else keyPassword
+    }
 
     val hasReleaseSigning = resolvedKeystoreFile != null &&
-        !resolvedStorePassword.isNullOrBlank() &&
-        !resolvedKeyAlias.isNullOrBlank() &&
-        !resolvedKeyPassword.isNullOrBlank()
+        !storePassword.isNullOrBlank() &&
+        !keyAlias.isNullOrBlank() &&
+        !keyPassword.isNullOrBlank()
+    releaseSigningConfigured = hasReleaseSigning
 
     signingConfigs {
-        if (defaultKeystoreFile.exists()) {
-            getByName("debug") {
-                this.storeFile = defaultKeystoreFile
-                this.storePassword = "android"
-                this.keyAlias = "androiddebugkey"
-                this.keyPassword = "android"
-            }
-        }
         if (hasReleaseSigning) {
             create("release") {
                 this.storeFile = resolvedKeystoreFile
-                this.storePassword = resolvedStorePassword
-                this.keyAlias = resolvedKeyAlias
-                this.keyPassword = resolvedKeyPassword
+                this.storePassword = storePassword
+                this.keyAlias = keyAlias
+                this.keyPassword = keyPassword
             }
         }
     }
@@ -156,11 +146,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            if (hasReleaseSigning) {
-                signingConfig = signingConfigs.getByName("release")
-            } else {
-                signingConfig = signingConfigs.getByName("debug")
-            }
+            signingConfig = if (hasReleaseSigning) signingConfigs.getByName("release") else null
         }
     }
 
@@ -181,6 +167,23 @@ android {
         unitTests {
             isReturnDefaultValues = true
         }
+    }
+}
+
+val requireReleaseSigning = tasks.register("requireReleaseSigning") {
+    doLast {
+        if (!releaseSigningConfigured) {
+            throw org.gradle.api.GradleException(
+                "Release signing is not configured. Provide RELEASE_KEYSTORE_PATH, " +
+                    "RELEASE_KEYSTORE_PASSWORD, RELEASE_KEY_ALIAS, and RELEASE_KEY_PASSWORD."
+            )
+        }
+    }
+}
+
+tasks.configureEach {
+    if (name == "packageRelease" || name == "packageReleaseBundle") {
+        dependsOn(requireReleaseSigning)
     }
 }
 

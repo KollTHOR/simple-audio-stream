@@ -7,7 +7,7 @@
 
 Simple Audio Stream is a feature-rich Android app for transmitting system audio over Wi-Fi/Wi-Fi Direct and receiving it with low-latency playback. Its implementation includes adaptive buffering, packet-loss recovery, multiple discovery transports, diagnostics, saved devices, and an in-app update center. The repository also has a substantial suite of JVM tests.
 
-The main release concern is that a keystore is tracked in the repository and selected as a release-signing fallback. Both GitHub workflows pass signing secrets to Gradle, and configured environment values take precedence, but the workflow files alone do not show whether those repository secrets are configured. The updater's former checksum fail-open behavior has been corrected: it now requires a checksum and checks the APK signer against the installed app before installation.
+The release-signing fallback has been removed from the current source tree. Both release workflows now require a private keystore supplied through Actions secrets, and Gradle rejects release packaging without signing credentials. The old keystore remains in Git history, so it must be treated as compromised; the new Actions secrets still need to be configured before release workflows can publish. The updater now requires a checksum and checks the APK signer against the installed app before installation.
 
 This app is intentionally designed for local-network audio streaming without user accounts, pairing, authentication, or encryption. That design choice is not treated as a defect in this assessment.
 
@@ -15,11 +15,10 @@ This app is intentionally designed for local-network audio streaming without use
 
 ### High priority
 
-1. **A private signing key is present in source control.**
-   - `keystore/release.keystore` is tracked by Git (`git ls-files` confirms it); `.gitignore` explicitly exempts it from the keystore ignore rule.
-   - `app/build.gradle.kts` selects this file by default for release signing and supplies `android` / `androiddebugkey` credentials. Anyone with repository access can extract the key and sign an APK with the same certificate.
-   - The stable and nightly workflows pass `RELEASE_KEYSTORE_*` GitHub secrets to Gradle. When those secrets are configured, Gradle uses them in preference to the tracked fallback. This checkout cannot establish whether the secrets exist or which certificate was used for published APKs.
-   - Commit `8268319` reintroduced the tracked keystore for deterministic signing, which conflicts with `SECURITY.md`'s claim that the exposed key was permanently removed and invalidated. Any distributed APK signed with this fallback key can be impersonated by another APK signed with the same key. Verify the published APK certificate and CI secret configuration; avoid using the public fallback key for distributed releases.
+1. **Release key exposure and migration — remediation configured; secret setup pending.**
+   - Commit `8268319` added a keystore to Git and Gradle used it as a release fallback with public default credentials. The binary has now been removed from the current source tree and is ignored, but remains in Git history and should be considered compromised.
+   - Both release workflows now require `RELEASE_KEYSTORE_BASE64`, `RELEASE_KEYSTORE_PASSWORD`, `RELEASE_KEY_ALIAS`, and `RELEASE_KEY_PASSWORD` Actions secrets. They decode the keystore into runner temp storage; Gradle fails release packaging when credentials are missing. These secrets must be populated before releases resume.
+   - Check a published APK's signing certificate before the key transition. Installations using the exposed certificate cannot update in place to an unrelated replacement key and will need a reinstall migration.
 
 2. **Updater verification fail-open behavior — corrected.**
    - `UpdateDownloader` now fails if a release has no checksum asset, the checksum cannot be fetched, or its value is malformed/mismatched. It also checks the downloaded APK's signing identity against the installed app, allowing only Android-verified forward signing-certificate rotation.
@@ -51,6 +50,7 @@ This app is intentionally designed for local-network audio streaming without use
 
 - `python3 .github/scripts/test_release_system.py` — **passed (12 tests)**.
 - `JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH ./gradlew test` — **passed**. The initial attempt used a Java 21 runtime without a compiler; using the installed JDK 17 resolved the environment issue.
+- `./gradlew assembleRelease` without signing values — **failed as intended** with the explicit missing release-signing configuration error.
 
 ## Suggested action order
 
