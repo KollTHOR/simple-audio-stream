@@ -1,188 +1,87 @@
-# Low-Latency UDP Audio Streamer (Simple Audio Stream)
+# Simple Audio Stream
 
-A high-performance, low-latency, single-module Android application written in Kotlin to stream raw system audio over local Wi-Fi or Wi-Fi Direct between devices (e.g. phone/tablet to dedicated audio player, DAP, or secondary phone). Supports both **Transmitter** (audio capture via `MediaProjection` or microphone) and **Receiver** (low-latency playback via `AudioTrack`) modes in a single unified APK.
+[**Download the latest stable release**](https://github.com/KollTHOR/simple-audio-stream/releases/latest) · [Browse all releases, including nightlies](https://github.com/KollTHOR/simple-audio-stream/releases)
 
----
+Simple Audio Stream sends audio playing on one Android device to another device over your home Wi-Fi, a phone hotspot, or Wi-Fi Direct. Use one device as the **Transmitter** and the other as the **Receiver**.
 
-## Core Features
+## What it does
 
-- **High-Resolution & Lossless Audio**:
-  - **Sample Rates**: 44.1 kHz, 48 kHz, 88.2 kHz, 96 kHz, 176.4 kHz, and 192 kHz (Auto / Manual selectable in Settings).
-  - **Bit Depths**: 16-bit integer PCM and 24-bit packed PCM (144 dB dynamic range).
-- **Latency & Streaming Profiles**:
-  - **Auto (Balanced / Adaptive)**: Dynamic floating-watermark jitter buffer (35ms - 400ms) adapting to Wi-Fi jitter in real time.
-  - **Music (Reliable / Lossless)**: Uncapped studio-master PCM playback with extended buffering cushion (~2.5s headroom) to absorb burst interference.
-  - **Video (Low Latency)**: Compressed Opus audio (~40ms cushion, 80-85% bandwidth reduction) optimized for gaming and video lipsync.
-- **Robust Transport & Reliability**:
-  - **HAT Protocol (`HatPacket`)**: Custom high-efficiency binary datagram format with 32-bit generation tracking, sequence numbers, presentation timestamps, and codec signaling.
-  - **Forward Error Correction (FEC)**: 1 XOR parity packet per 4 audio packets (25% overhead) recovering lost packets without retransmission delays.
-  - **Silence Suppression**: Battery and airtime saver automatically entering a 2 packet/sec heartbeat mode during sustained silence.
-  - **Transactional Generation Synchronization**: Zero-drop profile transitions synchronized with receiver acknowledgement.
-- **Connectivity Options**:
-  - **Local Subnet (Wi-Fi / LAN)**: Unicast IP or subnet broadcast (`x.x.x.255`).
-  - **Autonomous Wi-Fi Direct (P2P)**: Direct device-to-device streaming without an external router or access point.
-  - **Automatic Discovery**: UDP broadcast discovery on port `50006`.
-- **Integrated Diagnostics & Testing**:
-  - **In-App Update Center**: Dual-channel release model (Stable & Nightly), historical release browsing, SHA-256 verification, and downgrade/rollback protection. See [Release Model Guide](docs/RELEASE_MODEL.md).
-  - **Runtime Diagnostics (`HatDiagnostics`)**: Central event ring buffer, periodic telemetry snapshots, and jitter metrics.
+- Streams eligible system playback from Android 10 or later. Android shows a system screen/audio-sharing confirmation before capture starts; the app captures playback audio, not ambient microphone sound.
+- Finds nearby receivers on the local network. You can also connect manually by IP address or use Wi-Fi Direct when there is no router or hotspot.
+- Offers adaptive, music/reliable, and low-latency video profiles. Audio quality and sample-rate options depend on the devices and selected profile.
+- Supports receiver volume control, an equalizer, saved connection profiles, and playback controls.
+- Can show track information and album artwork on the receiver when optional Notification access is enabled.
+- Includes an in-app update center for stable and nightly builds.
 
----
+Bluetooth Low Energy and Wi-Fi Aware can help discover or connect supported devices. NFC is an optional tap-to-bootstrap feature on supported devices; it does not carry the audio stream.
 
-## Project Structure
+## Install
 
-```
-.
-├── build.gradle.kts                            # Root Gradle build script
-├── settings.gradle.kts                         # Single module configuration (:app)
-├── gradle.properties                           # JVM & AndroidX settings
-├── gradle/
-│   ├── libs.versions.toml                      # Versions: AGP 8.7.3, Kotlin 2.0.21, AndroidX
-│   └── wrapper/                                # Gradle 8.10.2 wrapper
-└── app/                                        # Unified Application Module
-    ├── build.gradle.kts                        # compileSdk 35, minSdk 29, targetSdk 35
-    └── src/main/
-        ├── AndroidManifest.xml                 # Permissions, foreground services, package queries
-        ├── kotlin/com/example/audiostreamer/
-        │   ├── MainActivity.kt                 # Mode toggle (Transmitter vs Receiver), P2P UI
-        │   ├── SettingsActivity.kt             # Audio preferences, in-app updater
-        │   ├── AudioConfig.kt                  # Audio pipeline constants & profile definitions
-        │   ├── AudioCaptureService.kt          # MediaProjection capture, encoding & UDP streaming
-        │   ├── AudioSinkService.kt             # UDP reception, JitterBuffer & AudioTrack playback
-        │   ├── HatPacket.kt                    # HAT packet wire protocol format & builder
-        │   ├── HatPacketParser.kt              # Zero-allocation packet parser
-        │   ├── JitterBuffer.kt                 # Adaptive jitter buffer, RFC 3550 drift estimation
-        │   ├── FecCodec.kt                     # XOR Forward Error Correction encoder & decoder
-        │   ├── AudioResampler.kt               # Linear interpolation audio resampler
-        │   ├── WifiDirectManager.kt            # Autonomous P2P Wi-Fi Direct group manager
-        │   ├── HatDiagnostics.kt               # Diagnostic snapshots, event ring buffer & timings
-        │   └── diagnostics/                    # Runtime diagnostics subsystem
-        │       ├── ReceiverDiagnosticsState.kt # Playout latency and receiver health data models
-        │       ├── LatencyHistory.kt           # Zero-allocation 60-second rolling latency ring buffer
-        │       ├── LatencyGraphView.kt         # Custom realtime canvas graph for receiver playout latency
-        │       ├── ReceiverDiagnosticsRepository.kt # Observational diagnostics repository
-        │       └── DiagnosticsViewModel.kt     # Lifecycle-aware ViewModel driving diagnostics UI
-        └── res/
-            ├── layout/                         # UI layouts (activity_main, activity_settings)
-            └── values/                         # Colors, strings, themes
-```
+1. Open [the releases page](https://github.com/KollTHOR/simple-audio-stream/releases) on your Android device.
+2. Choose a stable release or nightly release, then download its `.apk` file.
+3. Open the downloaded APK and follow Android's installation prompt. If Android asks, allow your browser or file manager to install unknown apps. You can turn that setting off again after installation.
+4. Install the app on both Android devices.
 
----
+**Signing-key transition:** Android may require users coming from an older build to uninstall it before installing the current release. Uninstalling removes that app installation and may erase its saved settings. Once installed on the current signing key, later updates should install normally.
 
-## Audio Pipeline & Wire Protocol
+## Quick start
 
-### HAT Packet Format
-Audio datagrams follow the custom binary HAT (`HT`) format:
-- **Magic Bytes**: `0x48 0x54` (`"HT"`). Non-HAT packets (such as JSON control messages starting with `{`) are rejected instantly with zero allocations.
-- **Flags**: Profile signaling (`AUTO`, `MUSIC`, `LOW_LATENCY`), bit depth (`16` vs `24`), silence indicator, and FEC parity flag.
-- **Header Fields**:
-  - `Stream ID` (16-bit): Identifies active stream instance.
-  - `Generation` (32-bit): Monotonically increments on every profile or pipeline reconfiguration.
-  - `Sequence Number` (32-bit): Detects lost, duplicate, or out-of-order packets.
-  - `Timestamp` (32-bit): Presentation timestamp for jitter calculation.
-  - `Payload Length` (16-bit): Payload size in bytes.
-- **Default UDP Ports**:
-  - Streaming audio: `50005`
-  - Peer discovery: `50006`
+### Over Wi-Fi or a hotspot
 
----
+1. Connect both devices to the same Wi-Fi network or phone hotspot.
+2. On the receiving device, select **Receive** and tap **Start Listening**.
+3. On the transmitting device, select **Broadcast**, scan for the receiver, and select it. If it does not appear, use **Manual Connection** and enter the receiver's IP address.
+4. Tap **Start Streaming** and approve Android's system audio-sharing prompt.
 
-## Streaming Modes
+### With Wi-Fi Direct
 
-### 1. Transmitter (Audio Source)
-- Captures internal device audio via Android 10+ `MediaProjection` (`AudioPlaybackCaptureConfiguration`).
-- Target address can be an individual device IP (`192.168.1.100`) or subnet broadcast (`192.168.1.255`).
-- Runs as a foreground service (`mediaProjection`) with a persistent status notification.
-- Supports live runtime profile and format changes without restarting the application.
+1. On the receiving device, select **Receive** and enable its Wi-Fi Direct option.
+2. Grant the nearby Wi-Fi/location permissions Android requests. Some devices also require Location to be turned on in Android settings for Wi-Fi Direct discovery.
+3. On the transmitting device, scan for the receiver and connect. Follow any Wi-Fi Direct connection prompt shown by Android.
+4. Start streaming and approve Android's system audio-sharing prompt.
 
-### 2. Receiver (Audio Sink)
-- Listens on UDP port `50005` for incoming audio packets.
-- Automatically handles sample rate switching, 16/24-bit decoding, and Opus decompression.
-- Reconstructs audio using a jitter buffer and outputs to `AudioTrack` with `PERFORMANCE_MODE_LOW_LATENCY`.
-- Acquires `WIFI_MODE_FULL_HIGH_PERF` and partial wake lock for glitch-free playback with the screen off.
+Tap **Stop Streaming** or **Stop Listening** to end a session.
 
-### 3. Autonomous Wi-Fi Direct (P2P)
-- Creates an autonomous Wi-Fi Direct group on the Receiver.
-- Transmitter connects directly to the Receiver's hotspot using auto-generated credentials.
-- Bypasses home Wi-Fi routers entirely for minimal latency and zero network congestion.
+## Permissions
 
----
+Android requests permissions when you use the feature that needs them. You do not need to enable every optional feature to stream over a regular Wi-Fi network.
 
-## Building the Project
+### Requested while using the app
 
-### Prerequisites
-- JDK 17 (`JAVA_HOME` pointing to OpenJDK 17)
-- Android SDK with Platform 35 and Build-Tools 35.0.0
+| Permission | When it is needed | What it does |
+|---|---|---|
+| **Microphone** (`RECORD_AUDIO`) | When transmitting | Android requires this permission for playback capture. The app captures eligible audio playing on the device—not sound from the room. Android separately asks you to approve system audio sharing when you start a stream. |
+| **Notifications** (`POST_NOTIFICATIONS`, Android 13+) | When starting a transmitter or receiver | Allows Android to show the ongoing streaming/playback notification and its controls. On earlier Android versions, the system notification appears without this runtime prompt. |
+| **Nearby Wi-Fi devices** (`NEARBY_WIFI_DEVICES`, Android 13+) | When using Wi-Fi Direct or Wi-Fi Aware | Allows Android's nearby Wi-Fi discovery and connection features. |
+| **Location** (`ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`) | When discovering with Wi-Fi Direct; also used for Bluetooth discovery on older Android versions | Android requires location permission for some nearby-device discovery APIs. The app uses it for discovery, not to include location in the audio stream. Some Android devices also require the system Location setting to be on for Wi-Fi Direct discovery. |
+| **Bluetooth scan, advertise, and connect** (Android 12+) | When using Bluetooth Low Energy discovery | Lets the app find and announce nearby Simple Audio Stream devices. On Android 11 and earlier, the app uses the older Bluetooth permissions and Location permission instead. Bluetooth is for discovery, not audio transport. |
 
-### Debug Build
-```bash
-./gradlew assembleDebug
-```
-Output APK:
-```
-app/build/outputs/apk/debug/app-debug.apk
-```
+### Optional access in Android Settings
 
-### Release Build
-```bash
-./gradlew assembleRelease
-```
-Output APK:
-```
-app/build/outputs/apk/release/app-release.apk
-```
+| Setting | What it enables |
+|---|---|
+| **Notification access** | Reads active media-session information so the app can send track title, artist, album artwork, and playback state to the other device. It also allows play/pause/next/previous commands to be relayed. The app's listener uses the media-session feature. |
+| **Accessibility service** | Optional hardware-volume-button control while transmitting. Volume Up/Down adjusts the remote receiver volume. The service filters hardware key presses only; it does not inspect screen content or accessibility events. |
+| **Install unknown apps** | Optional permission for the in-app updater to open the Android installer directly. It is not needed for audio streaming or for downloading an APK to install manually. |
 
-Release builds require a private release keystore. Gradle never falls back to the debug key. For local builds, copy `keystore.properties.example` to the gitignored `keystore.properties` and fill in your own signing details, or set environment variables:
-```bash
-export RELEASE_KEYSTORE_PATH="/path/to/your/release.keystore"
-export RELEASE_KEYSTORE_PASSWORD="your_keystore_password"
-export RELEASE_KEY_ALIAS="your_key_alias"
-export RELEASE_KEY_PASSWORD="your_key_password"
-./gradlew assembleRelease
-```
+### Other permissions Android grants for app features
 
-#### GitHub Actions Signing Secrets
-The stable and nightly workflows require these repository Actions secrets:
+These permissions do not normally show a runtime prompt:
 
-- `RELEASE_KEYSTORE_BASE64`: Base64-encoded private keystore file
-- `RELEASE_KEYSTORE_PASSWORD`
-- `RELEASE_KEY_ALIAS`
-- `RELEASE_KEY_PASSWORD`
+| Permission | What it does |
+|---|---|
+| `INTERNET` | Sends and receives audio/control packets on the local network and connects to GitHub for the update center. |
+| `ACCESS_NETWORK_STATE`, `ACCESS_WIFI_STATE` | Checks network availability and Wi-Fi state so devices can discover and connect to each other. |
+| `CHANGE_WIFI_STATE` | Supports Wi-Fi Direct/Wi-Fi Aware connection setup. |
+| `CHANGE_WIFI_MULTICAST_STATE` | Lets the receiver listen for local-network discovery broadcasts. |
+| `WAKE_LOCK` | Keeps the CPU awake during an active stream, including with the screen off. |
+| `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PROJECTION`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK` | Let Android keep audio capture and playback running as visible foreground services. |
+| `NFC` | Supports optional NFC tap-to-bootstrap on compatible devices. NFC is not used to transmit audio. |
 
-Generate the key once outside the repository and keep a secure backup. The command prompts for the keystore and key passwords; save them for the corresponding Actions secrets:
+## Updating
 
-```bash
-mkdir -p "$HOME/.local/share/simple-audio-stream"
-keytool -genkeypair -v \
-  -keystore "$HOME/.local/share/simple-audio-stream/release.jks" \
-  -storetype JKS \
-  -alias simple-audio-stream \
-  -keyalg RSA -keysize 2048 -validity 10000
-base64 -w 0 "$HOME/.local/share/simple-audio-stream/release.jks"
-```
+Use **Settings → App Updates** to check the stable or nightly channel and browse releases. The updater checks the APK checksum and verifies that its signing certificate matches the installed app before opening Android's installer. You can also install an APK manually from the [releases page](https://github.com/KollTHOR/simple-audio-stream/releases).
 
-Copy the final command's output into `RELEASE_KEYSTORE_BASE64`. In GitHub, add all four values under **Settings → Secrets and variables → Actions → New repository secret**. Use `simple-audio-stream` for `RELEASE_KEY_ALIAS`. The workflows decode the keystore into the runner's temporary directory and fail early if any secret is missing. Never commit the keystore or its passwords.
+## Help
 
-Changing the signing certificate prevents Android from updating installations signed with the old certificate. If replacing an exposed signing key, existing users may need to export any needed settings, uninstall the current app, and install the new release.
-
-### Running Unit Tests
-```bash
-./gradlew testDebugUnitTest
-```
-
----
-
-## Permissions Audit
-
-The application declares the following permissions in `AndroidManifest.xml`, strictly required for streaming and diagnostic operations:
-
-- `RECORD_AUDIO`: Required to capture internal audio playback via `AudioPlaybackCaptureConfiguration` in `AudioCaptureService`.
-- `INTERNET`: Required for UDP packet streaming and control telemetry.
-- `ACCESS_NETWORK_STATE` & `ACCESS_WIFI_STATE`: Required to inspect network interfaces and retrieve local IP addresses.
-- `WAKE_LOCK`: Required for CPU wake locks to keep audio streaming with the screen off.
-- `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PROJECTION`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK`: Required for persistent background capture and playback.
-- `POST_NOTIFICATIONS`: Required on Android 13+ (API 33+) to show foreground service status notifications.
-- `CHANGE_WIFI_MULTICAST_STATE`: Required on the receiver for UDP device discovery packets.
-- `CHANGE_WIFI_STATE`: Required for Wi-Fi Direct (P2P) autonomous group creation.
-- `ACCESS_FINE_LOCATION` & `ACCESS_COARSE_LOCATION`: Required by the Android framework on API 29-32 for Wi-Fi Direct peer discovery.
-- `NEARBY_WIFI_DEVICES`: Required on Android 13+ (API 33+) for Wi-Fi Direct peer discovery without location permissions.
-- `REQUEST_INSTALL_PACKAGES`: Required for the in-app updater in Settings to launch the system package installer when an update is downloaded.
+If devices do not appear, confirm they are on the same Wi-Fi/hotspot, allow the relevant nearby Wi-Fi or Bluetooth permissions for the connection method you chose, and retry the scan. For Wi-Fi Direct, also check that Location is enabled if your Android device requires it.
