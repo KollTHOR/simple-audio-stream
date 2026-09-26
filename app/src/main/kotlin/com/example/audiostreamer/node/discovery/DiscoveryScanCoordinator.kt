@@ -251,11 +251,9 @@ object DiscoveryScanCoordinator {
             checkAvailability = { checkBleAvailability(context) },
             startProvider = {
                 BleDiscoveryManager.startScanning(context)
-                HatBlePresenceProvider.startScanning(context)
             },
             stopProvider = {
                 BleDiscoveryManager.stopScanning()
-                HatBlePresenceProvider.stopScanning()
             },
             countDiscovered = {
                 HatDiscoveryRegistry.discoveredNodes.value.count {
@@ -414,7 +412,6 @@ object DiscoveryScanCoordinator {
         try { DiscoveryManager.stopDiscovery() } catch (_: Exception) {}
         try { WifiDirectManager.stopPeerDiscovery(context) } catch (_: Exception) {}
         try { BleDiscoveryManager.stopScanning() } catch (_: Exception) {}
-        try { HatBlePresenceProvider.stopScanning() } catch (_: Exception) {}
     }
 
     // ─────────────────────────────────────────────────────────────────────────

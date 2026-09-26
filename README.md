@@ -13,7 +13,7 @@ Simple Audio Stream sends audio playing on one Android device to another device 
 - Can show track information and album artwork on the receiver when optional Notification access is enabled.
 - Includes an in-app update center for stable and nightly builds.
 
-Bluetooth Low Energy is optional discovery only; Wi-Fi Direct is the router-free audio connection. NFC is an optional tap-to-bootstrap feature on supported devices and does not carry the audio stream.
+Bluetooth Low Energy can optionally exchange Wi-Fi Direct group details during setup; audio always travels over the local network or Wi-Fi Direct, never Bluetooth. NFC is an optional tap-to-bootstrap feature on supported devices and does not carry the audio stream.
 
 ## Install
 
@@ -54,7 +54,7 @@ Android requests permissions when you use the feature that needs them. You do no
 | **Notifications** (`POST_NOTIFICATIONS`, Android 13+) | When starting a transmitter or receiver | Allows Android to show the ongoing streaming/playback notification and its controls. On earlier Android versions, the system notification appears without this runtime prompt. |
 | **Nearby Wi-Fi devices** (`NEARBY_WIFI_DEVICES`, Android 13+) | When using Wi-Fi Direct | Allows Android's nearby Wi-Fi discovery and connection features. |
 | **Location** (`ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`) | When discovering with Wi-Fi Direct; also used for Bluetooth discovery on older Android versions | Android requires location permission for some nearby-device discovery APIs. The app uses it for discovery, not to include location in the audio stream. Some Android devices also require the system Location setting to be on for Wi-Fi Direct discovery. |
-| **Bluetooth scan, advertise, and connect** (Android 12+) | When using Bluetooth Low Energy discovery | Lets the app find and announce nearby Simple Audio Stream devices. On Android 11 and earlier, the app uses the older Bluetooth permissions and Location permission instead. Bluetooth is for discovery, not audio transport. |
+| **Bluetooth scan, advertise, and connect** (Android 12+) | When using the optional Bluetooth setup handshake | Lets the devices exchange Wi-Fi Direct group details before establishing the audio connection. On Android 11 and earlier, the app uses the older Bluetooth permissions and Location permission instead. Bluetooth does not carry audio. |
 
 ### Optional access in Android Settings
 

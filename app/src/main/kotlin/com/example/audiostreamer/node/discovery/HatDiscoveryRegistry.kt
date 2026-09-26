@@ -100,7 +100,7 @@ data class DiscoveredNodeEntry(
  * Merges discovery events from:
  * - LAN NSD ([LanDiscoveryProvider])
  * - Wi-Fi Direct peer discovery ([com.example.audiostreamer.WifiDirectManager])
- * - BLE Presence ([HatBlePresenceProvider])
+ * - BLE Direct bootstrap ([com.example.audiostreamer.BleDiscoveryManager])
  * - NFC Bootstrap ([HatNfcBootstrapProvider])
  *
  * **Rules:**
@@ -145,9 +145,6 @@ object HatDiscoveryRegistry {
                 }
                 launch {
                     com.example.audiostreamer.WifiDirectManager.discoveredPeers.collect { recomputeRegistry() }
-                }
-                launch {
-                    HatBlePresenceProvider.discoveredNodes.collect { recomputeRegistry() }
                 }
                 launch {
                     com.example.audiostreamer.BleDiscoveryManager.bleDevices.collect { recomputeRegistry() }
@@ -386,36 +383,7 @@ object HatDiscoveryRegistry {
                 }
             }
 
-            // 4. Ingest BLE Presence endpoints (with suffix-based matching)
-            val bleEndpoints = HatBlePresenceProvider.discoveredNodes.value
-            for (ble in bleEndpoints) {
-                val bleNodeId = ble.nodeInfo.id
-                if (bleNodeId == localNodeId || isInvalidIdentity(bleNodeId)) continue
-
-                // Check if this BLE node matches an existing full Node ID (by suffix match)
-                val suffix = bleNodeId.removePrefix("hat-node-ble-")
-                val existingKey = nodeMap.keys.firstOrNull { it == bleNodeId || (suffix.isNotEmpty() && it.endsWith(suffix)) }
-                val targetKey = existingKey ?: bleNodeId
-
-                val builder = getOrCreateBuilder(nodeMap, targetKey, ble.shortName)
-                builder.discoverySources.add(DiscoverySource.BLE)
-                builder.transportCandidates.add(NodeTransportType.BLUETOOTH_LE)
-                builder.nodeInfo = mergeNodeInfo(builder.nodeInfo, ble.nodeInfo)
-                builder.firstSeenEpochMs = minOf(builder.firstSeenEpochMs, ble.firstSeenEpochMs)
-                builder.lastSeenEpochMs = maxOf(builder.lastSeenEpochMs, ble.lastSeenEpochMs)
-                builder.rssi = ble.rssi
-                builder.endpoints.add(
-                    DiscoveredEndpoint(
-                        transportType = NodeTransportType.BLUETOOTH_LE,
-                        address = ble.bleAddress,
-                        description = "BLE Presence (${ble.bleAddress}, ${ble.rssi} dBm)",
-                        details = mapOf("rssi" to ble.rssi, "mac" to ble.bleAddress),
-                        lastSeenEpochMs = ble.lastSeenEpochMs
-                    )
-                )
-            }
-
-            // 4b. Correlate legacy BLE peers from BleDiscoveryManager
+            // 4. Ingest BLE discoveries that advertise a receiver's Direct group credentials.
             val bleLegacy = try { com.example.audiostreamer.BleDiscoveryManager.bleDevices.value } catch (e: Exception) { emptyList() }
             for (ble in bleLegacy) {
                 if (ble.role != "receiver") continue
@@ -439,8 +407,14 @@ object HatDiscoveryRegistry {
                         DiscoveredEndpoint(
                             transportType = NodeTransportType.BLUETOOTH_LE,
                             address = addr,
+                            port = ble.port,
                             description = "BLE (${ble.name})",
-                            details = mapOf("p2pSsid" to ble.p2pSsid, "p2pPassphrase" to ble.p2pPassphrase, "p2pGoIp" to ble.p2pGoIp),
+                            details = mapOf(
+                                "p2pSsid" to ble.p2pSsid,
+                                "p2pPassphrase" to ble.p2pPassphrase,
+                                "p2pGoIp" to ble.p2pGoIp,
+                                "port" to ble.port
+                            ),
                             lastSeenEpochMs = now
                         )
                     )

@@ -291,7 +291,7 @@ object HatDiagnostics {
 
     /** Ordered sections that make up the diagnostic snapshot. Providers are optional per section. */
     private val SNAPSHOT_SECTIONS = listOf(
-        "NODE", "CAPABILITIES", "TRANSPORTS", "LAN_DISCOVERY", "WIFI_DIRECT_DISCOVERY", "BLE_PRESENCE", "NFC_BOOTSTRAP", "DISCOVERY_REGISTRY", "LINKS", "STREAMS", "CONFIG", "GENERATION", "TX", "RX", "CAPTURE", "JITTER", "PLAYBACK", "RECEIVERS"
+        "NODE", "CAPABILITIES", "TRANSPORTS", "LAN_DISCOVERY", "WIFI_DIRECT_DISCOVERY", "NFC_BOOTSTRAP", "DISCOVERY_REGISTRY", "LINKS", "STREAMS", "CONFIG", "GENERATION", "TX", "RX", "CAPTURE", "JITTER", "PLAYBACK", "RECEIVERS"
     )
 
     @Volatile
@@ -396,13 +396,6 @@ object HatDiagnostics {
                     "${it.deviceName} (${it.deviceAddress}) status=${it.status}"
                 }
             )
-        }
-        registerSection("BLE_PRESENCE") {
-            try {
-                com.example.audiostreamer.node.discovery.HatBlePresenceProvider.getDiagnosticsSnapshot()
-            } catch (e: Exception) {
-                emptyMap()
-            }
         }
         registerSection("NFC_BOOTSTRAP") {
             try {
