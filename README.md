@@ -64,6 +64,8 @@ Android requests permissions when you use the feature that needs them. You do no
 | **Accessibility service** | Optional hardware-volume-button control while transmitting. Volume Up/Down adjusts the remote receiver volume. The service filters hardware key presses only; it does not inspect screen content or accessibility events. |
 | **Install unknown apps** | Optional permission for the in-app updater to open the Android installer directly. It is not needed for audio streaming or for downloading an APK to install manually. |
 
+**Android 13+ and sideloaded APKs:** Android may block the Notification access switch until you allow restricted settings for the app. Open **Settings → Apps → Audio Streamer → ⋮ → Allow restricted settings**, confirm the prompt, then return to **Settings → Special app access → Notification access → Audio Streamer** and enable access. Menu names can differ by device. This is an Android security confirmation, not an app permission; it cannot be enabled or requested by adding a manifest entry. Android may apply the same restriction to Accessibility access.
+
 ### Other permissions Android grants for app features
 
 These permissions do not normally show a runtime prompt:
