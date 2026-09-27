@@ -544,6 +544,15 @@ object DiscoveryScanCoordinator {
                 "Bluetooth: ${formatReport(DiscoveryScanPhase.BLE)}"
     }
 
-    private fun connectableDiscoveredNodes(): List<DiscoveredNodeEntry> =
-        HatDiscoveryRegistry.discoveredNodes.value.filter(ConnectionRoutePolicy::isConnectable)
+    private fun connectableDiscoveredNodes(): List<DiscoveredNodeEntry> {
+        val all = HatDiscoveryRegistry.discoveredNodes.value
+        val connectable = all.filter(ConnectionRoutePolicy::isConnectable)
+        val dropped = all.size - connectable.size
+        if (dropped > 0) {
+            val names = all.filterNot(ConnectionRoutePolicy::isConnectable)
+                .joinToString(", ") { "${it.name} [${it.transportCandidates.joinToString("+")}]" }
+            Log.i(TAG, "DISCOVERY_FILTERED: $dropped discovered node(s) had no usable audio route: $names")
+        }
+        return connectable
+    }
 }
