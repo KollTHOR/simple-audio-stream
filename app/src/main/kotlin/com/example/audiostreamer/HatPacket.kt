@@ -23,7 +23,7 @@ object HatPacket {
     const val MAGIC: Short = 0x4854 // "HT"
     const val MAGIC_BYTE_0: Byte = 0x48 // 'H'
     const val MAGIC_BYTE_1: Byte = 0x54 // 'T'
-    const val PROTOCOL_VERSION: Byte = 1
+    const val PROTOCOL_VERSION: Byte = 2
 
     // Packet Types (Byte 3)
     const val TYPE_AUDIO: Byte = 0x01
@@ -39,6 +39,11 @@ object HatPacket {
     const val TYPE_TRANSMITTER_ANNOUNCE: Byte = 0x0B
     const val TYPE_MEDIA_CONTROL: Byte = 0x0C
     const val TYPE_MEDIA_METADATA: Byte = 0x0D
+    const val TYPE_RETX_REQUEST: Byte = 0x0E
+
+    // Retransmission request (NACK) payload limits. A NACK carries a deduplicated list of
+    // missing 16-bit sequence numbers the receiver still needs before its playout deadline.
+    const val RETX_MAX_SEQS_PER_REQUEST = 64
 
     // Media Control Commands (Byte 18 / volumeOrCaps)
     const val MEDIA_CMD_PLAY_PAUSE: Byte = 0x01
@@ -61,6 +66,7 @@ object HatPacket {
         TYPE_TRANSMITTER_ANNOUNCE -> "TRANSMITTER_ANNOUNCE"
         TYPE_MEDIA_CONTROL -> "MEDIA_CONTROL"
         TYPE_MEDIA_METADATA -> "MEDIA_METADATA"
+        TYPE_RETX_REQUEST -> "RETX_REQUEST"
         else -> "UNKNOWN(0x${(type.toInt() and 0xFF).toString(16)})"
     }
 
@@ -95,6 +101,7 @@ object HatPacket {
     // Flags (Byte 17 bits 4..7)
     const val FLAG_NONE: Byte = 0x00
     const val FLAG_P2P_ACTIVE: Byte = 0x01
+    const val FLAG_RETRANSMIT: Byte = 0x02
 
     data class Header(
         val version: Byte = PROTOCOL_VERSION,
@@ -312,7 +319,7 @@ object HatPacket {
 
         // 3. Strict Packet Type Check
         val packetType = buffer[offset + 3]
-        if (packetType !in TYPE_AUDIO..TYPE_MEDIA_METADATA) {
+        if (packetType !in TYPE_AUDIO..TYPE_RETX_REQUEST) {
             return null
         }
 
@@ -361,6 +368,9 @@ object HatPacket {
             }
             TYPE_MEDIA_METADATA -> {
                 if (payloadLength == 0) return null
+            }
+            TYPE_RETX_REQUEST -> {
+                if (payloadLength == 0 || (payloadLength % 2) != 0) return null
             }
             TYPE_RECEIVER_HEARTBEAT -> {
                 // Heartbeats may be payload-free or carry NodeCapabilityExchange metadata

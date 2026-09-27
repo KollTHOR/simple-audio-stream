@@ -133,6 +133,55 @@ class AudioCaptureService : Service() {
     private val clientCapabilities = ConcurrentHashMap<ClientEndpoint, Int>()
     private val clientNodeInfo = ConcurrentHashMap<ClientEndpoint, com.example.audiostreamer.node.NodeInfo>()
     @Volatile private var lastClientPruneTime = 0L
+
+    // Selective retransmission (ARQ) + adaptive FEC state. The replay ring is written by the capture
+    // thread and read by the control-listener thread (NackTracker's RetransmitBuffer is internally
+    // locked); retxBacklog carries the receiver-reported loss across that boundary as an atomic.
+    private val retransmitBuffer = RetransmitBuffer()
+    private val retxBacklog = java.util.concurrent.atomic.AtomicInteger(0)
+    private val adaptiveFec = AdaptiveFecController()
+    private val retransmitScratch = ByteArray(AudioConfig.HEADER_SIZE + AudioConfig.MAX_PACKET_SIZE)
+    private val retransmitPacket = DatagramPacket(retransmitScratch, retransmitScratch.size)
+
+    /**
+     * Records a just-built audio datagram for retransmission and returns whether XOR parity should
+     * be generated for it now. Every audio packet is stored for replay regardless of FEC — selective
+     * retransmit is the primary recovery and must work even when parity is off. Also feeds the
+     * adaptive-FEC window, attributing at most one receiver-reported loss per sent packet (so the
+     * window stays a true loss *proportion*).
+     */
+    private fun noteAudioSentForRetx(
+        seq: Int,
+        generation: Long,
+        sendBuffer: ByteArray,
+        totalLen: Int,
+        fecCapable: Boolean
+    ): Boolean {
+        retransmitBuffer.record(seq, generation, sendBuffer, 0, totalLen)
+        val lost = retxBacklog.get() > 0 && retxBacklog.getAndDecrement() > 0
+        adaptiveFec.recordSent(lost)
+        return fecCapable && adaptiveFec.isEnabled(SystemClock.elapsedRealtime())
+    }
+
+    /** Serves one retransmission request by replaying the exact stored datagram to [endpoint]. */
+    private fun replayRetransmission(socket: DatagramSocket, endpoint: ClientEndpoint, seq: Int, generation: Long) {
+        val len = retransmitBuffer.lookupInto(seq, generation, retransmitScratch)
+        if (len < HatPacket.HEADER_SIZE) return
+        retransmitScratch[17] = (retransmitScratch[17].toInt() or ((HatPacket.FLAG_RETRANSMIT.toInt() and 0x0F) shl 4)).toByte()
+        val knownNode = clientNodeInfo[endpoint]
+        val vol = getReceiverVolume(endpoint.address.hostAddress ?: "", knownNode?.id)
+        retransmitScratch[18] = vol.coerceIn(0, 100).toByte()
+        retransmitPacket.setData(retransmitScratch, 0, len)
+        retransmitPacket.address = endpoint.address
+        retransmitPacket.port = endpoint.port
+        try {
+            synchronized(socketSendLock) { socket.send(retransmitPacket) }
+            diagTxPackets.incrementAndGet()
+            diagTxBytes.addAndGet(len.toLong())
+        } catch (e: Exception) {
+            HatDiagnostics.increment("tx_retx_send_errors")
+        }
+    }
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var aacEncoder: AacEncoder? = null
@@ -146,6 +195,8 @@ class AudioCaptureService : Service() {
     internal val diagPacketsGenerated = java.util.concurrent.atomic.AtomicLong(0L)
     internal val diagTxPackets = java.util.concurrent.atomic.AtomicLong(0L)
     internal val diagTxBytes = java.util.concurrent.atomic.AtomicLong(0L)
+    internal val diagRetxServed = java.util.concurrent.atomic.AtomicLong(0L)
+    @Volatile internal var lastFecActive = false
     internal val diagTxErrors = java.util.concurrent.atomic.AtomicLong(0L)
     internal val diagCaptureFrames = java.util.concurrent.atomic.AtomicLong(0L)
     internal val diagCaptureFramesDropped = java.util.concurrent.atomic.AtomicLong(0L)
@@ -1219,6 +1270,20 @@ class AudioCaptureService : Service() {
                                 Log.d(TAG, "Rejected packet from $endpoint: TYPE_DISCONNECT from non-connected client")
                             }
                         }
+                        HatPacket.TYPE_RETX_REQUEST -> {
+                            // Only serve registered receivers: an unregistered host must not be able
+                            // to drive replay traffic. Stale-generation requests resolve to no hits.
+                            if (clientRegistry.containsKey(endpoint)) {
+                                val activeGen = activeNegotiatedConfig?.generation ?: currentStreamGeneration.get()
+                                val missing = RetransmitProtocol.decodeMissingSeqs(recvBuf, HatPacket.HEADER_SIZE, header.payloadLength)
+                                if (missing != null) {
+                                    retxBacklog.addAndGet(missing.size)
+                                    for (seq in missing) replayRetransmission(listenerSocket, endpoint, seq, activeGen)
+                                    diagRetxServed.incrementAndGet()
+                                    HatDiagnostics.increment("tx_retx_requests")
+                                }
+                            }
+                        }
                         HatPacket.TYPE_MEDIA_CONTROL -> {
                             val cmd = header.volumeOrCaps
                             Log.i(TAG, "Received TYPE_MEDIA_CONTROL from $endpoint: cmd=$cmd")
@@ -1578,6 +1643,12 @@ class AudioCaptureService : Service() {
             val fecDatagramPacket = DatagramPacket(ByteArray(AudioConfig.HEADER_SIZE + AudioConfig.MAX_PACKET_SIZE), 0)
 
             var sequence = 0
+            // Fresh generation restarts sequence numbering at 0: drop any prior replay ring and start
+            // the FEC window protected (parity on) until a clean-link measurement releases it.
+            retransmitBuffer.clear()
+            retxBacklog.set(0)
+            adaptiveFec.reset()
+            adaptiveFec.noteStarted(SystemClock.elapsedRealtime())
             var streamTimelineFrames = 0L
             var totalPackets = 0L
             var totalBytes = 0L
@@ -1673,13 +1744,22 @@ class AudioCaptureService : Service() {
                                         System.arraycopy(frame, 0, sendBuffer, HatPacket.HEADER_SIZE, frameLen)
                                         packet.length = HatPacket.HEADER_SIZE + frameLen
 
+                                        val fecActive = noteAudioSentForRetx(
+                                            seq = currentSeq,
+                                            generation = negotiatedStreamConfig.generation,
+                                            sendBuffer = sendBuffer,
+                                            totalLen = packet.length,
+                                            fecCapable = isFecEnabled
+                                        )
+                                        lastFecActive = fecActive
+
                                         broadcastDatagram(socket, packet)
                                         totalPackets++
                                         totalBytes += packet.length
                                         intervalPackets++
                                         intervalBytes += packet.length
 
-                                        if (isFecEnabled) {
+                                        if (fecActive) {
                                             val parityBytes = fecEncoder.encode(
                                                 seq = currentSeq,
                                                 timestamp = currentTimestamp,
@@ -1701,6 +1781,8 @@ class AudioCaptureService : Service() {
                                                 totalBytes += parityBytes.size
                                                 intervalBytes += parityBytes.size
                                             }
+                                        } else {
+                                            fecEncoder.reset()
                                         }
                                     }
                                 }
@@ -1903,13 +1985,29 @@ class AudioCaptureService : Service() {
                                     packet.length = HatPacket.HEADER_SIZE + effectivePayloadLen
                                 }
 
+                                // Only genuine audio datagrams are replayable; a silence heartbeat is
+                                // recorded/broadcast through the same buffer but must not enter the ring.
+                                val fecActive = if (effectivePayloadLen > 0) {
+                                    noteAudioSentForRetx(
+                                        seq = currentSeq,
+                                        generation = negotiatedStreamConfig.generation,
+                                        sendBuffer = sendBuffer,
+                                        totalLen = packet.length,
+                                        fecCapable = isFecEnabled
+                                    )
+                                } else {
+                                    adaptiveFec.recordSent(lost = false)
+                                    isFecEnabled && adaptiveFec.isEnabled(SystemClock.elapsedRealtime())
+                                }
+                                lastFecActive = fecActive
+
                                 broadcastDatagram(socket, packet)
                                 totalPackets++
                                 totalBytes += packet.length
                                 intervalPackets++
                                 intervalBytes += packet.length
 
-                                if (isFecEnabled) {
+                                if (fecActive) {
                                     if (isSilenceSuppressed) {
                                         fecEncoder.reset()
                                     } else {
@@ -2172,6 +2270,9 @@ class AudioCaptureService : Service() {
             "sendCalls" to (send?.count ?: 0L),
             "avgSendMs" to ((send?.avgNs ?: 0L) / 1_000_000.0),
             "maxSendMs" to ((send?.maxNs ?: 0L) / 1_000_000.0),
+            "retxServed" to diagRetxServed.get(),
+            "retxSendErrors" to HatDiagnostics.counter("tx_retx_send_errors"),
+            "fecActive" to lastFecActive,
             "receivers" to clientRegistry.size
         )
     }
