@@ -818,6 +818,12 @@ class AudioSinkService : Service() {
                                     if (txExchange != null) {
                                         val localNode = LocalNodeManager.getLocalNode()
                                         val remoteNode = txExchange.toNodeInfo(role = StreamRole.SENDER)
+                                        // Remember the announced name against the source IP so the
+                                        // "CONNECTED TRANSMITTER" card and device rows show the real
+                                        // device name instead of the "Audio Transmitter" fallback
+                                        // (crucial over Wi-Fi Direct, where the audio source IP differs
+                                        // from the LAN IP the discovery announce was cached under).
+                                        com.example.audiostreamer.DiscoveryManager.rememberDeviceName(senderHost, remoteNode.name)
                                         val negotiated = NodeCapabilityNegotiator.negotiate(localNode, remoteNode)
                                         HatDiagnostics.setLastNegotiatedCapabilities(negotiated)
                                         StreamState.update { it.copy(lastNegotiatedCapabilities = negotiated) }

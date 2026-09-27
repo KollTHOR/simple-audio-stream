@@ -951,7 +951,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         cardReceiverDiscoverable.visibility = View.VISIBLE
-        tvReceiverHeadline.text = "● Ready to receive"
+        // The banner layout already has its own green status dot, so no leading "●" here.
+        tvReceiverHeadline.text = "Ready to receive"
 
         val availableTransports = mutableListOf<String>()
         if (NetworkUtils.isLanAvailable(this)) {
@@ -980,9 +981,9 @@ class MainActivity : AppCompatActivity() {
 
         val localIp = WifiDirectManager.groupOwnerIp.value ?: NetworkUtils.getLocalIpAddress() ?: "0.0.0.0"
         val port = etPort.text.toString().toIntOrNull() ?: AudioConfig.DEFAULT_PORT
-        val localNodeId = try { LocalNodeManager.getLocalNode().id } catch (_: Exception) { "" }
-        val idShort = if (localNodeId.isNotBlank()) " • ${localNodeId.takeLast(6)}" else ""
-        tvReceiverEndpointPill.text = "$localIp:$port$idShort"
+        // Show the address a transmitter will target; the node ID is available in device details and
+        // is not useful (or understandable) as a trailing hex fragment here.
+        tvReceiverEndpointPill.text = "$localIp:$port"
     }
 
     private fun Int.dpToPx(): Int = (this * resources.displayMetrics.density).toInt()
@@ -1901,7 +1902,9 @@ class MainActivity : AppCompatActivity() {
 
         layoutDiscoveredDevicesContainer.visibility = if (savedToShow.isEmpty() && unSavedAvailableDevices.isEmpty()) View.GONE else View.VISIBLE
         renderDiscoveryScanState(com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.scanState.value)
-        layoutDiscoverySection.visibility = View.VISIBLE
+        // Only the transmitter initiates connections, so the Available Devices list belongs to
+        // transmitter mode; this runs on every discovery update and must not re-show it while receiving.
+        layoutDiscoverySection.visibility = if (currentMode == Mode.TRANSMITTER) View.VISIBLE else View.GONE
     }
 
     private fun connectToUnifiedDeviceDirect(dev: UnifiedDevice, onConnected: ((String) -> Unit)? = null) {
@@ -2714,7 +2717,12 @@ class MainActivity : AppCompatActivity() {
                 tvModeGuide?.text = "Accept and play audio streams from nearby transmitters"
                 cardReceiverDiscoverable.visibility = View.VISIBLE
                 updateReceiverDiscoverableBanner()
-                layoutDiscoverySection.visibility = View.VISIBLE
+                // Receiving is passive: the transmitter initiates and pushes audio. A receiver must
+                // not "connect" to a transmitter (that path only raced with Tune-In and did nothing,
+                // since startReceiverService just binds a port), so the Available Devices list is
+                // hidden here. Incoming transmitters are still surfaced via the Tune-In banner and
+                // the Connected Transmitter card.
+                layoutDiscoverySection.visibility = View.GONE
                 layoutSavedProfilesSection.visibility = View.GONE
                 layoutReceiverP2p.visibility = View.GONE
                 layoutVolumeControl.visibility = View.GONE
