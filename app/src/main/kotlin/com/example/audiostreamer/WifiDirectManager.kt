@@ -60,9 +60,18 @@ object WifiDirectManager {
         val callback = pendingJoinFailed
         cancelJoinWatchdog()
         onConnectedCallback = null
+        abortJoin(message, callback)
+    }
+
+    /**
+     * Common join-failure path: updates status, publishes to the alert bus (visible even when the
+     * app is backgrounded — a caller-side Toast would be missed), then invokes the caller callback.
+     */
+    private fun abortJoin(message: String, onFailed: ((String) -> Unit)?) {
         _statusMessage.value = message
         Log.w(TAG, message)
-        callback?.invoke(message)
+        UserAlertCenter.warn(message)
+        onFailed?.invoke(message)
     }
 
     private var wifiP2pManager: WifiP2pManager? = null
@@ -488,20 +497,16 @@ object WifiDirectManager {
         val pass = passphrase ?: P2P_DEFAULT_PASSPHRASE
         Log.i(TAG, "connectWithCredentials: SSID='$ssid', Pass=******")
         if (!hasPermissions(context)) {
-            val msg = "Permissions required for Wi-Fi Direct"
-            _statusMessage.value = msg
+            abortJoin("Permissions required for Wi-Fi Direct", onFailed)
             Log.w(TAG, "connectWithCredentials aborted: missing permissions")
-            onFailed?.invoke(msg)
             return
         }
         val mgr = wifiP2pManager ?: run {
-            Log.w(TAG, "connectWithCredentials aborted: wifiP2pManager is null")
-            onFailed?.invoke("Wi-Fi Direct is unavailable on this device")
+            abortJoin("Wi-Fi Direct is unavailable on this device", onFailed)
             return
         }
         val ch = channel ?: run {
-            Log.w(TAG, "connectWithCredentials aborted: channel is null")
-            onFailed?.invoke("Wi-Fi Direct channel is not initialized")
+            abortJoin("Wi-Fi Direct channel is not initialized", onFailed)
             return
         }
 
@@ -545,18 +550,16 @@ object WifiDirectManager {
         init(context)
         Log.i(TAG, "connectToPeer: '${device.deviceName}' (${device.deviceAddress})")
         if (!hasPermissions(context)) {
-            val msg = "Permissions required for Wi-Fi Direct"
-            _statusMessage.value = msg
+            abortJoin("Permissions required for Wi-Fi Direct", onFailed)
             Log.w(TAG, "connectToPeer aborted: missing permissions")
-            onFailed?.invoke(msg)
             return
         }
         val mgr = wifiP2pManager ?: run {
-            onFailed?.invoke("Wi-Fi Direct is unavailable on this device")
+            abortJoin("Wi-Fi Direct is unavailable on this device", onFailed)
             return
         }
         val ch = channel ?: run {
-            onFailed?.invoke("Wi-Fi Direct channel is not initialized")
+            abortJoin("Wi-Fi Direct channel is not initialized", onFailed)
             return
         }
 

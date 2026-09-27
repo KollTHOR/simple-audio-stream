@@ -76,12 +76,16 @@ object AppLogger {
     fun e(tag: String, msg: String, tr: Throwable? = null) {
         if (tr != null) Log.e(tag, msg, tr) else Log.e(tag, msg)
         addEntry(LogEntry(level = 'E', tag = tag, message = msg, throwable = tr))
+        // Every error becomes user-visible through the alert bus; throttled there so a failing
+        // retry loop cannot spam the UI. UserAlertCenter must not call back into AppLogger.
+        UserAlertCenter.publishFromLogger("$tag: $msg")
     }
 
     fun e(tag: String, tr: Throwable) {
         val msg = tr.message ?: tr.javaClass.simpleName
         Log.e(tag, msg, tr)
         addEntry(LogEntry(level = 'E', tag = tag, message = msg, throwable = tr))
+        UserAlertCenter.publishFromLogger("$tag: $msg")
     }
 
     fun getStackTraceString(tr: Throwable?): String = Log.getStackTraceString(tr)
