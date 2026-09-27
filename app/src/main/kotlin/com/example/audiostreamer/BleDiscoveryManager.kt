@@ -24,6 +24,8 @@ import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelUuid
 import android.os.SystemClock
 import androidx.core.content.ContextCompat
@@ -81,6 +83,32 @@ object BleDiscoveryManager {
     private val gattClients = ConcurrentHashMap<String, BluetoothGatt>()
     private val pendingGattClients = ConcurrentHashMap.newKeySet<String>()
     private val connectedClientMtus = ConcurrentHashMap<String, Int>()
+
+    /**
+     * A peer can advertise the bootstrap marker but never answer the GATT read (busy radio,
+     * crashed server). Without a timeout the client would sit open indefinitely and block retries.
+     */
+    private const val GATT_HANDSHAKE_TIMEOUT_MS = 10_000L
+    private val gattTimeoutHandler = Handler(Looper.getMainLooper())
+    private val gattTimeouts = ConcurrentHashMap<String, Runnable>()
+
+    private fun scheduleHandshakeTimeout(device: BluetoothDevice) {
+        cancelHandshakeTimeout(device.address)
+        val timeout = Runnable {
+            gattTimeouts.remove(device.address)
+            val gatt = gattClients[device.address]
+            if (gatt != null) {
+                Log.w(TAG, "BLE Direct bootstrap handshake timed out for ${device.address}")
+                finishGattClient(device.address, gatt)
+            }
+        }
+        gattTimeouts[device.address] = timeout
+        gattTimeoutHandler.postDelayed(timeout, GATT_HANDSHAKE_TIMEOUT_MS)
+    }
+
+    private fun cancelHandshakeTimeout(address: String) {
+        gattTimeouts.remove(address)?.let { gattTimeoutHandler.removeCallbacks(it) }
+    }
 
     private var advertiseCallback: AdvertiseCallback? = null
     private var scanCallback: ScanCallback? = null
@@ -446,6 +474,7 @@ object BleDiscoveryManager {
                 pendingGattClients.remove(device.address)
             } else {
                 gattClients[device.address] = gatt
+                scheduleHandshakeTimeout(device)
             }
         } catch (e: Exception) {
             pendingGattClients.remove(device.address)
@@ -492,6 +521,7 @@ object BleDiscoveryManager {
 
     @SuppressLint("MissingPermission")
     private fun finishGattClient(address: String, gatt: BluetoothGatt) {
+        cancelHandshakeTimeout(address)
         pendingGattClients.remove(address)
         gattClients.remove(address)
         try { gatt.disconnect() } catch (_: Exception) {}
@@ -500,6 +530,7 @@ object BleDiscoveryManager {
 
     @SuppressLint("MissingPermission")
     private fun closeGattClients() {
+        gattTimeouts.keys.toList().forEach { cancelHandshakeTimeout(it) }
         val clients = gattClients.values.toList()
         gattClients.clear()
         pendingGattClients.clear()
