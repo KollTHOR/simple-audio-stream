@@ -27,6 +27,44 @@ object WifiDirectManager {
     const val P2P_DEFAULT_SSID = "DIRECT-SA-AudioReceiver"
     const val P2P_DEFAULT_PASSPHRASE = "SimpleAudio123"
 
+    /**
+     * A WPS join can stall silently on OEM stacks: `connect()` reports success (accepted) but the
+     * CONNECTION_CHANGED broadcast never arrives. Without a watchdog the caller waits forever.
+     */
+    private const val JOIN_TIMEOUT_MS = 15_000L
+
+    private val uiHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var pendingJoinTimeout: Runnable? = null
+    private var pendingJoinFailed: ((String) -> Unit)? = null
+
+    /** Arms the join watchdog, replacing any in-flight attempt. */
+    private fun startJoinWatchdog(label: String, onFailed: ((String) -> Unit)?) {
+        cancelJoinWatchdog()
+        pendingJoinFailed = onFailed
+        val timeout = Runnable {
+            pendingJoinTimeout = null
+            failPendingJoin("Wi-Fi Direct join to $label timed out")
+        }
+        pendingJoinTimeout = timeout
+        uiHandler.postDelayed(timeout, JOIN_TIMEOUT_MS)
+    }
+
+    private fun cancelJoinWatchdog() {
+        pendingJoinTimeout?.let { uiHandler.removeCallbacks(it) }
+        pendingJoinTimeout = null
+        pendingJoinFailed = null
+    }
+
+    /** Reports a definitive join failure to the caller and clears all pending state. */
+    private fun failPendingJoin(message: String) {
+        val callback = pendingJoinFailed
+        cancelJoinWatchdog()
+        onConnectedCallback = null
+        _statusMessage.value = message
+        Log.w(TAG, message)
+        callback?.invoke(message)
+    }
+
     private var wifiP2pManager: WifiP2pManager? = null
     private var channel: WifiP2pManager.Channel? = null
     private var receiver: BroadcastReceiver? = null
@@ -154,6 +192,7 @@ object WifiDirectManager {
                                     _groupOwnerIp.value = goIp
                                     _statusMessage.value = "Connected via Wi-Fi Direct ($goIp)"
                                     Log.i(TAG, "P2P Link established! GO IP: $goIp, isGroupOwner=${info.isGroupOwner}")
+                                    cancelJoinWatchdog()
                                     onConnectedCallback?.invoke(goIp)
                                 }
                             }
@@ -327,6 +366,7 @@ object WifiDirectManager {
     }
 
     fun removeGroup(context: Context) {
+        cancelJoinWatchdog()
         val mgr = wifiP2pManager ?: return
         val ch = channel ?: return
         Log.i(TAG, "Removing autonomous Wi-Fi Direct group...")
@@ -441,26 +481,32 @@ object WifiDirectManager {
         context: Context,
         ssid: String,
         passphrase: String?,
+        onFailed: ((String) -> Unit)? = null,
         onConnected: (goIp: String) -> Unit
     ) {
         init(context)
         val pass = passphrase ?: P2P_DEFAULT_PASSPHRASE
         Log.i(TAG, "connectWithCredentials: SSID='$ssid', Pass=******")
         if (!hasPermissions(context)) {
-            _statusMessage.value = "Permissions required for Wi-Fi Direct"
+            val msg = "Permissions required for Wi-Fi Direct"
+            _statusMessage.value = msg
             Log.w(TAG, "connectWithCredentials aborted: missing permissions")
+            onFailed?.invoke(msg)
             return
         }
         val mgr = wifiP2pManager ?: run {
             Log.w(TAG, "connectWithCredentials aborted: wifiP2pManager is null")
+            onFailed?.invoke("Wi-Fi Direct is unavailable on this device")
             return
         }
         val ch = channel ?: run {
             Log.w(TAG, "connectWithCredentials aborted: channel is null")
+            onFailed?.invoke("Wi-Fi Direct channel is not initialized")
             return
         }
 
         onConnectedCallback = onConnected
+        startJoinWatchdog(ssid, onFailed)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val config = WifiP2pConfig.Builder()
@@ -478,13 +524,12 @@ object WifiDirectManager {
                     }
 
                     override fun onFailure(reason: Int) {
-                        val reasonStr = parseReason(reason)
-                        _statusMessage.value = "Direct connect failed ($reasonStr)"
-                        Log.w(TAG, "WifiP2pManager.connect() failed: $reasonStr for $ssid")
+                        failPendingJoin("Direct connect to $ssid failed (${parseReason(reason)})")
                     }
                 })
             }
         } else {
+            cancelJoinWatchdog()
             Log.i(TAG, "Pre-Android 10: falling back to peer discovery")
             discoverPeers(context)
         }
@@ -494,19 +539,29 @@ object WifiDirectManager {
     fun connectToPeer(
         context: Context,
         device: WifiP2pDevice,
+        onFailed: ((String) -> Unit)? = null,
         onConnected: (goIp: String) -> Unit
     ) {
         init(context)
         Log.i(TAG, "connectToPeer: '${device.deviceName}' (${device.deviceAddress})")
         if (!hasPermissions(context)) {
-            _statusMessage.value = "Permissions required for Wi-Fi Direct"
+            val msg = "Permissions required for Wi-Fi Direct"
+            _statusMessage.value = msg
             Log.w(TAG, "connectToPeer aborted: missing permissions")
+            onFailed?.invoke(msg)
             return
         }
-        val mgr = wifiP2pManager ?: return
-        val ch = channel ?: return
+        val mgr = wifiP2pManager ?: run {
+            onFailed?.invoke("Wi-Fi Direct is unavailable on this device")
+            return
+        }
+        val ch = channel ?: run {
+            onFailed?.invoke("Wi-Fi Direct channel is not initialized")
+            return
+        }
 
         onConnectedCallback = onConnected
+        startJoinWatchdog(device.deviceName ?: device.deviceAddress, onFailed)
 
         val config = WifiP2pConfig().apply {
             deviceAddress = device.deviceAddress
@@ -524,15 +579,14 @@ object WifiDirectManager {
                 }
 
                 override fun onFailure(reason: Int) {
-                    val reasonStr = parseReason(reason)
-                    _statusMessage.value = "Connection failed ($reasonStr)"
-                    Log.w(TAG, "Connection failed to ${device.deviceName}: $reasonStr")
+                    failPendingJoin("Connection to ${device.deviceName} failed (${parseReason(reason)})")
                 }
             })
         }
     }
 
     fun disconnect(context: Context) {
+        cancelJoinWatchdog()
         val mgr = wifiP2pManager ?: return
         val ch = channel ?: return
         Log.i(TAG, "Disconnecting P2P link...")

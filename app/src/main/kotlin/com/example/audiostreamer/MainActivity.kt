@@ -1872,7 +1872,17 @@ class MainActivity : AppCompatActivity() {
             val pass = dev.p2pPassphrase ?: WifiDirectManager.P2P_DEFAULT_PASSPHRASE
             AppLogger.i("MainActivity", "Direct-linking to '${dev.displayName}' SSID=${dev.p2pSsid}...")
             Toast.makeText(this, "Direct-linking to ${dev.displayName}...", Toast.LENGTH_SHORT).show()
-            WifiDirectManager.connectWithCredentials(this, dev.p2pSsid, pass) { goIp ->
+            WifiDirectManager.connectWithCredentials(
+                this,
+                dev.p2pSsid,
+                pass,
+                onFailed = { reason ->
+                    runOnUiThread {
+                        AppLogger.w("MainActivity", "Direct link to '${dev.displayName}' failed: $reason")
+                        Toast.makeText(this@MainActivity, "Couldn't reach ${dev.displayName}: $reason", Toast.LENGTH_LONG).show()
+                    }
+                }
+            ) { goIp ->
                 val durationMs = System.currentTimeMillis() - connStartMs
                 runOnUiThread {
                     etTargetIp.setText(goIp)
@@ -1885,7 +1895,16 @@ class MainActivity : AppCompatActivity() {
             val peerAddr = dev.p2pPeer.deviceAddress
             AppLogger.i("MainActivity", "Connecting to P2P peer '${dev.displayName}' ($peerAddr)...")
             Toast.makeText(this, "Connecting to ${dev.displayName}...", Toast.LENGTH_SHORT).show()
-            WifiDirectManager.connectToPeer(this, dev.p2pPeer) { goIp ->
+            WifiDirectManager.connectToPeer(
+                this,
+                dev.p2pPeer,
+                onFailed = { reason ->
+                    runOnUiThread {
+                        AppLogger.w("MainActivity", "P2P peer connect to '${dev.displayName}' failed: $reason")
+                        Toast.makeText(this@MainActivity, "Couldn't reach ${dev.displayName}: $reason", Toast.LENGTH_LONG).show()
+                    }
+                }
+            ) { goIp ->
                 val durationMs = System.currentTimeMillis() - connStartMs
                 runOnUiThread {
                     etTargetIp.setText(goIp)
@@ -2039,7 +2058,13 @@ class MainActivity : AppCompatActivity() {
             WifiDirectManager.connectWithCredentials(
                 this,
                 ssid,
-                pass
+                pass,
+                onFailed = { reason ->
+                    runOnUiThread {
+                        AppLogger.w("MainActivity", "Direct link to '${targetDev.name}' failed: $reason")
+                        Toast.makeText(this@MainActivity, "Couldn't reach ${targetDev.name}: $reason", Toast.LENGTH_LONG).show()
+                    }
+                }
             ) { goIp ->
                 runOnUiThread {
                     etTargetIp.setText(goIp)

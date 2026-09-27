@@ -38,6 +38,7 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.SocketException
+import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
@@ -584,6 +585,13 @@ class AudioSinkService : Service() {
                 bind(InetSocketAddress(port))
             }
             try { socket.trafficClass = 0xB8 } catch (ignored: Exception) {}
+            // Bound receive() so the loop can run liveness checks even during a dead-air gap; a
+            // fully blocking receive would stall the whole update path when nothing arrives.
+            try {
+                socket.soTimeout = ReceiverLivenessPolicy.RX_POLL_TIMEOUT_MS.toInt()
+            } catch (e: Exception) {
+                Log.w(TAG, "Unable to set UDP receive timeout (${e.message}); liveness relies on inbound packets only")
+            }
             datagramSocket = socket
             activeTransport = transport
 
@@ -624,6 +632,7 @@ class AudioSinkService : Service() {
                 var smoothBps = 0f
                 var lastTrackUnderrunCount = 0
                 var firstRxGeneration = -1L
+                var lastActivityElapsedMs = 0L
 
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                     try {
@@ -631,6 +640,8 @@ class AudioSinkService : Service() {
                         val recvStartNs = SystemClock.elapsedRealtimeNanos()
                         socket.receive(packet)
                         HatDiagnostics.recordTime("receive", SystemClock.elapsedRealtimeNanos() - recvStartNs)
+
+                        lastActivityElapsedMs = SystemClock.elapsedRealtime()
 
                         val length = packet.length
                         val data = packet.data
@@ -1099,6 +1110,22 @@ class AudioSinkService : Service() {
                             lastStatsTime = now
                         }
 
+                    } catch (e: SocketTimeoutException) {
+                        // Expected dead-air poll; check whether the transmitter went silent.
+                        val lastTx = StreamState.telemetry.value.connectedTransmitter
+                        val idle = SystemClock.elapsedRealtime() - lastActivityElapsedMs
+                        if (lastTx != null && ReceiverLivenessPolicy.shouldCheck(idle) && ReceiverLivenessPolicy.isStale(idle)) {
+                            StreamState.update {
+                                it.copy(
+                                    connectedTransmitter = null,
+                                    statusDetail = "No response from sender",
+                                    remoteEndpoint = "Waiting for incoming UDP packets..."
+                                )
+                            }
+                            lastActivityElapsedMs = SystemClock.elapsedRealtime()
+                            Log.w(TAG, "Receiver liveness: lost transmitter ${lastTx.ip} after ${idle}ms of silence")
+                            HatDiagnostics.warn("TX_STALE", mapOf("sender" to lastTx.ip, "idleMs" to idle))
+                        }
                     } catch (e: SocketException) {
                         Log.d(TAG, "UDP socket closed")
                         break
