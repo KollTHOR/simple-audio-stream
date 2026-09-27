@@ -82,6 +82,8 @@ class AudioSinkService : Service() {
 
             val jb = instance.jitterBuffer
             val available = jb.getAvailableCount()
+            // getPacketDurationMs() is Opus-aware (actual frames-per-packet), so jitter-buffer and
+            // estimated-latency diagnostics are no longer inflated ~2x by the 20ms compressed nominal.
             val pktDurationMs = jb.getPacketDurationMs()
             val jbMs = available * pktDurationMs
 
@@ -1154,7 +1156,7 @@ class AudioSinkService : Service() {
 
                             if (now - lastLatencyLogTime >= 1000L) {
                                 lastLatencyLogTime = now
-                                val jbMs = usedSlots * 10
+                                val jbMs = (usedSlots * jitterBuffer.getPacketDurationMs()).toInt()
                                 val track = audioTrack
                                 val atFrames = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && track != null) {
                                     track.bufferSizeInFrames
@@ -1618,7 +1620,7 @@ class AudioSinkService : Service() {
         return linkedMapOf(
             "generation" to configAuthority.currentGeneration,
             "bufferPackets" to available,
-            "bufferFrames" to (available * AudioConfig.getFramesPerPacket(currentSampleRate)),
+            "bufferFrames" to (available * jitterBuffer.getFramesPerPacketForDiagnostics()),
             "bufferMs" to (available * packetMs),
             "targetLatencyMs" to jitterBuffer.getTargetWatermarkMs(),
             "desiredTargetMs" to jitterBuffer.getDesiredTargetMs(),

@@ -91,6 +91,11 @@ class JitterBuffer(
         if (samples > 0) opusFramesPerPacket = samples
     }
 
+    /** Actual audio frames carried per packet, for diagnostics (Opus-aware; matches the sender). */
+    fun getFramesPerPacketForDiagnostics(): Int = lock.withLock {
+        if (isOpusStream) opusFramesPerPacket else AudioConfig.getFramesPerPacket(lastSampleRate)
+    }
+
     var lastReadStatus: ReadStatus = ReadStatus.PACKET
         private set
 
@@ -644,7 +649,21 @@ class JitterBuffer(
     fun getOutOfOrderPackets(): Long = outOfOrderPackets.get()
     fun getCorrectionRatio(): Double = lock.withLock { driftController.correctionRatio }
     fun getPreRollPackets(): Int = lock.withLock { preRollThreshold }
-    fun getPacketDurationMs(): Float = lock.withLock { packetDurationMs }
+    /**
+     * Reported per-packet playout duration, in ms. For Opus this is derived from the *actual*
+     * frames-per-packet (10 ms by default, or 20 ms on an OEM encoder that ignores the request),
+     * not the negotiated compressed-codec nominal of 20 ms — otherwise every Opus latency/buffer
+     * diagnostic is inflated ~2x. The internal estimator/drift keep using the private configured
+     * field, so this only changes what diagnostics report, never buffering behaviour.
+     */
+    fun getPacketDurationMs(): Float = lock.withLock {
+        if (isOpusStream) {
+            val rate = if (lastSampleRate > 0) lastSampleRate else AudioConfig.SAMPLE_RATE_48000
+            (opusFramesPerPacket * 1000.0f) / rate
+        } else {
+            packetDurationMs
+        }
+    }
     fun calculateFramesForCurrentPayload(length: Int): Int = lock.withLock { calculateFramesForPayload(length) }
 
     // --- Adaptive playout controller diagnostics ---

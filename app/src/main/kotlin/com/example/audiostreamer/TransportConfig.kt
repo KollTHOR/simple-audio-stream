@@ -240,7 +240,8 @@ data class TransportProfile(
                             maxUnderrunFrames = AudioConfig.LOW_LATENCY_MAX_UNDERRUN_FRAMES,
                             waitTimeoutMs = AudioConfig.LOW_LATENCY_WAIT_TIMEOUT_MS,
                             targetWatermarkSlots = AudioConfig.LOW_LATENCY_TARGET_WATERMARK_SLOTS,
-                            targetWatermarkMs = 40.0f
+                            // Opus now runs 10ms frames; 40ms over-buffered and masked the latency gain.
+                            targetWatermarkMs = 25.0f
                         )
                     } else {
                         JitterBufferParameters(
@@ -336,7 +337,7 @@ data class NegotiatedStreamConfig(
         get() = toSummaryString()
 
     fun getFramesPerPacket(): Int = when {
-        codec == AudioCodec.OPUS -> 960
+        codec == AudioCodec.OPUS -> AudioConfig.OPUS_FRAME_SAMPLES_48K
         codec == AudioCodec.AAC -> 1024
         else -> audioFormat.frameCountForDurationMs(packetDurationMs)
     }
