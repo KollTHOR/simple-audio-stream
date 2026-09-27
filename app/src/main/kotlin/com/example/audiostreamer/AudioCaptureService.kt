@@ -1865,17 +1865,25 @@ class AudioCaptureService : Service() {
                                 )
                             )
                             if (consec >= 5 || record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                                Log.e(TAG, "Fatal AudioRecord read error (compressed) after $consec consecutive errors (recordingState=${record.recordingState}): $pcmBytesRead")
-                                HatDiagnostics.error(
-                                    "AUDIO_RECORD_ERROR",
-                                    mapOf(
-                                        "pcmBytesRead" to pcmBytesRead,
-                                        "consecutiveErrors" to consec,
-                                        "sampleRate" to captureSampleRate,
-                                        "codec" to negotiatedStreamConfig.codec.name,
-                                        "recordingState" to record.recordingState
+                                // A read error while we are already tearing down (mode switch / stop) is
+                                // expected — the AudioRecord was intentionally stopped underneath this
+                                // blocking read. Only a failure while the session is supposed to be live is
+                                // a real fault worth an error log + user alert.
+                                if (isRunning.get()) {
+                                    Log.e(TAG, "Fatal AudioRecord read error (compressed) after $consec consecutive errors (recordingState=${record.recordingState}): $pcmBytesRead")
+                                    HatDiagnostics.error(
+                                        "AUDIO_RECORD_ERROR",
+                                        mapOf(
+                                            "pcmBytesRead" to pcmBytesRead,
+                                            "consecutiveErrors" to consec,
+                                            "sampleRate" to captureSampleRate,
+                                            "codec" to negotiatedStreamConfig.codec.name,
+                                            "recordingState" to record.recordingState
+                                        )
                                     )
-                                )
+                                } else {
+                                    Log.i(TAG, "Capture read error during shutdown (expected), stopping producer: code=$pcmBytesRead")
+                                }
                                 break
                             }
                             Thread.sleep(5)
@@ -2088,16 +2096,20 @@ class AudioCaptureService : Service() {
                                 )
                             )
                             if (consec >= 5 || record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                                Log.e(TAG, "Fatal AudioRecord read error after $consec consecutive errors (recordingState=${record.recordingState}): $bytesRead")
-                                HatDiagnostics.error(
-                                    "AUDIO_RECORD_ERROR",
-                                    mapOf(
-                                        "bytesRead" to bytesRead,
-                                        "consecutiveErrors" to consec,
-                                        "sampleRate" to captureSampleRate,
-                                        "recordingState" to record.recordingState
+                                if (isRunning.get()) {
+                                    Log.e(TAG, "Fatal AudioRecord read error after $consec consecutive errors (recordingState=${record.recordingState}): $bytesRead")
+                                    HatDiagnostics.error(
+                                        "AUDIO_RECORD_ERROR",
+                                        mapOf(
+                                            "bytesRead" to bytesRead,
+                                            "consecutiveErrors" to consec,
+                                            "sampleRate" to captureSampleRate,
+                                            "recordingState" to record.recordingState
+                                        )
                                     )
-                                )
+                                } else {
+                                    Log.i(TAG, "Capture read error during shutdown (expected), stopping producer: code=$bytesRead")
+                                }
                                 break
                             }
                             Thread.sleep(5)
@@ -2106,13 +2118,19 @@ class AudioCaptureService : Service() {
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Audio streaming exception", e)
-                HatDiagnostics.error(
-                    "THREAD_FAILURE",
-                    mapOf("thread" to "AudioCaptureStreamer", "generation" to negotiatedStreamConfig.generation),
-                    e
-                )
-                StreamState.update { it.copy(statusDetail = "Error: ${e.message}") }
+                // Sockets/records are torn down during stop & mode-switch; an exception once
+                // isRunning is cleared is an expected teardown race, not a user-facing failure.
+                if (isRunning.get()) {
+                    Log.e(TAG, "Audio streaming exception", e)
+                    HatDiagnostics.error(
+                        "THREAD_FAILURE",
+                        mapOf("thread" to "AudioCaptureStreamer", "generation" to negotiatedStreamConfig.generation),
+                        e
+                    )
+                    StreamState.update { it.copy(statusDetail = "Error: ${e.message}") }
+                } else {
+                    Log.i(TAG, "Streaming thread interrupted during shutdown: ${e.message}")
+                }
             } finally {
                 Log.i(TAG, "Audio streaming thread stopped")
                 // Only while this worker is still the active producer: a newer transaction may already have
