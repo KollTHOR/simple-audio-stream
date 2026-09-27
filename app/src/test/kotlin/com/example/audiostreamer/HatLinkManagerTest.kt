@@ -1,10 +1,6 @@
 package com.example.audiostreamer
 
-import com.example.audiostreamer.node.AttemptState
-import com.example.audiostreamer.node.CustomTransportPriority
 import com.example.audiostreamer.node.DevicePlatformInfo
-import com.example.audiostreamer.node.DiscoveredNodeLinkContext
-import com.example.audiostreamer.node.HatLink
 import com.example.audiostreamer.node.HatLinkManager
 import com.example.audiostreamer.node.LinkState
 import com.example.audiostreamer.node.LocalNodeManager
@@ -16,56 +12,35 @@ import com.example.audiostreamer.node.NodeTransportType
 import com.example.audiostreamer.node.StreamRole
 import com.example.audiostreamer.node.TransportAvailability
 import com.example.audiostreamer.node.TransportCandidate
-import com.example.audiostreamer.node.TransportPriority
 import com.example.audiostreamer.node.discovery.DiscoveredEndpoint
 import com.example.audiostreamer.node.discovery.DiscoveredNodeEntry
 import com.example.audiostreamer.node.discovery.DiscoverySource
 import com.example.audiostreamer.node.transport.HatTransportType
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 
+/**
+ * Covers the parts of [HatLinkManager] that are on the live path: the candidate ledger
+ * (populated from discovery), link create/close via [HatLinkManager.getOrCreateLink], and the
+ * diagnostics snapshot. The removed policy-based connect/reconnect/attempt engine had no
+ * production caller and is no longer tested here.
+ */
 class HatLinkManagerTest {
 
-    private lateinit var localNode: NodeInfo
     private lateinit var remoteNodeA: NodeInfo
-    private lateinit var remoteNodeB: NodeInfo
 
     @Before
     fun setUp() {
         HatLinkManager.clear()
-
-        localNode = NodeInfo(
-            identity = NodeIdentity("hat-node-local-001", "Local Pixel"),
-            deviceInfo = DevicePlatformInfo(manufacturer = "Google", model = "Pixel 8"),
-            capabilities = NodeCapabilities(
-                supportedTransports = setOf(NodeTransportType.LOCAL_WIFI, NodeTransportType.WIFI_DIRECT)
-            ),
-            state = NodeState.AVAILABLE
-        )
-
         remoteNodeA = NodeInfo(
             identity = NodeIdentity("hat-node-remote-aaa", "Remote Node A"),
             deviceInfo = DevicePlatformInfo(manufacturer = "Sony", model = "WH-1000XM5"),
-            capabilities = NodeCapabilities(
-                supportedTransports = setOf(NodeTransportType.LOCAL_WIFI, NodeTransportType.WIFI_DIRECT)
-            ),
-            state = NodeState.AVAILABLE,
-            activeRole = StreamRole.RECEIVER
-        )
-
-        remoteNodeB = NodeInfo(
-            identity = NodeIdentity("hat-node-remote-bbb", "Remote Node B"),
-            deviceInfo = DevicePlatformInfo(manufacturer = "Shanling", model = "M300"),
             capabilities = NodeCapabilities(
                 supportedTransports = setOf(NodeTransportType.LOCAL_WIFI, NodeTransportType.WIFI_DIRECT)
             ),
@@ -126,295 +101,7 @@ class HatLinkManagerTest {
         }
     }
 
-    // ─── 2. Explicit Policy Transport Selection ───────────────────────────────
-
-    @Test
-    fun testExplicitPolicySelectionWithoutHardcodedArbitraryLogic() {
-        val lanCand = TransportCandidate(
-            type = HatTransportType.LAN,
-            availability = TransportAvailability.AVAILABLE,
-            endpointAddress = "192.168.1.100"
-        )
-        val directCand = TransportCandidate(
-            type = HatTransportType.WIFI_DIRECT,
-            availability = TransportAvailability.AVAILABLE,
-            endpointAddress = "192.168.49.2",
-            isDirect = true
-        )
-        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(lanCand, directCand))
-
-        // Policy: WIFI_DIRECT_FIRST -> Wi-Fi Direct selected
-        val directFirst = HatLinkManager.selectTransport(remoteNodeA.id, TransportPriority.WIFI_DIRECT_FIRST)
-        assertNotNull(directFirst)
-        assertEquals(HatTransportType.WIFI_DIRECT, directFirst!!.type)
-
-        // Policy: LAN_FIRST -> LAN selected
-        val lanFirst = HatLinkManager.selectTransport(remoteNodeA.id, TransportPriority.LAN_FIRST)
-        assertNotNull(lanFirst)
-        assertEquals(HatTransportType.LAN, lanFirst!!.type)
-
-        // Custom policy: [LAN, WIFI_DIRECT]
-        val customPolicy = CustomTransportPriority("CUSTOM_ORDER", listOf(HatTransportType.LAN, HatTransportType.WIFI_DIRECT))
-        val customSelected = HatLinkManager.selectTransport(remoteNodeA.id, customPolicy)
-        assertNotNull(customSelected)
-        assertEquals(HatTransportType.LAN, customSelected!!.type)
-    }
-
-    @Test
-    fun testUnusableCandidatesIgnoredByPolicySelection() {
-        val unavailDirect = TransportCandidate(
-            type = HatTransportType.WIFI_DIRECT,
-            availability = TransportAvailability.UNAVAILABLE
-        )
-        val readyLan = TransportCandidate(
-            type = HatTransportType.LAN,
-            availability = TransportAvailability.AVAILABLE,
-            endpointAddress = "192.168.1.50"
-        )
-
-        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(unavailDirect, readyLan))
-
-        // An unavailable direct path is skipped in favor of the available LAN endpoint.
-        val selected = HatLinkManager.selectTransport(remoteNodeA.id, TransportPriority.WIFI_DIRECT_FIRST)
-        assertNotNull(selected)
-        assertEquals(HatTransportType.LAN, selected!!.type)
-    }
-
-    // ─── 3. Avoid Duplicate Connections ───────────────────────────────────────
-
-    @Test
-    fun testAvoidDuplicateConnections() = runBlocking {
-        val lanCand = TransportCandidate(
-            type = HatTransportType.LAN,
-            availability = TransportAvailability.AVAILABLE,
-            endpointAddress = "127.0.0.1",
-            endpointPort = 50005
-        )
-        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(lanCand))
-
-        // First connection attempt establishes the link
-        val firstResult = HatLinkManager.connectToNode(remoteNodeA, TransportPriority.LAN_FIRST)
-        assertTrue(firstResult.isSuccess)
-        val firstLink = firstResult.getOrThrow()
-        assertEquals(LinkState.CONNECTED, firstLink.state)
-        assertEquals(1, HatLinkManager.activeLinks.value.size)
-
-        // Second connection attempt to the same node returns the existing link
-        val secondResult = HatLinkManager.connectToNode(remoteNodeA, TransportPriority.LAN_FIRST)
-        assertTrue(secondResult.isSuccess)
-        val secondLink = secondResult.getOrThrow()
-        assertEquals(firstLink.id, secondLink.id)
-        assertEquals(1, HatLinkManager.activeLinks.value.size)
-    }
-
-    // ─── 4. Serialize Competing Connection Attempts to Same Node ──────────────
-
-    @Test
-    fun testSerializeCompetingAttemptsToSameNode() = runBlocking {
-        val lanCand = TransportCandidate(
-            type = HatTransportType.LAN,
-            availability = TransportAvailability.AVAILABLE,
-            endpointAddress = "127.0.0.1",
-            endpointPort = 50005
-        )
-        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(lanCand))
-
-        // Launch 5 competing coroutines connecting to the SAME node simultaneously
-        val deferreds = (1..5).map {
-            async {
-                HatLinkManager.connectToNode(remoteNodeA, TransportPriority.LAN_FIRST)
-            }
-        }
-        val results = deferreds.awaitAll()
-
-        // All must succeed
-        results.forEach { res ->
-            assertTrue(res.isSuccess)
-        }
-
-        // All must have received the EXACT SAME link ID (serialized, no duplicates)
-        val uniqueLinkIds = results.map { it.getOrThrow().id }.toSet()
-        assertEquals(1, uniqueLinkIds.size)
-        assertEquals(1, HatLinkManager.activeLinks.value.size)
-    }
-
-    // ─── 5. Stale Attempt Cancellation ────────────────────────────────────────
-
-    @Test
-    fun testCancelStaleAttempt() {
-        val directCand = TransportCandidate(
-            type = HatTransportType.WIFI_DIRECT,
-            availability = TransportAvailability.AVAILABLE,
-            endpointAddress = "192.168.49.2"
-        )
-        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(directCand))
-
-        val context = HatLinkManager.getNodeLinkContext(remoteNodeA.id)
-        assertNotNull(context)
-
-        // Inject an in-progress attempt
-        val inProgressAttempt = com.example.audiostreamer.node.LinkAttempt(
-            remoteNodeId = remoteNodeA.id,
-            candidate = directCand,
-            state = AttemptState.IN_PROGRESS
-        )
-        context!!.recordAttempt(inProgressAttempt)
-        assertEquals(AttemptState.IN_PROGRESS, context.currentAttempt?.state)
-
-        // Explicit cancellation
-        val cancelled = HatLinkManager.cancelAttempt(remoteNodeA.id, "Explicit test cancellation")
-        assertTrue(cancelled)
-        assertEquals(AttemptState.CANCELLED, inProgressAttempt.state)
-        assertEquals("Explicit test cancellation", inProgressAttempt.failureReason)
-    }
-
-    // ─── 6. Exact Failure Reasons ─────────────────────────────────────────────
-
-    @Test
-    fun testExactFailureReasonWhenNoCandidatesAvailable() = runBlocking {
-        // Node with zero candidate transports
-        val result = HatLinkManager.connectToNode(remoteNodeB, TransportPriority.DEFAULT)
-        assertTrue(result.isFailure)
-        val ex = result.exceptionOrNull()
-        assertNotNull(ex)
-        assertTrue(ex!!.message!!.contains("No transport candidates available for node ${remoteNodeB.id}"))
-
-        val context = HatLinkManager.getNodeLinkContext(remoteNodeB.id)
-        assertNotNull(context)
-        assertNotNull(context!!.currentAttempt)
-        assertEquals(AttemptState.FAILED, context.currentAttempt!!.state)
-        assertEquals(ex.message, context.currentAttempt!!.failureReason)
-    }
-
-    @Test
-    fun testExactFailureReasonWhenEndpointAddressMissing() = runBlocking {
-        val missingAddressCand = TransportCandidate(
-            type = HatTransportType.WIFI_DIRECT,
-            availability = TransportAvailability.AVAILABLE,
-            endpointAddress = null // missing!
-        )
-        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(missingAddressCand))
-
-        val result = HatLinkManager.connectToNode(remoteNodeA, TransportPriority.WIFI_DIRECT_FIRST, allowFallback = false)
-        assertTrue(result.isFailure)
-        val ex = result.exceptionOrNull()
-        assertNotNull(ex)
-        assertTrue(ex!!.message!!.contains("Endpoint address missing for transport candidate WIFI_DIRECT"))
-
-        val context = HatLinkManager.getNodeLinkContext(remoteNodeA.id)
-        assertEquals(AttemptState.FAILED, context!!.currentAttempt?.state)
-    }
-
-    // ─── 7. Candidate Fallback ────────────────────────────────────────────────
-
-    @Test
-    fun testCandidateSelectionFallsBackToLanWhenDirectIsUnavailable() = runBlocking {
-        val unavailableDirect = TransportCandidate(
-            type = HatTransportType.WIFI_DIRECT,
-            availability = TransportAvailability.UNAVAILABLE
-        )
-        val lanCand = TransportCandidate(
-            type = HatTransportType.LAN,
-            availability = TransportAvailability.AVAILABLE,
-            endpointAddress = "127.0.0.1",
-            endpointPort = 50005
-        )
-
-        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(unavailableDirect, lanCand))
-
-        val result = HatLinkManager.connectToNode(remoteNodeA, TransportPriority.WIFI_DIRECT_FIRST, allowFallback = true)
-        assertTrue(result.isSuccess)
-        val link = result.getOrThrow()
-        assertEquals(HatTransportType.LAN, link.activeTransportType)
-
-        val context = HatLinkManager.getNodeLinkContext(remoteNodeA.id)
-        assertNotNull(context)
-        assertEquals(1, context!!.attemptHistory.size)
-        assertEquals(HatTransportType.LAN, context.attemptHistory[0].candidate.type)
-        assertEquals(AttemptState.SUCCESS, context.attemptHistory[0].state)
-    }
-
-    // ─── 8. Retain Discovered Node State Across Disconnections ────────────────
-
-    @Test
-    fun testRetainDiscoveredNodeStateAcrossCloseLink() = runBlocking {
-        val lanCand = TransportCandidate(
-            type = HatTransportType.LAN,
-            availability = TransportAvailability.AVAILABLE,
-            endpointAddress = "127.0.0.1",
-            endpointPort = 50005
-        )
-        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(lanCand))
-
-        val connectResult = HatLinkManager.connectToNode(remoteNodeA, TransportPriority.LAN_FIRST)
-        assertTrue(connectResult.isSuccess)
-        val link = connectResult.getOrThrow()
-
-        // Close link
-        HatLinkManager.closeLink(link.id)
-        assertEquals(0, HatLinkManager.activeLinks.value.size)
-
-        // Discovered node link context and candidates remain intact
-        val context = HatLinkManager.getNodeLinkContext(remoteNodeA.id)
-        assertNotNull(context)
-        assertEquals(remoteNodeA.id, context!!.remoteNode.id)
-        assertEquals(1, context.candidateTransports.size)
-        assertEquals(HatTransportType.LAN, context.lastSelectedTransport)
-        assertEquals(LinkState.DISCONNECTED, context.activeLink?.state)
-    }
-
-    // ─── 9. Reconnect When Appropriate ────────────────────────────────────────
-
-    @Test
-    fun testReconnectAfterLinkClosedOrFailed() = runBlocking {
-        val lanCand = TransportCandidate(
-            type = HatTransportType.LAN,
-            availability = TransportAvailability.AVAILABLE,
-            endpointAddress = "127.0.0.1",
-            endpointPort = 50005
-        )
-        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(lanCand))
-
-        val firstLink = HatLinkManager.connectToNode(remoteNodeA, TransportPriority.LAN_FIRST).getOrThrow()
-        HatLinkManager.closeLink(firstLink.id)
-
-        // Call reconnect
-        val reconnectResult = HatLinkManager.reconnect(remoteNodeA.id, TransportPriority.LAN_FIRST)
-        assertTrue(reconnectResult.isSuccess)
-        val reconnectedLink = reconnectResult.getOrThrow()
-        assertTrue(reconnectedLink.isAlive)
-        assertEquals(LinkState.CONNECTED, reconnectedLink.state)
-        assertEquals(1, HatLinkManager.activeLinks.value.size)
-    }
-
-    // ─── 10. Active Transport Exposure ────────────────────────────────────────
-
-    @Test
-    fun testActiveTransportExposure() = runBlocking {
-        val lanCand = TransportCandidate(
-            type = HatTransportType.LAN,
-            availability = TransportAvailability.AVAILABLE,
-            endpointAddress = "127.0.0.1",
-            endpointPort = 50005
-        )
-        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(lanCand))
-
-        val link = HatLinkManager.connectToNode(remoteNodeA, TransportPriority.LAN_FIRST).getOrThrow()
-
-        // Link level
-        assertNotNull(link.activeTransport)
-        assertEquals(HatTransportType.LAN, link.activeTransportType)
-
-        // Manager level
-        assertEquals(HatTransportType.LAN, HatLinkManager.getActiveTransportForNode(remoteNodeA.id))
-        assertEquals(HatTransportType.LAN, HatLinkManager.getActiveTransport(link.id))
-
-        // Application transparency: link.send() and link.receive() work through the active transport
-        assertTrue(link.canSend)
-        assertTrue(link.canReceive)
-    }
-
-    // ─── 11. DiscoveredNodeEntry Extraction ───────────────────────────────────
+    // ─── 2. DiscoveredNodeEntry Extraction ────────────────────────────────────
 
     @Test
     fun testUpdateCandidatesFromDiscoveredNodeEntry() {
@@ -451,10 +138,10 @@ class HatLinkManagerTest {
         assertFalse(candidates.any { it.type == HatTransportType.BLE })
     }
 
-    // ─── 12. Diagnostics Snapshot ─────────────────────────────────────────────
+    // ─── 3. Link create/close retains the candidate ledger ────────────────────
 
     @Test
-    fun testDiagnosticsSnapshotIncludesTrackedNodesAndAttempts() = runBlocking {
+    fun testRetainDiscoveredNodeStateAcrossCloseLink() {
         val lanCand = TransportCandidate(
             type = HatTransportType.LAN,
             availability = TransportAvailability.AVAILABLE,
@@ -462,7 +149,42 @@ class HatLinkManagerTest {
             endpointPort = 50005
         )
         HatLinkManager.setNodeCandidates(remoteNodeA, listOf(lanCand))
-        HatLinkManager.connectToNode(remoteNodeA, TransportPriority.LAN_FIRST).getOrThrow()
+
+        val link = HatLinkManager.getOrCreateLink(
+            remoteNode = remoteNodeA,
+            transportType = NodeTransportType.LOCAL_WIFI,
+            remoteAddress = "127.0.0.1",
+            remotePort = 50005
+        )
+        HatLinkManager.closeLink(link.id)
+        assertEquals(0, HatLinkManager.activeLinks.value.size)
+
+        // Discovered node link context and candidates survive the disconnect
+        val context = HatLinkManager.getNodeLinkContext(remoteNodeA.id)
+        assertNotNull(context)
+        assertEquals(remoteNodeA.id, context!!.remoteNode.id)
+        assertEquals(1, context.candidateTransports.size)
+        assertEquals(HatTransportType.LAN, context.lastSelectedTransport)
+        assertEquals(LinkState.DISCONNECTED, context.activeLink?.state)
+    }
+
+    // ─── 4. Diagnostics Snapshot ──────────────────────────────────────────────
+
+    @Test
+    fun testDiagnosticsSnapshotIncludesTrackedNodes() {
+        val lanCand = TransportCandidate(
+            type = HatTransportType.LAN,
+            availability = TransportAvailability.AVAILABLE,
+            endpointAddress = "127.0.0.1",
+            endpointPort = 50005
+        )
+        HatLinkManager.setNodeCandidates(remoteNodeA, listOf(lanCand))
+        HatLinkManager.getOrCreateLink(
+            remoteNode = remoteNodeA,
+            transportType = NodeTransportType.LOCAL_WIFI,
+            remoteAddress = "127.0.0.1",
+            remotePort = 50005
+        )
 
         val diag = HatLinkManager.getDiagnosticsSnapshot()
         assertEquals(1, diag["activeLinksCount"])

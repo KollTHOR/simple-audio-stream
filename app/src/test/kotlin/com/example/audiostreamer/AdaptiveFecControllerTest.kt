@@ -8,67 +8,76 @@ import org.junit.Test
 class AdaptiveFecControllerTest {
 
     @Test
-    fun cleanLinkDropsParity() {
-        val c = AdaptiveFecController(windowPackets = 100, minOnMs = 1_000)
-        c.noteStarted(0)
-        // 100 clean packets → 0% loss; after minOnMs parity releases.
+    fun startsDisabledSoACleanLinkPaysNoOverhead() {
+        val c = AdaptiveFecController(windowPackets = 100)
+        // Fresh controller: parity off, and a clean window keeps it off indefinitely.
+        assertFalse(c.isEnabled(0))
         repeat(100) { c.recordSent(lost = false) }
-        assertFalse("a clean link must not keep paying FEC overhead", c.isEnabled(5_000))
+        assertFalse("a clean link must never enable parity", c.isEnabled(60_000))
     }
 
     @Test
-    fun risingLossEnablesParityImmediately() {
-        val c = AdaptiveFecController(windowPackets = 100, minOnMs = 1_000)
-        // Start disabled by feeding a clean window long past minOnMs.
-        c.noteStarted(0)
-        repeat(100) { c.recordSent(false) }
-        assertFalse(c.isEnabled(5_000))
-        // One loss in 100 = 1% ≥ enable (0.5%) → on, no minimum wait to attack.
+    fun lossEngagesParityImmediately() {
+        val c = AdaptiveFecController(windowPackets = 100, enableLossPercent = 1.0f, disableLossPercent = 0.2f)
+        assertFalse(c.isEnabled(0))
+        // One loss in 100 = 1% meets the 1% enable threshold.
+        repeat(99) { c.recordSent(false) }
         c.recordSent(lost = true)
-        assertTrue("parity must attack on loss immediately", c.isEnabled(5_100))
+        assertTrue("parity must engage on loss", c.isEnabled(1_000))
     }
 
     @Test
-    fun parityHoldsForMinOnMsBeforeReleasing() {
-        val c = AdaptiveFecController(windowPackets = 100, enableLossPercent = 0.5f, disableLossPercent = 0.1f, minOnMs = 3_000)
-        c.noteStarted(100)
+    fun engagedParityHoldsForMinOnMsEvenAfterLossClears() {
+        val c = AdaptiveFecController(
+            windowPackets = 100,
+            enableLossPercent = 1.0f,
+            disableLossPercent = 0.2f,
+            minOnMs = 3_000
+        )
+        repeat(99) { c.recordSent(false) }
         c.recordSent(lost = true)
-        // Loss clears instantly, but it is still inside minOnMs → must stay enabled.
+        assertTrue(c.isEnabled(1_000)) // engages at 1s
+        // Loss flushes out of the window, but we are still inside minOnMs since enabling → stays on.
         repeat(100) { c.recordSent(false) }
-        assertTrue("must not release before minOnMs even at zero loss", c.isEnabled(1_500))
-        assertFalse(c.isEnabled(5_000))
+        assertEquals(0f, c.lossPercent(), 0.001f)
+        assertTrue("must not release before minOnMs", c.isEnabled(2_500))
+        // Past minOnMs with zero loss → releases.
+        assertFalse(c.isEnabled(4_100))
     }
 
     @Test
-    fun hysteresisBandKeepsStateBetweenThresholds() {
-        val c = AdaptiveFecController(windowPackets = 1000, enableLossPercent = 1.0f, disableLossPercent = 0.2f, minOnMs = 0)
-        c.noteStarted(0)
-        c.reset(); c.noteStarted(0)
-        // ~0.5% loss: above disable (0.2) but below enable (1.0). Starting enabled (after reset+note),
-        // it should remain enabled because 0.5% > disable threshold.
+    fun hysteresisBandKeepsPriorState() {
+        val c = AdaptiveFecController(
+            windowPackets = 1000,
+            enableLossPercent = 1.0f,
+            disableLossPercent = 0.2f,
+            minOnMs = 0
+        )
+        // 0.5% loss sits in the band between disable (0.2) and enable (1.0): from a disabled start
+        // it must NOT enable (requires >= enable threshold).
         repeat(995) { c.recordSent(false) }
         repeat(5) { c.recordSent(true) }
         assertEquals(0.5f, c.lossPercent(), 0.001f)
-        assertTrue(c.isEnabled(10_000))
+        assertFalse("in-band loss from OFF must not engage", c.isEnabled(10_000))
     }
 
     @Test
-    fun resetRestoresInitialState() {
-        val c = AdaptiveFecController(windowPackets = 50)
-        repeat(50) { c.recordSent(true) }
-        assertEquals(100f, c.lossPercent(), 0.001f)
+    fun resetRestoresDisabledInitialState() {
+        val c = AdaptiveFecController(windowPackets = 50, enableLossPercent = 1.0f, minOnMs = 0)
+        c.recordSent(lost = true)
+        c.recordSent(lost = true) // 2/50 = 4% > 1% → enabled
+        assertTrue(c.isEnabled(1_000))
         c.reset()
         assertEquals(0f, c.lossPercent(), 0.001f)
-        assertTrue("starts enabled so a new stream is protected", c.isEnabled(0))
+        assertFalse("reset returns to the protected-off default", c.isEnabled(2_000))
     }
 
     @Test
-    fun windowIsSlidingNotAccumulatingForever() {
+    fun windowSlidesRatherThanAccumulatingForever() {
         val c = AdaptiveFecController(windowPackets = 10, minOnMs = 0)
-        c.reset(); c.noteStarted(0)
-        repeat(10) { c.recordSent(true) }   // window now fully lossy
+        repeat(10) { c.recordSent(lost = true) }
         assertEquals(100f, c.lossPercent(), 0.001f)
-        repeat(10) { c.recordSent(false) }  // fully clean again
+        repeat(10) { c.recordSent(lost = false) }
         assertEquals(0f, c.lossPercent(), 0.001f)
     }
 

@@ -1,7 +1,6 @@
 package com.example.audiostreamer.node
 
 import com.example.audiostreamer.node.transport.HatTransportType
-import java.util.UUID
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Transport Candidate & Availability
@@ -117,68 +116,6 @@ data class CustomTransportPriority(
 ) : TransportPriorityPolicy
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Link Attempt
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Lifecycle state of a [LinkAttempt].
- */
-enum class AttemptState {
-    IN_PROGRESS,
-    SUCCESS,
-    FAILED,
-    CANCELLED,
-    TIMED_OUT
-}
-
-/**
- * Represents a discrete, instrumented attempt to establish a [HatLink] to a remote node.
- * Tracks timing, target candidate, exact failure reasons, and final outcome.
- */
-data class LinkAttempt(
-    val attemptId: String = UUID.randomUUID().toString(),
-    val remoteNodeId: String,
-    val candidate: TransportCandidate,
-    val startTimeEpochMs: Long = System.currentTimeMillis(),
-    var endTimeEpochMs: Long? = null,
-    var state: AttemptState = AttemptState.IN_PROGRESS,
-    var failureReason: String? = null,
-    var failureDetails: Map<String, Any?> = emptyMap()
-) {
-    val durationMs: Long
-        get() = (endTimeEpochMs ?: System.currentTimeMillis()) - startTimeEpochMs
-
-    fun markSuccess(): LinkAttempt {
-        endTimeEpochMs = System.currentTimeMillis()
-        state = AttemptState.SUCCESS
-        failureReason = null
-        return this
-    }
-
-    fun markFailed(reason: String, details: Map<String, Any?> = emptyMap()): LinkAttempt {
-        endTimeEpochMs = System.currentTimeMillis()
-        state = AttemptState.FAILED
-        failureReason = reason
-        failureDetails = details
-        return this
-    }
-
-    fun markCancelled(reason: String = "Cancelled"): LinkAttempt {
-        endTimeEpochMs = System.currentTimeMillis()
-        state = AttemptState.CANCELLED
-        failureReason = reason
-        return this
-    }
-
-    fun markTimedOut(reason: String = "Connection attempt timed out"): LinkAttempt {
-        endTimeEpochMs = System.currentTimeMillis()
-        state = AttemptState.TIMED_OUT
-        failureReason = reason
-        return this
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Node Link Context
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -189,24 +126,10 @@ data class DiscoveredNodeLinkContext(
     val remoteNode: NodeInfo,
     val candidateTransports: MutableList<TransportCandidate> = mutableListOf(),
     var activeLink: HatLink? = null,
-    var currentAttempt: LinkAttempt? = null,
-    val attemptHistory: MutableList<LinkAttempt> = mutableListOf(),
     var lastSelectedTransport: HatTransportType? = null,
-    var autoReconnect: Boolean = true,
     var lastStateChangeEpochMs: Long = System.currentTimeMillis()
 ) {
     val nodeId: String get() = remoteNode.id
     val nodeName: String get() = remoteNode.name
     val isConnected: Boolean get() = activeLink?.isAlive == true && activeLink?.state == LinkState.CONNECTED
-
-    fun recordAttempt(attempt: LinkAttempt, maxHistory: Int = 20) {
-        currentAttempt = attempt
-        synchronized(attemptHistory) {
-            attemptHistory.add(attempt)
-            if (attemptHistory.size > maxHistory) {
-                attemptHistory.removeAt(0)
-            }
-        }
-        lastStateChangeEpochMs = System.currentTimeMillis()
-    }
 }

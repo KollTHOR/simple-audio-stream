@@ -682,4 +682,33 @@ class HatPacketTest {
         assertEquals(0x02.toByte(), HatPacket.FLAG_RETRANSMIT)
         assertTrue(HatPacket.FLAG_RETRANSMIT != HatPacket.FLAG_P2P_ACTIVE)
     }
+
+    @Test
+    fun incompatiblePeerVersionDetectsVersionMismatch() {
+        val buf = ByteArray(HatPacket.HEADER_SIZE)
+        buf[0] = HatPacket.MAGIC_BYTE_0
+        buf[1] = HatPacket.MAGIC_BYTE_1
+        buf[2] = 1 // a peer still on the pre-ARQ version
+        buf[3] = HatPacket.TYPE_AUDIO
+
+        // parseHeader rejects it, but the probe reports the peer's version so callers can alert.
+        assertNull(HatPacket.parseHeader(buf, 0, buf.size))
+        assertEquals(1, HatPacket.incompatiblePeerVersion(buf, 0, buf.size))
+    }
+
+    @Test
+    fun incompatiblePeerVersionIsSilentForMatchingAndNonHatPackets() {
+        // Matching version: not "incompatible".
+        val good = ByteArray(HatPacket.HEADER_SIZE)
+        HatPacket.writeHeader(good, 0, HatPacket.Header(packetType = HatPacket.TYPE_CONTROL, payloadLength = 0))
+        assertNull(HatPacket.incompatiblePeerVersion(good, 0, good.size))
+
+        // Not a HAT packet at all (no magic): must not be reported as a version mismatch.
+        val other = ByteArray(HatPacket.HEADER_SIZE)
+        other[0] = 0x00; other[1] = 0x00; other[2] = 9
+        assertNull(HatPacket.incompatiblePeerVersion(other, 0, other.size))
+
+        // Too short to even carry a version byte.
+        assertNull(HatPacket.incompatiblePeerVersion(ByteArray(3), 0, 3))
+    }
 }

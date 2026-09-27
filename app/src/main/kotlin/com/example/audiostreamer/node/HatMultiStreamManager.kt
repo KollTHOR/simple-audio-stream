@@ -6,7 +6,6 @@ import com.example.audiostreamer.AppLogger as Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.net.DatagramPacket
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -143,44 +142,6 @@ object HatMultiStreamManager {
             }
             return removed
         }
-    }
-
-    /**
-     * Fans out a single encoded packet to all active, streaming destinations.
-     *
-     * Invariants:
-     * 1. The audio is encoded once, then transmitted to each destination.
-     * 2. Transmission errors to one destination are isolated and do NOT fail the fan-out to other destinations.
-     */
-    fun fanOutPacket(
-        packet: DatagramPacket,
-        excludeNodeId: String? = null
-    ): Map<String, Result<Unit>> {
-        val results = mutableMapOf<String, Result<Unit>>()
-        val targets = destinations.values.toList()
-
-        for (dest in targets) {
-            if (dest.nodeId == excludeNodeId) continue
-            if (!dest.isStreaming) continue
-
-            try {
-                // Send over the destination's specific link/transport
-                dest.link.send(packet)
-                dest.stats.recordPacketSent(packet.length)
-                dest.health = DestinationHealth.HEALTHY
-                results[dest.nodeId] = Result.success(Unit)
-            } catch (e: Exception) {
-                dest.stats.recordSendError(e)
-                if (dest.stats.consecutiveErrors.get() > 5) {
-                    dest.health = DestinationHealth.UNREACHABLE
-                } else {
-                    dest.health = DestinationHealth.DEGRADED
-                }
-                Log.w(TAG, "Fan-out send failed to ${dest.nodeName} (${dest.nodeId}): ${e.message}")
-                results[dest.nodeId] = Result.failure(e)
-            }
-        }
-        return results
     }
 
     /**

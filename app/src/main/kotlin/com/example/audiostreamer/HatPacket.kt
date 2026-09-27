@@ -233,6 +233,20 @@ object HatPacket {
     }
 
     /**
+     * When a datagram carries the HAT magic but is still rejected by [parseHeader], report whether
+     * the cause is a protocol-version mismatch (the common "peer force-updated without me" case).
+     * Returns the peer's version byte on a version mismatch, or null if the packet was rejected for
+     * some other reason (bad length, unknown type, truncated). Lets callers raise a loud, throttled
+     * "incompatible peer version" signal instead of silently dropping every packet.
+     */
+    fun incompatiblePeerVersion(buffer: ByteArray, offset: Int = 0, length: Int): Int? {
+        if (length < HEADER_SIZE || offset < 0 || offset + HEADER_SIZE > buffer.size) return null
+        if (buffer[offset] != MAGIC_BYTE_0 || buffer[offset + 1] != MAGIC_BYTE_1) return null
+        val version = buffer[offset + 2].toInt() and 0xFF
+        return if (version != (PROTOCOL_VERSION.toInt() and 0xFF)) version else null
+    }
+
+    /**
      * Writes an explicit HAT header into [buffer] starting at [offset].
      */
     fun writeHeader(buffer: ByteArray, offset: Int = 0, header: Header) {
