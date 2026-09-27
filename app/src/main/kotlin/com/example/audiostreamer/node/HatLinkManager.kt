@@ -11,14 +11,11 @@ import com.example.audiostreamer.node.transport.TransportAddress
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Manages the network links ([HatLink]), transport selection policies, and application streams ([HatStream])
- * for the local HAT Node.
+ * Manages the network links ([HatLink]), discovered-node transport candidates, and application
+ * streams ([HatStream]) for the local HAT Node.
  *
  * **Architecture Invariants:**
  * 1. A Link is a communication relationship between two Nodes.
@@ -28,15 +25,15 @@ import java.util.concurrent.ConcurrentHashMap
  * 5. Multiple streams may share the same Link concurrently.
  * 6. Neither side is permanently locked into a transmitter or receiver role.
  * 7. Multiple remote Nodes are supported concurrently via separate Links.
- * 8. Avoids duplicate connections: Returns existing active link if available.
- * 9. Serializes competing connection attempts to the same node via per-node mutex.
- * 10. Explicit transport policy: Selects candidate transports according to [TransportPriorityPolicy],
- *     never hardcoded arbitrary "best" logic.
- * 11. BLE and NFC are discovery/bootstrap mechanisms only and must never be used as audio transport candidates.
- * 12. Cancels stale attempts and reports exact failure reasons.
- * 13. Retains discovered node state across connection cycles.
- * 14. Supports candidate fallback and reconnection when appropriate.
- * 15. Once a [HatLink] exists, the application layer does not care which transport created it.
+ * 8. Avoids duplicate links: a live link to the same node/address is reused, never duplicated.
+ * 9. BLE and NFC are discovery/bootstrap mechanisms only and must never be audio transport candidates.
+ * 10. Retains discovered-node candidate state across connection cycles for telemetry/diagnostics.
+ * 11. Once a [HatLink] exists, the application layer does not care which transport created it.
+ *
+ * NOTE: links are established by the live audio path (a receiver heartbeat registers a client,
+ * [LinkAdapters] then calls [getOrCreateLink]); this object is the link/stream *registry and
+ * candidate ledger*, not a connection *scheduler*. See git history for the removed policy-based
+ * connect/reconnect/attempt engine, which had no production caller.
  */
 object HatLinkManager {
     private const val TAG = "HatLinkManager"
@@ -48,8 +45,6 @@ object HatLinkManager {
 
     // Retained link management state per discovered Node ID
     private val nodeContexts = ConcurrentHashMap<String, DiscoveredNodeLinkContext>()
-    // Per-node mutexes to serialize competing connection attempts to the same remote node
-    private val nodeMutexes = ConcurrentHashMap<String, Mutex>()
 
     private val _activeLinks = MutableStateFlow<List<HatLink>>(emptyList())
     val activeLinks: StateFlow<List<HatLink>> = _activeLinks.asStateFlow()
@@ -177,318 +172,6 @@ object HatLinkManager {
     fun getNodeLinkContext(nodeId: String): DiscoveredNodeLinkContext? = nodeContexts[nodeId]
 
     fun getAllNodeLinkContexts(): List<DiscoveredNodeLinkContext> = nodeContexts.values.toList()
-
-    /**
-     * Selects a candidate transport according to the given [TransportPriorityPolicy].
-     * Does NOT use arbitrary hardcoded "best" logic.
-     */
-    fun selectTransport(
-        nodeId: String,
-        policy: TransportPriorityPolicy = TransportPriority.DEFAULT
-    ): TransportCandidate? {
-        val context = nodeContexts[nodeId] ?: return null
-        synchronized(lock) {
-            return policy.selectCandidate(context.candidateTransports)
-        }
-    }
-
-    private fun getNodeMutex(nodeId: String): Mutex =
-        nodeMutexes.computeIfAbsent(nodeId) { Mutex() }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Link Connection & Policy-Based Attempt Execution
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Attempts to establish a [HatLink] to the specified remote node using explicit transport policy.
-     *
-     * Invariants enforced:
-     * 1. Avoids duplicate connections: Returns existing active link if one already exists.
-     * 2. Serializes competing attempts to the same node via per-node mutex.
-     * 3. Cancels stale in-progress attempts before proceeding.
-     * 4. Reports exact failure reasons (never swallows errors).
-     * 5. Fallback: If primary transport fails and allowFallback is true, tries next candidate in policy order.
-     * 6. Retains node state and attempt history in [DiscoveredNodeLinkContext].
-     * 7. Exposes active transport on the established [HatLink].
-     */
-    suspend fun connectToNode(
-        remoteNode: NodeInfo,
-        policy: TransportPriorityPolicy = TransportPriority.DEFAULT,
-        timeoutMs: Long = 5000L,
-        allowFallback: Boolean = true
-    ): Result<HatLink> {
-        // Fast-path: Avoid duplicate connection if already connected
-        val existingLink = links.values.firstOrNull { it.remoteNode.id == remoteNode.id && it.isAlive }
-        if (existingLink != null && existingLink.state == LinkState.CONNECTED) {
-            Log.i(TAG, "Link already established to ${remoteNode.id} via ${existingLink.activeTransportType}. Reusing existing link.")
-            val context = nodeContexts.computeIfAbsent(remoteNode.id) { DiscoveredNodeLinkContext(remoteNode = remoteNode) }
-            context.activeLink = existingLink
-            return Result.success(existingLink)
-        }
-
-        val context = nodeContexts.computeIfAbsent(remoteNode.id) {
-            DiscoveredNodeLinkContext(remoteNode = remoteNode)
-        }
-
-        // Serialize competing connection attempts to this specific node
-        val mutex = getNodeMutex(remoteNode.id)
-        return mutex.withLock {
-            // Re-check inside lock: Another thread may have connected while waiting for lock
-            val afterLockLink = links.values.firstOrNull { it.remoteNode.id == remoteNode.id && it.isAlive }
-            if (afterLockLink != null && afterLockLink.state == LinkState.CONNECTED) {
-                Log.i(TAG, "Link was established while waiting for lock to ${remoteNode.id}. Reusing link.")
-                context.activeLink = afterLockLink
-                return@withLock Result.success(afterLockLink)
-            }
-
-            // Cancel any stale / previous in-progress attempt for this node
-            val staleAttempt = context.currentAttempt
-            if (staleAttempt != null && staleAttempt.state == AttemptState.IN_PROGRESS) {
-                staleAttempt.markCancelled("Superseded by new connection attempt")
-                Log.w(TAG, "Cancelled stale attempt ${staleAttempt.attemptId} for node ${remoteNode.id}")
-            }
-
-            // If candidates are empty, try synthesizing candidate from bootstrapped peer if available
-            if (context.candidateTransports.isEmpty()) {
-                val peer = bootstrappedPeers[remoteNode.id]
-                if (peer != null && peer.remoteAddress != null) {
-                    val candidateType = HatTransportType.fromNodeTransportType(peer.preferredTransport)
-                    if (candidateType.isAudioTransport) {
-                        context.candidateTransports.add(
-                            TransportCandidate(
-                                type = candidateType,
-                                availability = TransportAvailability.AVAILABLE,
-                                endpointAddress = peer.remoteAddress,
-                                endpointPort = peer.remotePort ?: AudioConfig.DEFAULT_PORT,
-                                isDirect = (candidateType != HatTransportType.LAN)
-                            )
-                        )
-                    }
-                }
-            }
-
-            // Determine candidates ordered by policy
-            val usableCandidates = synchronized(lock) { context.candidateTransports.filter { it.isUsable } }
-            if (usableCandidates.isEmpty()) {
-                val exactReason = if (context.candidateTransports.isEmpty()) {
-                    "No transport candidates available for node ${remoteNode.id}"
-                } else {
-                    "No usable candidate transports available for node ${remoteNode.id} under policy ${policy.name} (candidates: ${context.candidateTransports.map { "${it.type}=${it.availability}" }})"
-                }
-                val dummyCandidate = TransportCandidate(
-                    type = policy.preferredOrder.firstOrNull() ?: HatTransportType.LAN,
-                    availability = TransportAvailability.UNAVAILABLE,
-                    failureReason = exactReason
-                )
-                val failedAttempt = LinkAttempt(
-                    remoteNodeId = remoteNode.id,
-                    candidate = dummyCandidate
-                ).markFailed(exactReason)
-                context.recordAttempt(failedAttempt)
-                Log.e(TAG, exactReason)
-                return@withLock Result.failure(IllegalStateException(exactReason))
-            }
-
-            // Select ordered candidates matching policy
-            val orderedCandidates = if (allowFallback) {
-                policy.preferredOrder.mapNotNull { prefType ->
-                    usableCandidates.firstOrNull { it.type == prefType }
-                }
-            } else {
-                listOfNotNull(policy.selectCandidate(context.candidateTransports))
-            }
-
-            if (orderedCandidates.isEmpty()) {
-                val exactReason = "No transport candidate matched policy ${policy.name} (order: ${policy.preferredOrder})"
-                val dummy = TransportCandidate(
-                    type = policy.preferredOrder.firstOrNull() ?: HatTransportType.LAN,
-                    availability = TransportAvailability.UNAVAILABLE,
-                    failureReason = exactReason
-                )
-                val failedAttempt = LinkAttempt(remoteNodeId = remoteNode.id, candidate = dummy).markFailed(exactReason)
-                context.recordAttempt(failedAttempt)
-                return@withLock Result.failure(IllegalStateException(exactReason))
-            }
-
-            val failedAttempts = mutableListOf<LinkAttempt>()
-
-            for (candidate in orderedCandidates) {
-                val attempt = LinkAttempt(
-                    remoteNodeId = remoteNode.id,
-                    candidate = candidate
-                )
-                context.recordAttempt(attempt)
-
-                val targetAddress = candidate.endpointAddress
-                val targetPort = candidate.endpointPort ?: AudioConfig.DEFAULT_PORT
-
-                if (targetAddress.isNullOrBlank()) {
-                    val failureMsg = "Endpoint address missing for transport candidate ${candidate.type} on node ${remoteNode.id}"
-                    attempt.markFailed(failureMsg)
-                    failedAttempts.add(attempt)
-                    updateCandidateStatus(context, candidate.type, TransportAvailability.FAILED, failureMsg)
-                    if (!allowFallback) {
-                        return@withLock Result.failure(IllegalStateException(failureMsg))
-                    }
-                    continue
-                }
-
-                // Attempt transport connection within timeout
-                val transport = HatTransportRegistry.getTransport(candidate.type)
-                val connectResult = withTimeoutOrNull(timeoutMs) {
-                    try {
-                        transport.connect(TransportAddress(targetAddress, targetPort))
-                    } catch (e: Exception) {
-                        Result.failure(e)
-                    }
-                }
-
-                // Check if attempt was cancelled while in progress
-                if (attempt.state == AttemptState.CANCELLED) {
-                    val cancelReason = "Connection attempt cancelled: ${attempt.failureReason}"
-                    Log.w(TAG, cancelReason)
-                    return@withLock Result.failure(IllegalStateException(cancelReason))
-                }
-
-                if (connectResult == null) {
-                    // Timed out
-                    val timeoutMsg = "Connection attempt to ${remoteNode.id} via ${candidate.type} timed out after ${timeoutMs}ms"
-                    attempt.markTimedOut(timeoutMsg)
-                    failedAttempts.add(attempt)
-                    updateCandidateStatus(context, candidate.type, TransportAvailability.FAILED, timeoutMsg)
-                    Log.w(TAG, timeoutMsg)
-                    if (!allowFallback) {
-                        return@withLock Result.failure(java.util.concurrent.TimeoutException(timeoutMsg))
-                    }
-                    continue
-                }
-
-                if (connectResult.isFailure) {
-                    val ex = connectResult.exceptionOrNull()
-                    val exactReason = "Transport ${candidate.type} connection failed: ${ex?.message ?: ex?.javaClass?.simpleName ?: "Unknown error"}"
-                    attempt.markFailed(exactReason, mapOf("exception" to (ex?.javaClass?.name ?: "Unknown")))
-                    failedAttempts.add(attempt)
-                    updateCandidateStatus(context, candidate.type, TransportAvailability.FAILED, exactReason)
-                    Log.w(TAG, exactReason)
-                    if (!allowFallback) {
-                        return@withLock Result.failure(ex ?: IllegalStateException(exactReason))
-                    }
-                    continue
-                }
-
-                // SUCCESS!
-                attempt.markSuccess()
-                updateCandidateStatus(context, candidate.type, TransportAvailability.AVAILABLE, null)
-                context.lastSelectedTransport = candidate.type
-                context.lastStateChangeEpochMs = System.currentTimeMillis()
-
-                val link = getOrCreateLink(
-                    remoteNode = remoteNode,
-                    transportType = candidate.type.toNodeTransportType(),
-                    remoteAddress = targetAddress,
-                    remotePort = targetPort,
-                    isDirectP2p = candidate.isDirect,
-                    transport = transport
-                )
-                context.activeLink = link
-                _trackedNodeContexts.value = nodeContexts.values.toList()
-                Log.i(TAG, "Successfully established HatLink ${link.id} to ${remoteNode.id} via transport ${candidate.type} in ${attempt.durationMs}ms")
-                return@withLock Result.success(link)
-            }
-
-            // All candidates failed
-            val compositeReason = "All candidate transports failed for node ${remoteNode.id} under policy ${policy.name}: " +
-                failedAttempts.joinToString("; ") { "${it.candidate.type}: ${it.failureReason}" }
-            Log.e(TAG, compositeReason)
-            _trackedNodeContexts.value = nodeContexts.values.toList()
-            Result.failure(IllegalStateException(compositeReason))
-        }
-    }
-
-    private fun updateCandidateStatus(
-        context: DiscoveredNodeLinkContext,
-        type: HatTransportType,
-        availability: TransportAvailability,
-        reason: String?
-    ) {
-        synchronized(lock) {
-            val idx = context.candidateTransports.indexOfFirst { it.type == type }
-            if (idx >= 0) {
-                val existing = context.candidateTransports[idx]
-                context.candidateTransports[idx] = existing.withAvailability(availability, reason)
-            }
-        }
-    }
-
-    /**
-     * Reconnects to the specified remote node.
-     * Closes any degraded or dead link, resets failed candidates to AVAILABLE, and re-executes [connectToNode].
-     */
-    suspend fun reconnect(
-        nodeId: String,
-        policy: TransportPriorityPolicy = TransportPriority.DEFAULT,
-        timeoutMs: Long = 5000L
-    ): Result<HatLink> {
-        val context = nodeContexts[nodeId]
-            ?: return Result.failure(IllegalArgumentException("No link context found for node $nodeId"))
-
-        // Terminate existing link if present to ensure clean reconnection
-        val existing = context.activeLink ?: links.values.firstOrNull { it.remoteNode.id == nodeId }
-        if (existing != null) {
-            Log.i(TAG, "Closing existing link ${existing.id} to $nodeId for reconnect")
-            closeLink(existing.id)
-        }
-
-        // Reset failed candidates so they can be re-attempted
-        synchronized(lock) {
-            val reset = context.candidateTransports.map {
-                if (it.availability == TransportAvailability.FAILED) {
-                    it.copy(availability = TransportAvailability.AVAILABLE, failureReason = null)
-                } else {
-                    it
-                }
-            }
-            context.candidateTransports.clear()
-            context.candidateTransports.addAll(reset)
-        }
-
-        return connectToNode(
-            remoteNode = context.remoteNode,
-            policy = policy,
-            timeoutMs = timeoutMs,
-            allowFallback = true
-        )
-    }
-
-    /**
-     * Cancels an in-progress connection attempt for the given node.
-     */
-    fun cancelAttempt(nodeId: String, reason: String = "Cancelled by user"): Boolean {
-        val context = nodeContexts[nodeId] ?: return false
-        val attempt = context.currentAttempt ?: return false
-        if (attempt.state == AttemptState.IN_PROGRESS) {
-            attempt.markCancelled(reason)
-            context.lastStateChangeEpochMs = System.currentTimeMillis()
-            Log.i(TAG, "Attempt ${attempt.attemptId} for node $nodeId marked CANCELLED: $reason")
-            return true
-        }
-        return false
-    }
-
-    /**
-     * Returns the active transport type for the given remote Node ID.
-     */
-    fun getActiveTransportForNode(nodeId: String): HatTransportType? {
-        val activeLink = links.values.firstOrNull { it.remoteNode.id == nodeId && it.isAlive }
-        return activeLink?.activeTransportType ?: nodeContexts[nodeId]?.lastSelectedTransport
-    }
-
-    /**
-     * Returns the active transport type for the given Link ID.
-     */
-    fun getActiveTransport(linkId: String): HatTransportType? {
-        return links[linkId]?.activeTransportType
-    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Existing Core Link & Stream APIs
@@ -804,7 +487,7 @@ object HatLinkManager {
     fun getBootstrappedPeer(nodeId: String): BootstrappedPeer? = bootstrappedPeers[nodeId]
 
     /**
-     * Clears all links, streams, bootstrapped peers, node contexts, and mutexes.
+     * Clears all links, streams, bootstrapped peers, and node contexts.
      */
     fun clear() {
         synchronized(lock) {
@@ -812,7 +495,6 @@ object HatLinkManager {
             HatSessionManager.clear()
             bootstrappedPeers.clear()
             nodeContexts.clear()
-            nodeMutexes.clear()
             _bootstrappedNodes.value = emptyList()
             _trackedNodeContexts.value = emptyList()
             publishState()
@@ -868,17 +550,7 @@ object HatLinkManager {
                         "endpoint" to "${cand.endpointAddress}:${cand.endpointPort}",
                         "failureReason" to cand.failureReason
                     )
-                },
-                "currentAttempt" to ctx.currentAttempt?.let { att ->
-                    linkedMapOf(
-                        "attemptId" to att.attemptId,
-                        "transport" to att.candidate.type.name,
-                        "state" to att.state.name,
-                        "durationMs" to att.durationMs,
-                        "failureReason" to att.failureReason
-                    )
-                },
-                "attemptHistoryCount" to ctx.attemptHistory.size
+                }
             )
         }
         map["trackedNodes"] = nodesInfo

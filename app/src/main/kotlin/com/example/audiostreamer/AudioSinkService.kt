@@ -205,6 +205,19 @@ class AudioSinkService : Service() {
             Log.d(TAG, "Failed to send retransmit request: ${e.message}")
         }
     }
+
+    /**
+     * Raises a throttled, loud alert when a peer speaks an incompatible HAT version. The message is
+     * stable per version so [UserAlertCenter]'s throttle collapses a continuous stream of rejected
+     * packets into a single visible notification instead of a per-packet storm.
+     */
+    private fun reportIncompatiblePeer(peerVersion: Int, peerHost: String?) {
+        HatDiagnostics.increment("rx_incompatible_version")
+        val source = peerHost?.let { " from $it" } ?: ""
+        UserAlertCenter.error(
+            "Incompatible peer$source: protocol v$peerVersion, this app is v${HatPacket.PROTOCOL_VERSION}. Update the other device."
+        )
+    }
     private var lastSenderHost: String = "Transmitter"
     private var currentProfile: String = AudioConfig.PROFILE_MUSIC
     @Volatile private var currentSampleRate: Int = AudioConfig.SAMPLE_RATE_48000
@@ -697,7 +710,16 @@ class AudioSinkService : Service() {
                             diagRxPackets.incrementAndGet()
                             diagRxBytes.addAndGet(length.toLong())
 
-                            val header = HatPacket.parseHeader(data, offset, length) ?: continue
+                            val header = HatPacket.parseHeader(data, offset, length)
+                            if (header == null) {
+                                // A HAT packet we could not parse is either corruption or a peer on a
+                                // different protocol version. Surface the version case loudly (throttled)
+                                // so an un-updated device is not mistaken for "no devices found".
+                                HatPacket.incompatiblePeerVersion(data, offset, length)?.let { peerVersion ->
+                                    reportIncompatiblePeer(peerVersion, packet.address?.hostAddress)
+                                }
+                                continue
+                            }
 
                             lastSenderAddress = packet.address
                             lastSenderPort = packet.port
@@ -858,6 +880,11 @@ class AudioSinkService : Service() {
                                 }
                                 jitterBuffer.onSilenceHeartbeat()
                                 lastSilencePacketTime = SystemClock.elapsedRealtime()
+                                // Silence carries its own sequence number: teach the ledger the sender's
+                                // position (so it isn't mistaken for lost audio at resumption) and tick
+                                // aging so gaps formed just before suppression still get their retries.
+                                nackTracker.noteSilence(header.sequenceNumber, lastSilencePacketTime)
+                                sendNacksForMissing(lastSilencePacketTime)
                             } else if (header.payloadLength > 0) {
                                 lastSilencePacketTime = 0L
                             }
@@ -1161,7 +1188,10 @@ class AudioSinkService : Service() {
                         }
 
                     } catch (e: SocketTimeoutException) {
-                        // Expected dead-air poll; check whether the transmitter went silent.
+                        // Expected dead-air poll; tick gap aging independent of arrivals, then check
+                        // whether the transmitter went silent.
+                        val deadAirNow = SystemClock.elapsedRealtime()
+                        sendNacksForMissing(deadAirNow)
                         val lastTx = StreamState.telemetry.value.connectedTransmitter
                         val idle = SystemClock.elapsedRealtime() - lastActivityElapsedMs
                         if (lastTx != null && ReceiverLivenessPolicy.shouldCheck(idle) && ReceiverLivenessPolicy.isStale(idle)) {

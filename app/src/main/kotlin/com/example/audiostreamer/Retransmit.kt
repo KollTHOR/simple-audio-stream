@@ -72,13 +72,16 @@ class RetransmitBuffer(val capacity: Int = DEFAULT_CAPACITY) {
 
     private val lock = java.util.concurrent.locks.ReentrantLock()
     private val mask = capacity - 1
-    private val slots = Array(capacity) { ByteArray(AudioConfig.MAX_PACKET_SIZE + HatPacket.HEADER_SIZE) }
+    // Slot buffers are allocated lazily on first record: an idle transmitter that never sends
+    // (or never loses a packet) does not pay capacity × MAX_PACKET_SIZE up front.
+    private val slots = arrayOfNulls<ByteArray>(capacity)
     private val slotLen = IntArray(capacity)
     private val slotSeq = IntArray(capacity) { -1 }
     private val slotGen = LongArray(capacity)
 
     companion object {
         const val DEFAULT_CAPACITY = 64
+        private const val SLOT_SIZE = AudioConfig.MAX_PACKET_SIZE + HatPacket.HEADER_SIZE
     }
 
     /**
@@ -86,10 +89,10 @@ class RetransmitBuffer(val capacity: Int = DEFAULT_CAPACITY) {
      * payloads are skipped rather than truncated, so a stored lookup is always a complete packet.
      */
     fun record(seq: Int, generation: Long, data: ByteArray, offset: Int, len: Int): Boolean = lock.withLock {
-        val maxLen = slots[0].size
-        if (len <= 0 || len > maxLen) return@withLock false
+        if (len <= 0 || len > SLOT_SIZE) return@withLock false
         val idx = seq and mask
-        System.arraycopy(data, offset, slots[idx], 0, len)
+        val slot = slots[idx] ?: ByteArray(SLOT_SIZE).also { slots[idx] = it }
+        System.arraycopy(data, offset, slot, 0, len)
         slotLen[idx] = len
         slotSeq[idx] = seq and 0xFFFF
         slotGen[idx] = generation
@@ -106,13 +109,15 @@ class RetransmitBuffer(val capacity: Int = DEFAULT_CAPACITY) {
         val idx = seq and mask
         if (slotSeq[idx] != (seq and 0xFFFF)) return@withLock 0
         if (requireGeneration != null && slotGen[idx] != requireGeneration) return@withLock 0
+        val slot = slots[idx] ?: return@withLock 0
         val len = slotLen[idx]
         if (len <= 0 || len > dest.size) return@withLock 0
-        System.arraycopy(slots[idx], 0, dest, 0, len)
+        System.arraycopy(slot, 0, dest, 0, len)
         len
     }
 
     fun clear() = lock.withLock {
+        slots.fill(null)
         slotSeq.fill(-1)
         slotLen.fill(0)
         slotGen.fill(0L)
@@ -195,6 +200,19 @@ class NackTracker(
                 pending[s] = Entry(firstSeenMs = nowMs, lastRequestedMs = Long.MIN_VALUE, attempts = 0)
             }
         }
+        pruneExpired(nowMs)
+    }
+
+    /**
+     * Notes a silence/keep-alive heartbeat at [seq]. Heartbeats consume sequence numbers on the
+     * sender, so a silence stretch would otherwise look like a burst of lost audio at the next
+     * real packet. This advances the high-water mark to [seq] (never backwards) and closes any
+     * pending entry there, WITHOUT registering the intervening sequences as gaps.
+     */
+    fun noteSilence(seq: Int, nowMs: Long) {
+        val s = seq and 0xFFFF
+        pending.remove(s)
+        if (highestSeq == -1 || SequenceTracker.diff(s, highestSeq) > 0) highestSeq = s
         pruneExpired(nowMs)
     }
 

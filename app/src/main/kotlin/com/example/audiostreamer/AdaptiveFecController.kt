@@ -3,13 +3,13 @@ package com.example.audiostreamer
 /**
  * Adaptive XOR-FEC gate.
  *
- * Always-on FEC taxes airtime by ~(1/K) even on a pristine link. On a LAN most sessions have
- * near-zero loss, so parity is pure overhead that also delays useful packets. This controller keeps
- * a sliding window of recent transmit outcomes and switches parity on only while measured loss is
- * material — with hysteresis so it cannot flap packet-to-packet:
+ * FEC is the *backstop*, not the primary recovery — selective retransmit (ARQ) is. On a LAN most
+ * sessions have near-zero loss, so always-on parity would be pure airtime overhead (~1/K) that also
+ * delays useful packets. This controller starts **off** and engages parity only while measured loss
+ * is material, with hysteresis so it cannot flap packet-to-packet:
  *
  *  - enable immediately when window loss >= [enableLossPercent] (protect fast),
- *  - disable only once window loss <= [disableLossPercent] *and* parity has been on for at least
+ *  - disable once window loss <= [disableLossPercent] *and* parity has been on for at least
  *    [minOnMs] (release slowly).
  *
  * The window is a fixed ring of booleans (lossy / not) over recent sent packets, so [lossPercent]
@@ -24,8 +24,8 @@ class AdaptiveFecController(
 ) {
     companion object {
         const val DEFAULT_WINDOW = 512
-        const val ENABLE_LOSS_PCT = 0.5f    // enable parity above ~0.5% loss
-        const val DISABLE_LOSS_PCT = 0.1f   // drop parity below ~0.1% loss
+        const val ENABLE_LOSS_PCT = 0.5f    // engage parity above ~0.5% loss
+        const val DISABLE_LOSS_PCT = 0.1f   // release parity below ~0.1% loss
         const val DEFAULT_MIN_ON_MS = 3_000L
     }
 
@@ -38,7 +38,7 @@ class AdaptiveFecController(
     private var head = 0
     private var filled = 0
     private var lossCount = 0
-    private var enabled = true
+    private var enabled = false
     private var enabledSinceMs = Long.MIN_VALUE
 
     /**
@@ -59,7 +59,7 @@ class AdaptiveFecController(
     /** Observed loss as a percentage of the current window. */
     fun lossPercent(): Float = if (filled == 0) 0f else (lossCount * 100f) / filled
 
-    /** True when parity should currently be generated. */
+    /** True when parity should currently be generated. Starts false; engages on loss. */
     fun isEnabled(nowMs: Long): Boolean {
         val pct = lossPercent()
         return if (enabled) {
@@ -81,18 +81,12 @@ class AdaptiveFecController(
         }
     }
 
-    /** Seed the enabled-since clock; call once when the transmitter starts, while parity is on. */
-    fun noteStarted(nowMs: Long) {
-        enabled = true
-        enabledSinceMs = nowMs
-    }
-
     fun reset() {
         ring.fill(false)
         head = 0
         filled = 0
         lossCount = 0
-        enabled = true
+        enabled = false
         enabledSinceMs = Long.MIN_VALUE
     }
 }

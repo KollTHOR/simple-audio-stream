@@ -1117,7 +1117,16 @@ class AudioCaptureService : Service() {
 
                     val header = HatPacket.parseHeader(recvBuf, 0, recvPacket.length)
                     if (header == null) {
-                        Log.d(TAG, "Rejected packet from $endpoint: invalid HAT header or magic mismatch")
+                        // Distinguish "a receiver on another protocol version" from ordinary corruption
+                        // and make it visible (throttled) rather than silently ignoring every packet.
+                        HatPacket.incompatiblePeerVersion(recvBuf, 0, recvPacket.length)?.let { peerVersion ->
+                            HatDiagnostics.increment("tx_incompatible_version")
+                            UserAlertCenter.error(
+                                "Incompatible receiver ${endpoint.address.hostAddress}: protocol v$peerVersion, this app is v${HatPacket.PROTOCOL_VERSION}. Update the other device."
+                            )
+                        } ?: run {
+                            Log.d(TAG, "Rejected packet from $endpoint: invalid HAT header or magic mismatch")
+                        }
                         continue
                     }
 
@@ -1643,12 +1652,11 @@ class AudioCaptureService : Service() {
             val fecDatagramPacket = DatagramPacket(ByteArray(AudioConfig.HEADER_SIZE + AudioConfig.MAX_PACKET_SIZE), 0)
 
             var sequence = 0
-            // Fresh generation restarts sequence numbering at 0: drop any prior replay ring and start
-            // the FEC window protected (parity on) until a clean-link measurement releases it.
+            // Fresh generation restarts sequence numbering at 0: drop any prior replay ring. FEC
+            // starts OFF (ARQ is primary); parity engages only once the loss window crosses its threshold.
             retransmitBuffer.clear()
             retxBacklog.set(0)
             adaptiveFec.reset()
-            adaptiveFec.noteStarted(SystemClock.elapsedRealtime())
             var streamTimelineFrames = 0L
             var totalPackets = 0L
             var totalBytes = 0L

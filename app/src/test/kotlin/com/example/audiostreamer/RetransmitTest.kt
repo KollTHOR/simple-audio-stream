@@ -218,6 +218,35 @@ class NackTrackerTest {
     }
 
     @Test
+    fun noteSilenceAdvancesHighWaterWithoutCreatingGaps() {
+        val tracker = NackTracker()
+        tracker.onReceived(10, nowMs = 0)
+        // A run of silence heartbeats at 11..15 (they carry sequence numbers).
+        for (s in 11..15) tracker.noteSilence(s, nowMs = 1)
+        // Real audio resumes at 16: must NOT register 11..15 as lost.
+        tracker.onReceived(16, nowMs = 2)
+        assertEquals(emptyList<Int>(), tracker.dueForNack(2))
+    }
+
+    @Test
+    fun noteSilenceClosesAPendingGapAtThatSeq() {
+        val tracker = NackTracker()
+        tracker.onReceived(10, nowMs = 0)
+        tracker.onReceived(12, nowMs = 0) // gap at 11
+        assertEquals(listOf(11), tracker.dueForNack(1))
+        tracker.noteSilence(11, nowMs = 2) // that seq number was consumed by a heartbeat
+        assertEquals(0, tracker.pendingCount)
+    }
+
+    @Test
+    fun noteSilenceNeverMovesHighWaterBackwards() {
+        val tracker = NackTracker()
+        tracker.onReceived(100, nowMs = 0)
+        tracker.noteSilence(50, nowMs = 1) // stale/out-of-order heartbeat
+        assertEquals(100, tracker.highestSeen())
+    }
+
+    @Test
     fun clearResetsState() {
         val tracker = NackTracker()
         tracker.onReceived(42, nowMs = 0)
