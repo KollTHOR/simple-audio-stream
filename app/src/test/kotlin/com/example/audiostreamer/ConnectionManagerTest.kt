@@ -17,7 +17,7 @@ class ConnectionManagerTest {
         val payloadBytes = payloadJson.toByteArray(Charsets.UTF_8)
 
         val header = HatPacket.Header(
-            version = 1,
+            version = HatPacket.PROTOCOL_VERSION,
             packetType = HatPacket.TYPE_STREAM_INVITE,
             sequenceNumber = 1,
             payloadLength = payloadBytes.size
@@ -49,7 +49,7 @@ class ConnectionManagerTest {
         val payloadBytes = payloadJson.toByteArray(Charsets.UTF_8)
 
         val header = HatPacket.Header(
-            version = 1,
+            version = HatPacket.PROTOCOL_VERSION,
             packetType = HatPacket.TYPE_TRANSMITTER_ANNOUNCE,
             sequenceNumber = 2,
             payloadLength = payloadBytes.size

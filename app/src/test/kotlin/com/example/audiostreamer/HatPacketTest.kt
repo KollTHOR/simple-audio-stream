@@ -1,8 +1,10 @@
 package com.example.audiostreamer
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HatPacketTest {
@@ -10,7 +12,7 @@ class HatPacketTest {
     @Test
     fun testAudioPacketRoundtrip() {
         val header = HatPacket.Header(
-            version = 1,
+            version = HatPacket.PROTOCOL_VERSION,
             packetType = HatPacket.TYPE_AUDIO,
             sequenceNumber = 42000,
             payloadLength = 1440,
@@ -43,7 +45,7 @@ class HatPacketTest {
 
         val parsed = HatPacket.parseHeader(buffer, 0, buffer.size)
         assertNotNull(parsed)
-        assertEquals(1.toByte(), parsed?.version)
+        assertEquals(HatPacket.PROTOCOL_VERSION, parsed?.version)
         assertEquals(HatPacket.TYPE_AUDIO, parsed?.packetType)
         assertEquals(42000, parsed?.sequenceNumber)
         assertEquals(960000L, parsed?.timestamp)
@@ -60,7 +62,7 @@ class HatPacketTest {
     @Test
     fun testCompressedAudioPacketRoundtrip() {
         val header = HatPacket.Header(
-            version = 1,
+            version = HatPacket.PROTOCOL_VERSION,
             packetType = HatPacket.TYPE_AUDIO,
             sequenceNumber = 1234,
             codec = HatPacket.CODEC_OPUS,
@@ -88,7 +90,7 @@ class HatPacketTest {
     @Test
     fun testFecParityPacketRoundtrip() {
         val header = HatPacket.Header(
-            version = 1,
+            version = HatPacket.PROTOCOL_VERSION,
             packetType = HatPacket.TYPE_FEC_PARITY,
             sequenceNumber = 100,
             codec = HatPacket.CODEC_RAW_PCM,
@@ -201,7 +203,7 @@ class HatPacketTest {
         val buffer = ByteArray(HatPacket.HEADER_SIZE)
         buffer[0] = HatPacket.MAGIC_BYTE_0
         buffer[1] = HatPacket.MAGIC_BYTE_1
-        buffer[2] = 2 // Unsupported version 2
+        buffer[2] = (HatPacket.PROTOCOL_VERSION + 1).toByte() // Unsupported future version
         buffer[3] = HatPacket.TYPE_CONTROL
 
         val parsed = HatPacket.parseHeader(buffer, 0, buffer.size)
@@ -634,5 +636,50 @@ class HatPacketTest {
         assertNotNull(parsed)
         assertEquals(HatPacket.TYPE_MEDIA_CONTROL, parsed?.packetType)
         assertEquals(HatPacket.MEDIA_CMD_PLAY_PAUSE, parsed?.volumeOrCaps)
+    }
+
+    @Test
+    fun retransmitRequestRoundTrips() {
+        val payload = RetransmitProtocol.encodeMissingSeqs(listOf(3, 4, 5))
+        val header = HatPacket.Header(
+            packetType = HatPacket.TYPE_RETX_REQUEST,
+            sequenceNumber = 9000,
+            payloadLength = payload.size,
+            generation = 7L
+        )
+        val buf = ByteArray(HatPacket.HEADER_SIZE + payload.size)
+        HatPacket.writeHeader(buf, 0, header)
+        System.arraycopy(payload, 0, buf, HatPacket.HEADER_SIZE, payload.size)
+
+        val parsed = HatPacket.parseHeader(buf, 0, buf.size)
+        assertNotNull(parsed)
+        assertEquals(HatPacket.TYPE_RETX_REQUEST, parsed!!.packetType)
+        assertEquals(7L, parsed.generation)
+        assertEquals(
+            listOf(3, 4, 5),
+            RetransmitProtocol.decodeMissingSeqs(buf, HatPacket.HEADER_SIZE, parsed.payloadLength)
+        )
+    }
+
+    @Test
+    fun retransmitRequestRejectsEmptyOrOddPayload() {
+        // Empty NACK payload is meaningless.
+        val empty = ByteArray(HatPacket.HEADER_SIZE)
+        HatPacket.writeHeader(empty, 0, HatPacket.Header(packetType = HatPacket.TYPE_RETX_REQUEST, payloadLength = 0))
+        assertNull(HatPacket.parseHeader(empty, 0, empty.size))
+
+        // Odd payload length cannot hold whole u16 entries after the count.
+        val odd = ByteArray(HatPacket.HEADER_SIZE + 3)
+        HatPacket.writeHeader(
+            odd, 0,
+            HatPacket.Header(packetType = HatPacket.TYPE_RETX_REQUEST, payloadLength = 3)
+        )
+        assertNull(HatPacket.parseHeader(odd, 0, odd.size))
+    }
+
+    @Test
+    fun retransmitFlagIsDistinctFromP2pFlag() {
+        assertEquals(0x02.toByte(), HatPacket.FLAG_RETRANSMIT)
+        assertTrue(HatPacket.FLAG_RETRANSMIT != HatPacket.FLAG_P2P_ACTIVE)
     }
 }

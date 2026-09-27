@@ -59,6 +59,7 @@ class AudioSinkService : Service() {
 
         private const val NOTIFICATION_ID = 2001
         private const val CHANNEL_ID = "AudioSinkChannel"
+        private const val NACK_MIN_INTERVAL_MS = 12L
 
         val isRunning = AtomicBoolean(false)
         @Volatile internal var currentInstance: AudioSinkService? = null
@@ -164,6 +165,46 @@ class AudioSinkService : Service() {
     @Volatile private var ignoreLocalVolumeUntil: Long = 0L
     private var lastSenderAddress: java.net.InetAddress? = null
     private var lastSenderPort: Int? = null
+
+    // Selective retransmit (ARQ): the receive thread owns the gap ledger. Missing audio sequences
+    // that are still within their playout deadline are NACKed back to the sender; FEC-recovered or
+    // late-arriving packets are filtered out at send time via jitterBuffer.hasPacket.
+    private val nackTracker = NackTracker()
+    private val nackScratch = ByteArray(HatPacket.HEADER_SIZE + 2 + HatPacket.RETX_MAX_SEQS_PER_REQUEST * 2)
+    private val nackPacket = DatagramPacket(nackScratch, nackScratch.size)
+    @Volatile private var lastNackSendMs = 0L
+
+    /** Reports a set of still-missing sequences and, if any are due, unicasts a NACK to the sender. */
+    private fun sendNacksForMissing(nowMs: Long) {
+        if (nowMs - lastNackSendMs < NACK_MIN_INTERVAL_MS) return
+        val due = nackTracker.dueForNack(nowMs).filterNot { jitterBuffer.hasPacket(it) }
+        if (due.isEmpty()) return
+        val config = configAuthority.currentConfig ?: return
+        val targetAddr = lastSenderAddress ?: return
+        val targetPort = lastSenderPort ?: AudioConfig.DEFAULT_PORT
+        val sock = datagramSocket ?: return
+        if (sock.isClosed) return
+        val payload = RetransmitProtocol.encodeMissingSeqs(due)
+        val header = HatPacket.Header(
+            packetType = HatPacket.TYPE_RETX_REQUEST,
+            sequenceNumber = nackTracker.highestSeen().coerceAtLeast(0),
+            payloadLength = payload.size,
+            generation = config.generation
+        )
+        HatPacket.writeHeader(nackScratch, 0, header)
+        System.arraycopy(payload, 0, nackScratch, HatPacket.HEADER_SIZE, payload.size)
+        nackPacket.setData(nackScratch, 0, HatPacket.HEADER_SIZE + payload.size)
+        nackPacket.address = targetAddr
+        nackPacket.port = targetPort
+        try {
+            sock.send(nackPacket)
+            lastNackSendMs = nowMs
+            diagNacksSent.incrementAndGet()
+            HatDiagnostics.increment("rx_retx_requests")
+        } catch (e: Exception) {
+            Log.d(TAG, "Failed to send retransmit request: ${e.message}")
+        }
+    }
     private var lastSenderHost: String = "Transmitter"
     private var currentProfile: String = AudioConfig.PROFILE_MUSIC
     @Volatile private var currentSampleRate: Int = AudioConfig.SAMPLE_RATE_48000
@@ -200,6 +241,7 @@ class AudioSinkService : Service() {
     private val diagRxPackets = java.util.concurrent.atomic.AtomicLong(0L)
     private val diagRxBytes = java.util.concurrent.atomic.AtomicLong(0L)
     private val diagFecRecovered = java.util.concurrent.atomic.AtomicLong(0L)
+    internal val diagNacksSent = java.util.concurrent.atomic.AtomicLong(0L)
     private var diagStatsLastNs = 0L
     private var diagStatsLastPackets = 0L
     private var diagStatsLastBytes = 0L
@@ -474,6 +516,8 @@ class AudioSinkService : Service() {
         if (previousGen != null && previousGen != config.generation) {
             Log.i(TAG, "Stream generation transition from $previousGen to ${config.generation}: resetting jitter buffer and re-anchoring timeline")
             jitterBuffer.reset()
+            nackTracker.clear()
+            lastNackSendMs = 0L
         }
         jitterBuffer.applyConfiguration(config)
 
@@ -572,6 +616,8 @@ class AudioSinkService : Service() {
             registerLocalVolumeObserver()
             configureAudioTrack(AudioConfig.SAMPLE_RATE_48000, initialEncoding, currentProfile, currentRemoteVolume)
             jitterBuffer.reset()
+            nackTracker.clear()
+            lastNackSendMs = 0L
             startDiagnosticsSession()
 
             // Bind UDP socket via transport abstraction
@@ -921,6 +967,9 @@ class AudioSinkService : Service() {
                                 }
 
                                 jitterBuffer.write(header.sequenceNumber, header.timestamp, writeData, writeOffset, effectivePayloadLen)
+                                val retxNow = SystemClock.elapsedRealtime()
+                                nackTracker.onReceived(header.sequenceNumber, retxNow)
+                                sendNacksForMissing(retxNow)
                             }
 
                             totalPackets++
@@ -1502,6 +1551,8 @@ class AudioSinkService : Service() {
         "opusPlcFrames" to diagOpusPlcFrames.get(),
         "opusDecodeErrors" to diagOpusDecodeErrors.get(),
         "fecRecovered" to diagFecRecovered.get(),
+        "retxRequestsSent" to diagNacksSent.get(),
+        "retxRequests" to HatDiagnostics.counter("rx_retx_requests"),
         "decodeErrors" to HatDiagnostics.counter("rx_decode_errors"),
         "unknownGeneration" to HatDiagnostics.counter("rx_generation_mismatch"),
         "unknownCodec" to HatDiagnostics.counter("rx_codec_mismatch") + HatDiagnostics.counter("rx_invalid_config")
@@ -2115,6 +2166,8 @@ class AudioSinkService : Service() {
         pb?.interrupt()
 
         jitterBuffer.reset()
+        nackTracker.clear()
+        lastNackSendMs = 0L
 
         // Notify transmitter phone that client is disconnecting to pause media playback
         try {
