@@ -68,7 +68,8 @@ class TransportConfigTest {
         )
         assertEquals(AudioCodec.OPUS, opusConfig.codec)
         assertTrue(opusConfig.isCompressed)
-        assertEquals(960, opusConfig.getFramesPerPacket())
+        // Opus now runs 10ms frames (480 samples/ch @ 48kHz), not the old 20ms/960.
+        assertEquals(AudioConfig.OPUS_FRAME_SAMPLES_48K, opusConfig.getFramesPerPacket())
 
         // 4. 16-bit 48kHz AAC
         val aacConfig48 = NegotiatedStreamConfig(
