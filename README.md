@@ -1,89 +1,162 @@
 # Simple Audio Stream
 
-[**Download the latest stable release**](https://github.com/KollTHOR/simple-audio-stream/releases/latest) · [Browse all releases, including nightlies](https://github.com/KollTHOR/simple-audio-stream/releases)
+Turn any two Android phones or tablets into a wireless audio system: play sound on one device and have it come out of the other's speakers over your local network — no computer, no cloud, no account, and no Wi-Fi router required.
 
-Simple Audio Stream sends audio playing on one Android device to another device over your home Wi-Fi, a phone hotspot, or Wi-Fi Direct. Use one device as the **Transmitter** and the other as the **Receiver**.
+**Download:** [latest stable release](https://github.com/KollTHOR/simple-audio-stream/releases/latest) · [all releases incl. nightlies](https://github.com/KollTHOR/simple-audio-stream/releases)
+
+---
+
+## The problem it solves
+
+Android has no built-in way to send the audio one app is playing to a *different* Android device's speakers. Bluetooth pairs phone→headset, not phone→phone, and it can't carry high-quality program audio between two handsets. Casting ecosystems (Chromecast, AirPlay) need a specific receiver or a computer.
+
+Simple Audio Stream fills that gap. Point it at another Android device and it captures the playing audio on one handset and reconstructs it in near-real-time on the other, so you can:
+
+- Play a movie or game from a phone and hear it through a tablet on the other side of the room (or a tablet plugged into speakers).
+- Use an old phone as a dedicated network speaker for a music app running elsewhere.
+- Beam audio to a better-sounding device than the one driving playback.
+
+Everything stays on your local network or a direct device-to-device link. Nothing is uploaded, no sign-in, no third-party server.
 
 ## What it does
 
-- Streams eligible system playback from Android 10 or later. Android shows a system screen/audio-sharing confirmation before capture starts; the app captures playback audio, not ambient microphone sound.
-- Finds nearby receivers on the local network. You can also connect manually by IP address or use Wi-Fi Direct when there is no router or hotspot.
-- Offers adaptive, music/reliable, and low-latency video profiles. Audio quality and sample-rate options depend on the devices and selected profile.
-- Supports receiver volume control, saved connection profiles, and playback controls.
-- Can show track information and album artwork on the receiver when optional Notification access is enabled.
-- Includes an in-app update center for stable and nightly builds.
+- **System-audio capture** on Android 10+ via `MediaProjection` — it streams the audio your apps are playing, not the microphone. Android shows its own audio-sharing consent prompt before capture begins.
+- **Automatic discovery** of nearby devices over the LAN (mDNS) and, when there is no network, over **Wi-Fi Direct**. Optional **Bluetooth Low Energy** and **NFC** just exchange connection details during setup — neither carries audio.
+- **Four audio paths** — raw PCM, a custom bit-exact **lossless** codec, **Opus**, and **AAC** — chosen by profile and by what both devices support.
+- **Three streaming profiles**: Auto (adaptive), High-resolution/lossless (up to 192 kHz, 24-bit), and Low-latency (Opus/AAC for gaming and video where lip-sync matters).
+- **Resilient transport** — forward error correction and selective retransmission recover lost packets, and a jitter buffer hides Wi-Fi timing variation (details below).
+- **One-to-many**: broadcast to several receivers at once, each with its own volume.
+- **Metadata & remote control**: when optional Notification access is granted, the receiver shows the track, artist and artwork and can send play/pause/skip back to the source.
+- **On-screen diagnostics and an in-app update center** (stable + nightly).
 
-Bluetooth Low Energy can optionally exchange Wi-Fi Direct group details during setup; audio always travels over the local network or Wi-Fi Direct, never Bluetooth. NFC is an optional tap-to-bootstrap feature on supported devices and does not carry the audio stream.
+## How it works
 
-## Install
+### The stack
+
+Pure **Kotlin**, Android `minSdk 29` / `targetSdk 35`. No backend, no broker, no cloud.
+
+| Concern | How it's done |
+|---|---|
+| Capture | `MediaProjection` + `AudioRecord` (playback capture), not the microphone |
+| Encode | Concentus (pure-JVM Opus), Android `MediaCodec` (AAC), and a custom lossless codec (below) |
+| Transport | Custom **HAT** protocol over UDP (below) |
+| Discovery | DNS-SD/mDNS, Wi-Fi Direct, BLE GATT, NFC |
+| UI | Jetpack + Material 3 (Material You theming); dark-only |
+
+### Discovery — finding the other device
+
+Devices announce themselves as a `_hats._tcp` DNS-SD service and reply over a UDP broadcast channel, advertising stable node IDs plus capabilities. When there's no LAN, the receiver hosts a **Wi-Fi Direct group** and the transmitter joins it.
+
+Two optional *bootstrap* helpers exist purely to hand over Wi-Fi Direct credentials (`SSID` / passphrase / group-owner IP / port) so a transmitter can form a Direct link without typing anything:
+
+- **BLE**: the receiver advertises a GATT service carrying those details as small JSON; the transmitter reads it, then connects over Wi-Fi Direct.
+- **NFC**: tapping compatible devices exchanges node identity/capability information.
+
+BLE and NFC never carry audio. If discovery fails, the app still lets you connect by entering the receiver's IP address directly.
+
+### The HAT transport
+
+HAT (High-definition Audio Transport) is the app's packet protocol, spoken over **UDP** on port **50005** (discovery on **50006**). Each datagram starts with a compact 24-byte header carrying magic bytes, a protocol version, a packet type, a 16-bit sequence number, a 64-bit audio-frame timestamp, the codec/sample-rate/format, per-packet volume, a FEC block index, and a 32-bit **generation** counter.
+
+Why UDP: on a lossy wireless link, *late* audio is worse than *missing* audio. TCP retransmits with head-of-line blocking — one dropped packet stalls everything behind it and you get freezes. HAT instead ships datagrams best-effort and recovers losses deliberately at the application layer:
+
+- **Adaptive forward error correction (FEC).** Each block of audio packets also carries an XOR parity packet so a single drop self-heals without a round-trip. Because that would otherwise cost ~25% airtime even on a clean link, FEC is **adaptive**: it engages when loss is measured and turns off on a quiet network.
+- **Selective retransmission (ARQ).** When FEC can't cover a burst, the receiver notes which sequence numbers are missing and still within their playout deadline and asks the transmitter to resend *exactly those packets* from a short replay buffer. Wi-Fi round-trips are milliseconds, so a late packet usually still makes its deadline.
+- **Jitter buffer + playback smoothing.** A receiver-side ring buffer absorbs arrival jitter, estimates network jitter (RFC 3550) to size itself, and applies packet-loss concealment plus gentle clock-drift compensation so gaps stay inaudible.
+- **Generation counter.** Every reconfiguration (codec, sample rate, profile) bumps a generation number; mismatched-generation packets are dropped rather than played with the wrong decoder settings.
+- **Silence suppression** keeps battery and airtime down during quiet passages without dropping the connection.
+
+### Codecs and profiles
+
+| Profile | Path | Use it for |
+|---|---|---|
+| Auto | Adaptive codec/format | Set-and-forget; the buffer sizes itself to the network |
+| High-resolution | Lossless or raw PCM, up to 192 kHz / 24-bit | Music where quality matters and there's a good link |
+| Low-latency | Opus (AAC fallback), 48 kHz | Games and video, where lip-sync matters |
+
+The lossless path uses a small custom codec: reversible mid/side decorrelation + linear-predictive residuals + Golomb-Rice entropy coding, all in integer Kotlin (no native code). It is mathematically bit-exact to the source PCM and automatically falls back to raw PCM if a frame doesn't shrink.
+
+### Multi-device and control
+
+A transmitter keeps a registry of connected receivers and fans one encode out to each, patching that receiver's volume into every packet; receivers answer with periodic heartbeats that act as both keep-alive and capability report, and can push their own volume back. If a receiver drops off, the transmitter prunes it; the app also warns on-screen when a link goes quiet, so failures aren't silent.
+
+### Security posture
+
+Intended for a **trusted local network or a direct Wi-Fi Direct link between your own devices**. Traffic is **not encrypted or authenticated**, so anyone on the same Wi-Fi can, in principle, listen in or inject — that is a deliberate simplicity trade-off for a personal LAN tool, not an oversight. Do not use it on untrusted/public networks. No audio or metadata ever leaves the local network, and the update center only contacts GitHub to check for new releases.
+
+## Getting started
+
+### Install
 
 1. Open [the releases page](https://github.com/KollTHOR/simple-audio-stream/releases) on your Android device.
-2. Choose a stable release or nightly release, then download its `.apk` file.
-3. Open the downloaded APK and follow Android's installation prompt. If Android asks, allow your browser or file manager to install unknown apps. You can turn that setting off again after installation.
-4. Install the app on both Android devices.
+2. Pick a stable or nightly release and download its `.apk`.
+3. Open the download and follow Android's prompt (allow "install unknown apps" for your browser/file manager if asked; you can turn it back off afterward).
+4. Install it on **both** devices.
 
-**Signing-key transition:** Android may require users coming from an older build to uninstall it before installing the current release. Uninstalling removes that app installation and may erase its saved settings. Once installed on the current signing key, later updates should install normally.
+> **Signing-key note:** moving from an older build may require uninstalling it first, which clears that device's saved settings. Later updates then install normally.
 
-## Quick start
+### Quick start — over Wi-Fi or a hotspot
 
-### Over Wi-Fi or a hotspot
+1. Connect both devices to the same network.
+2. On the receiver: choose **Receive** → **Start Listening**.
+3. On the transmitter: choose **Broadcast** → **Scan** → tap the receiver. If it doesn't appear, use **Manual Connection** and type the receiver's IP.
+4. Tap **Start Streaming** and accept Android's audio-sharing prompt.
 
-1. Connect both devices to the same Wi-Fi network or phone hotspot.
-2. On the receiving device, select **Receive** and tap **Start Listening**.
-3. On the transmitting device, select **Broadcast**, scan for the receiver, and select it. If it does not appear, use **Manual Connection** and enter the receiver's IP address.
-4. Tap **Start Streaming** and approve Android's system audio-sharing prompt.
+### Quick start — with no router (Wi-Fi Direct)
 
-### With Wi-Fi Direct
+1. On the receiver: choose **Receive**. With no Wi-Fi network it starts a Wi-Fi Direct group automatically.
+2. Grant the nearby-Wi-Fi / location permissions Android asks for; some devices also need Location *enabled* for Wi-Fi Direct discovery.
+3. On the transmitter: **Scan** → tap the receiver → accept the Wi-Fi Direct prompt.
+4. Tap **Start Streaming** and accept the audio-sharing prompt.
 
-1. On the receiving device, select **Receive**. If it is not connected to a local Wi-Fi network, the app starts a Wi-Fi Direct group automatically.
-2. Grant the nearby Wi-Fi/location permissions Android requests. Some devices also require Location to be turned on in Android settings for Wi-Fi Direct discovery.
-3. On the transmitting device, tap **Scan**. The receiver should appear in the device list; select it and accept Android's Wi-Fi Direct connection prompt.
-4. Tap **Start Streaming** and approve Android's system audio-sharing prompt.
-
-Tap **Stop Streaming** or **Stop Listening** to end a session.
+Tap **Stop Streaming** / **Stop Listening** to end a session.
 
 ## Permissions
 
-Android requests permissions when you use the feature that needs them. You do not need to enable every optional feature to stream over a regular Wi-Fi network.
+Permissions are requested when the feature that needs them is used; you don't need the optional ones to stream over ordinary Wi-Fi.
 
-### Requested while using the app
+### Requested in-app
 
-| Permission | When it is needed | What it does |
+| Permission | When | Why |
 |---|---|---|
-| **Microphone** (`RECORD_AUDIO`) | When transmitting | Android requires this permission for playback capture. The app captures eligible audio playing on the device—not sound from the room. Android separately asks you to approve system audio sharing when you start a stream. |
-| **Notifications** (`POST_NOTIFICATIONS`, Android 13+) | When starting a transmitter or receiver | Allows Android to show the ongoing streaming/playback notification and its controls. On earlier Android versions, the system notification appears without this runtime prompt. |
-| **Nearby Wi-Fi devices** (`NEARBY_WIFI_DEVICES`, Android 13+) | When using Wi-Fi Direct | Allows Android's nearby Wi-Fi discovery and connection features. |
-| **Location** (`ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`) | When discovering with Wi-Fi Direct; also used for Bluetooth discovery on older Android versions | Android requires location permission for some nearby-device discovery APIs. The app uses it for discovery, not to include location in the audio stream. Some Android devices also require the system Location setting to be on for Wi-Fi Direct discovery. |
-| **Bluetooth scan, advertise, and connect** (Android 12+) | When using the optional Bluetooth setup handshake | Lets the devices exchange Wi-Fi Direct group details before establishing the audio connection. On Android 11 and earlier, the app uses the older Bluetooth permissions and Location permission instead. Bluetooth does not carry audio. |
+| Microphone `RECORD_AUDIO` | Transmitting | Android requires it for playback capture; the app captures playing audio, not the room, and Android separately confirms audio sharing. |
+| Notifications `POST_NOTIFICATIONS` (13+) | Streaming/listening | The ongoing foreground-service notification and its controls. |
+| Nearby Wi-Fi `NEARBY_WIFI_DEVICES` (13+) | Wi-Fi Direct | Nearby Wi-Fi discovery/connection. |
+| Location `ACCESS_FINE/COARSE_LOCATION` | Wi-Fi Direct discovery (and older Android Bluetooth) | Required by the OS for nearby-device APIs; used for discovery only, never put in the stream. |
+| Bluetooth scan/advertise/connect (12+) | Optional BLE setup handshake | Exchanges Wi-Fi Direct details only. Older Android uses legacy Bluetooth + Location instead. |
 
-### Optional access in Android Settings
+### Optional toggles in Android Settings
 
-| Setting | What it enables |
+| Access | Enables |
 |---|---|
-| **Notification access** | Reads active media-session information so the app can send track title, artist, album artwork, and playback state to the other device. It also allows play/pause/next/previous commands to be relayed. The app's listener uses the media-session feature. |
-| **Accessibility service** | Optional hardware-volume-button control while transmitting. Volume Up/Down adjusts the remote receiver volume. The service filters hardware key presses only; it does not inspect screen content or accessibility events. |
-| **Install unknown apps** | Optional permission for the in-app updater to open the Android installer directly. It is not needed for audio streaming or for downloading an APK to install manually. |
+| Notification access | Sends track title/artist/artwork/playback state to the receiver and relays play/pause/skip. |
+| Accessibility service | Optional hardware-volume-button control of receiver volume while transmitting (hardware keys only). |
+| Install unknown apps | Lets the in-app updater open the installer directly; not needed for streaming or manual installs. |
 
-**Android 13+ and sideloaded APKs:** Android may block the Notification access switch until you allow restricted settings for the app. Open **Settings → Apps → Audio Streamer → ⋮ → Allow restricted settings**, confirm the prompt, then return to **Settings → Special app access → Notification access → Audio Streamer** and enable access. Menu names can differ by device. This is an Android security confirmation, not an app permission; it cannot be enabled or requested by adding a manifest entry. Android may apply the same restriction to Accessibility access.
+> **Android 13+, sideloaded apps:** the system may hide the Notification-access toggle until you allow *restricted settings* for the app (Settings → Apps → Simple Audio Stream → ⋮ → Allow restricted settings), then enable Notification access. This is an OS safety step, not an in-app permission, and cannot be pre-granted via the manifest. The same can apply to Accessibility.
 
-### Other permissions Android grants for app features
+### Auto-granted normal permissions
 
-These permissions do not normally show a runtime prompt:
+`INTERNET` (LAN audio/control + GitHub update checks); `ACCESS_NETWORK_STATE`/`ACCESS_WIFI_STATE`/`CHANGE_WIFI_STATE`/`CHANGE_WIFI_MULTICAST_STATE` (network checks + discovery + Wi-Fi Direct); `WAKE_LOCK` (keep streaming with the screen off); the `FOREGROUND_SERVICE*` set (Android keeping capture/playback alive); `NFC` (optional bootstrap only).
 
-| Permission | What it does |
-|---|---|
-| `INTERNET` | Sends and receives audio/control packets on the local network and connects to GitHub for the update center. |
-| `ACCESS_NETWORK_STATE`, `ACCESS_WIFI_STATE` | Checks network availability and Wi-Fi state so devices can discover and connect to each other. |
-| `CHANGE_WIFI_STATE` | Supports Wi-Fi Direct connection setup. |
-| `CHANGE_WIFI_MULTICAST_STATE` | Lets the receiver listen for local-network discovery broadcasts. |
-| `WAKE_LOCK` | Keeps the CPU awake during an active stream, including with the screen off. |
-| `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PROJECTION`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK` | Let Android keep audio capture and playback running as visible foreground services. |
-| `NFC` | Supports optional NFC tap-to-bootstrap on compatible devices. NFC is not used to transmit audio. |
+## Building from source
+
+Requires JDK 17 and the Android SDK (compile/target 35). No extra setup for a debug build:
+
+```
+./gradlew assembleDebug           # app/build/outputs/apk/debug/
+./gradlew test                    # JVM unit tests
+./gradlew lintVitalRelease
+```
+
+A signed release needs a keystore (see `.github/` for the CI signing step); a debug APK installs fine for testing.
 
 ## Updating
 
-Use **Settings → App Updates** to check the stable or nightly channel and browse releases. The updater checks the APK checksum and verifies that its signing certificate matches the installed app before opening Android's installer. You can also install an APK manually from the [releases page](https://github.com/KollTHOR/simple-audio-stream/releases).
+**Settings → App Updates** checks the stable or nightly channel and lists recent releases. Before installing, the updater verifies the APK checksum and that the signing certificate matches the installed app, then hands off to Android's installer. Manual installs from the releases page always work.
 
-## Help
+## Troubleshooting
 
-If devices do not appear, confirm they are on the same Wi-Fi/hotspot, allow the relevant nearby Wi-Fi or Bluetooth permissions for the connection method you chose, and retry the scan. For Wi-Fi Direct, also check that Location is enabled if your Android device requires it.
+- **Device doesn't appear** — confirm both are on the same network, grant the nearby-Wi-Fi/Bluetooth permissions for the method you're using, and re-scan; for Wi-Fi Direct make sure Location is enabled if the device requires it. Still nothing? Use manual IP entry.
+- **Stutter / dropouts** — try a different profile (Low-latency on a busy 2.4 GHz network; a strong 5 GHz or Wi-Fi Direct link helps), and keep devices within range. The transport already recovers loss, but a saturated radio is the usual cause.
+- **See what's happening** — **Settings → Diagnostics** and the in-app live log show discovery phases, packet loss/retransmissions, and connection state, so failures are visible instead of silent.
