@@ -162,6 +162,10 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var tvRateDescription: TextView
     private lateinit var cardBitDepth: MaterialCardView
     private lateinit var toggleBitGroup: MaterialButtonToggleGroup
+
+    // Receiver-mode lock banner (quality is set by the transmitter while receiving)
+    private lateinit var cardReceiverQualityLock: MaterialCardView
+    private lateinit var tvReceiverQualityLock: TextView
     private lateinit var btnBitAuto: MaterialButton
     private lateinit var btnBit16: MaterialButton
     private lateinit var btnBit24: MaterialButton
@@ -402,6 +406,8 @@ class SettingsActivity : AppCompatActivity() {
         tvRateDescription = findViewById(R.id.tv_rate_description)
         cardBitDepth = findViewById(R.id.card_bit_depth)
         toggleBitGroup = findViewById(R.id.toggle_bit_group)
+        cardReceiverQualityLock = findViewById(R.id.card_receiver_quality_lock)
+        tvReceiverQualityLock = findViewById(R.id.tv_receiver_quality_lock)
         btnBitAuto = findViewById(R.id.btn_bit_auto)
         btnBit16 = findViewById(R.id.btn_bit_16)
         btnBit24 = findViewById(R.id.btn_bit_24)
@@ -697,6 +703,37 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * While this device is actively receiving, the transmitter dictates the streaming profile and
+     * audio format, so the local profile/rate/bit controls below are inert and only cause confusion
+     * (e.g. the user left it on "Auto" but the source is sending "Music"). Disable them and show
+     * what is actually arriving instead. When not receiving, restore normal editing.
+     */
+    private fun applyReceiverQualityLock(tel: Telemetry) {
+        val receiving = tel.isActive && !tel.isTransmitter
+        if (receiving == qualityControlsLocked) return
+        qualityControlsLocked = receiving
+
+        val alpha = if (receiving) 0.45f else 1.0f
+        listOf(toggleProfileGroup, toggleRateGroup, toggleBitGroup).forEach { group ->
+            group.isEnabled = !receiving
+            group.alpha = alpha
+        }
+        cardSampleRate.alpha = alpha
+        cardBitDepth.alpha = alpha
+
+        if (receiving) {
+            tvReceiverQualityLock.text =
+                "Receiving from ${tel.connectedTransmitter?.name ?: "a transmitter"} — the transmitter sets " +
+                    "quality, so the options below are disabled. Incoming: ${tel.streamProfileName} • ${tel.negotiatedFormatDesc}."
+            cardReceiverQualityLock.visibility = View.VISIBLE
+        } else {
+            cardReceiverQualityLock.visibility = View.GONE
+        }
+    }
+
+    private var qualityControlsLocked = false
+
     private fun updateProfileUi(profile: String) {
         val colorPrimary = ContextCompat.getColor(this, R.color.primary)
         val colorCard = ContextCompat.getColor(this, R.color.card_bg)
@@ -882,6 +919,11 @@ class SettingsActivity : AppCompatActivity() {
                 launch {
                     DiscoveryScanCoordinator.scanState.collect { scanState ->
                         updateDiscoveryDiagnosticsUi(scanState)
+                    }
+                }
+                launch {
+                    StreamState.telemetry.collect { tel ->
+                        applyReceiverQualityLock(tel)
                     }
                 }
             }
