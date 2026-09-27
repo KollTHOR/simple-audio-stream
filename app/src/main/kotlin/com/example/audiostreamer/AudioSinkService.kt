@@ -709,6 +709,7 @@ class AudioSinkService : Service() {
                             // Check for Disconnect signal from transmitter
                             if (header.packetType == HatPacket.TYPE_DISCONNECT) {
                                 Log.i(TAG, "Received disconnect signal from transmitter: $lastSenderHost - stopping sink")
+                                UserAlertCenter.info("Transmitter disconnected")
                                 StreamState.update {
                                     it.copy(
                                         isActive = false,
@@ -1124,6 +1125,7 @@ class AudioSinkService : Service() {
                             }
                             lastActivityElapsedMs = SystemClock.elapsedRealtime()
                             Log.w(TAG, "Receiver liveness: lost transmitter ${lastTx.ip} after ${idle}ms of silence")
+                            UserAlertCenter.warn("No response from ${lastTx.name} — still listening for it to return")
                             HatDiagnostics.warn("TX_STALE", mapOf("sender" to lastTx.ip, "idleMs" to idle))
                         }
                     } catch (e: SocketException) {

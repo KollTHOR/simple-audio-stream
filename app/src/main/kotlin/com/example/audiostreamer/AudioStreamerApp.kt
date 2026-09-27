@@ -16,5 +16,6 @@ class AudioStreamerApp : Application() {
         NetworkUtils.init(this)
         DiscoveryManager.init(this)
         LocalNodeManager.init(this)
+        UserAlertCenter.init(this)
     }
 }

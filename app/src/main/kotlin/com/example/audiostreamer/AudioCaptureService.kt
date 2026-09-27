@@ -174,6 +174,11 @@ class AudioCaptureService : Service() {
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
+            // Only an alert when this was a revocation, not our own teardown (which unregisters
+            // this callback first; the isRunning guard covers a racing stop path).
+            if (isRunning.get()) {
+                UserAlertCenter.error("Screen capture was revoked — transmission stopped")
+            }
             Log.w(TAG, "MediaProjection revoked or stopped by system")
             stopStreaming()
             stopSelf()
@@ -447,6 +452,9 @@ class AudioCaptureService : Service() {
                     HatDiagnostics.info("RECEIVER_STALE", mapOf("receiver" to entry.key.toString(), "idleMs" to (now - entry.value)))
                     clientDiag.remove(entry.key)
                     val nodeInfo = clientNodeInfo.remove(entry.key)
+                    UserAlertCenter.info(
+                        "${nodeInfo?.name?.takeIf { it.isNotBlank() } ?: (entry.key.address.hostAddress ?: "Receiver")} stopped responding and was removed"
+                    )
                     val destId = nodeInfo?.id ?: "${com.example.audiostreamer.node.NodeIdentity.ID_PREFIX}ep-${(entry.key.address.hostAddress ?: "").replace(".", "-")}"
                     com.example.audiostreamer.node.HatMultiStreamManager.removeDestination(destId, "stale_timeout")
                     com.example.audiostreamer.node.HatLinkManager.closeLinkByRemoteAddress(entry.key.address.hostAddress ?: "")

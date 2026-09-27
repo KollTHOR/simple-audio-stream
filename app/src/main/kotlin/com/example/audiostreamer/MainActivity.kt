@@ -20,6 +20,7 @@ import android.provider.Settings
 import android.util.Log
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -51,6 +52,7 @@ import androidx.appcompat.widget.PopupMenu
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.progressindicator.LinearProgressIndicator
+import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -625,6 +627,11 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
+                    UserAlertCenter.latest.collect { alert ->
+                        if (alert != null) renderUserAlert(alert)
+                    }
+                }
+                launch {
                     com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.scanState.collect { state ->
                         renderDiscoveryScanState(state)
                     }
@@ -842,6 +849,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        UserAlertCenter.uiVisible = true
         refreshLocalIp()
         HatNfcBootstrapProvider.enableNfcDispatch(this)
 
@@ -864,6 +872,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        // Alerts raised from now on go to the heads-up notification path instead of a Snackbar.
+        UserAlertCenter.uiVisible = false
         HatNfcBootstrapProvider.disableNfcDispatch(this)
     }
 
@@ -1018,6 +1028,41 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopUnifiedScan() {
         com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.stopScan(this)
+    }
+
+    /**
+     * Renders a user-facing alert as a Snackbar anchored to the root layout. Uses a Snackbar rather
+     * than a Toast so failures replace each other instead of queuing up behind a backlog, and so an
+     * error carries a "View logs" action.
+     */
+    private fun renderUserAlert(alert: UserAlert) {
+        val root = findViewById<ViewGroup>(R.id.root_layout)
+        val duration = when (alert.severity) {
+            AlertSeverity.ERROR -> Snackbar.LENGTH_LONG
+            AlertSeverity.WARN -> Snackbar.LENGTH_LONG
+            AlertSeverity.INFO -> Snackbar.LENGTH_SHORT
+        }
+        val bar = Snackbar.make(root, alert.message, duration)
+        bar.setBackgroundTint(
+            ContextCompat.getColor(
+                this,
+                when (alert.severity) {
+                    AlertSeverity.ERROR -> R.color.status_red
+                    AlertSeverity.WARN -> R.color.status_amber
+                    AlertSeverity.INFO -> R.color.card_bg
+                }
+            )
+        )
+        if (alert.severity == AlertSeverity.ERROR) {
+            bar.setAction("View logs") { AppLogger.showLogViewerDialog(this) }
+            bar.setActionTextColor(ContextCompat.getColor(this, R.color.white))
+        }
+        bar.addCallback(object : Snackbar.Callback() {
+            override fun onDismissed(transientBottomBar: Snackbar?, event: Int) {
+                UserAlertCenter.consume(alert)
+            }
+        })
+        bar.show()
     }
 
     private fun renderDiscoveryScanState(state: com.example.audiostreamer.node.discovery.DiscoveryScanState) {
@@ -1877,10 +1922,9 @@ class MainActivity : AppCompatActivity() {
                 dev.p2pSsid,
                 pass,
                 onFailed = { reason ->
-                    runOnUiThread {
-                        AppLogger.w("MainActivity", "Direct link to '${dev.displayName}' failed: $reason")
-                        Toast.makeText(this@MainActivity, "Couldn't reach ${dev.displayName}: $reason", Toast.LENGTH_LONG).show()
-                    }
+                    // The alert bus already shows a Snackbar/Notification for this; keep only the
+                    // device-specific log line.
+                    AppLogger.w("MainActivity", "Direct link to '${dev.displayName}' failed: $reason")
                 }
             ) { goIp ->
                 val durationMs = System.currentTimeMillis() - connStartMs
@@ -1899,10 +1943,7 @@ class MainActivity : AppCompatActivity() {
                 this,
                 dev.p2pPeer,
                 onFailed = { reason ->
-                    runOnUiThread {
-                        AppLogger.w("MainActivity", "P2P peer connect to '${dev.displayName}' failed: $reason")
-                        Toast.makeText(this@MainActivity, "Couldn't reach ${dev.displayName}: $reason", Toast.LENGTH_LONG).show()
-                    }
+                    AppLogger.w("MainActivity", "P2P peer connect to '${dev.displayName}' failed: $reason")
                 }
             ) { goIp ->
                 val durationMs = System.currentTimeMillis() - connStartMs
@@ -2060,10 +2101,7 @@ class MainActivity : AppCompatActivity() {
                 ssid,
                 pass,
                 onFailed = { reason ->
-                    runOnUiThread {
-                        AppLogger.w("MainActivity", "Direct link to '${targetDev.name}' failed: $reason")
-                        Toast.makeText(this@MainActivity, "Couldn't reach ${targetDev.name}: $reason", Toast.LENGTH_LONG).show()
-                    }
+                    AppLogger.w("MainActivity", "Direct link to '${targetDev.name}' failed: $reason")
                 }
             ) { goIp ->
                 runOnUiThread {
