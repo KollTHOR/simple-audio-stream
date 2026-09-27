@@ -319,7 +319,10 @@ class AudioSinkService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             val targetFrames = when (normProfile) {
                 AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY -> {
-                    (sampleRate * 35) / 1000
+                    // Opus now runs 10 ms frames, so a 35 ms active clamp would be the dominant
+                    // latency term; ~25 ms keeps ~2 frames of FastMixer headroom while staying above
+                    // the underrun threshold (the loop's dynamic expansion covers bursts).
+                    (sampleRate * 25) / 1000
                 }
                 AudioConfig.PROFILE_AUTO -> {
                     val minWatermarkMs = if (sampleRate >= 88200) 60 else 35
@@ -358,8 +361,16 @@ class AudioSinkService : Service() {
             "RELIABLE", AudioConfig.PROFILE_MUSIC -> AudioConfig.PROFILE_MUSIC
             else -> AudioConfig.PROFILE_LOW_LATENCY
         }
-        // PERFORMANCE_MODE_NONE ensures stable AudioFlinger buffering and eliminates FastMixer hardware underruns
-        val perfMode = AudioTrack.PERFORMANCE_MODE_NONE
+        // PERFORMANCE_MODE_LOW_LATENCY engages the FastMixer path for the Opus/low-latency profile
+        // where the ~10-30ms saved is the point; AUTO/MUSIC keep PERFORMANCE_MODE_NONE for the
+        // stable AudioFlinger buffering that avoids FastMixer underruns. Init failure still falls
+        // back to NONE below, and the playback loop's dynamic buffer expansion is the safety net.
+        val perfMode = when (normProfile) {
+            AudioConfig.PROFILE_VIDEO, AudioConfig.PROFILE_LOW_LATENCY ->
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
+                else AudioTrack.PERFORMANCE_MODE_NONE
+            else -> AudioTrack.PERFORMANCE_MODE_NONE
+        }
         val existing = audioTrack
         if (existing != null && currentSampleRate == sampleRate && currentEncoding == encoding && requestedPerformanceMode == perfMode && existing.state == AudioTrack.STATE_INITIALIZED) {
             if (currentTrackProfile != normProfile) {
@@ -1252,6 +1263,12 @@ class AudioSinkService : Service() {
                                         val pcmList = synchronized(decoderLock) {
                                             opusDecoder?.decode(chunk, 0, bytesToPlay)
                                         } ?: emptyList()
+                                        // Feed the true decoded frame size back to the jitter buffer so its
+                                        // FEC/drift timeline matches the sender even if the OEM encoder
+                                        // returned 20 ms despite the 10 ms request.
+                                        if (pcmList.isNotEmpty()) {
+                                            opusDecoder?.lastFrameSizeSamples?.let { jitterBuffer.reportOpusFrameSize(it) }
+                                        }
                                         lastDecodeDurationNs = SystemClock.elapsedRealtimeNanos() - t0
                                         HatDiagnostics.recordTime("decode", lastDecodeDurationNs)
                                         val decodeGeneration = configAuthority.currentGeneration

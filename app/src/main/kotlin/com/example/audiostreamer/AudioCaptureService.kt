@@ -1682,7 +1682,7 @@ class AudioCaptureService : Service() {
                 while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                     if (isCompressedActive && (opusEnc != null || aacEnc != null)) {
                         val targetReadBytes = if (isOpusActive) {
-                            3840 // 20ms Opus frame @ 48kHz (960 stereo samples)
+                            AudioConfig.OPUS_CAPTURE_READ_BYTES // 10ms Opus frame @ 48kHz (480 stereo samples)
                         } else if (isAacActive) {
                             4096 // ~21.3ms AAC-LC frame (1024 samples)
                         } else {
@@ -1720,7 +1720,7 @@ class AudioCaptureService : Service() {
                             }
                             val shouldSendHeartbeat = isSilenceSuppressed && (now - lastHeartbeatTime >= AudioConfig.SILENCE_HEARTBEAT_INTERVAL_MS)
 
-                            val framesInChunk = if (isOpusActive) 960 else if (isAacActive) 1024 else (activePayloadSize / 4)
+                            val framesInChunk = if (isOpusActive) AudioConfig.OPUS_FRAME_SAMPLES_48K else if (isAacActive) 1024 else (activePayloadSize / 4)
 
                             if (!isSilenceSuppressed) {
                                 val tEnc0 = SystemClock.elapsedRealtimeNanos()
@@ -1737,7 +1737,16 @@ class AudioCaptureService : Service() {
                                         val currentSeq = sequence
                                         sequence = (sequence + 1) and 0xFFFF
                                         val currentTimestamp = streamTimelineFrames
-                                        streamTimelineFrames += framesInChunk
+                                        // Advance the timeline by the frame size the encoder *actually*
+                                        // emitted (from the Opus TOC), not the requested 10 ms, so an OEM
+                                        // encoder that pins to 20 ms still keeps sender/receiver in sync.
+                                        val packetFrames = if (isOpusActive && frameLen >= 1) {
+                                            val toc = com.example.audiostreamer.OpusPacket.frameSamplesPerChannel(
+                                                frame[0], AudioConfig.OPUS_FRAME_SAMPLES_48K
+                                            )
+                                            if (toc > 0) toc else framesInChunk
+                                        } else framesInChunk
+                                        streamTimelineFrames += packetFrames
 
                                         val volByte = remoteVolumePercent.get().coerceIn(0, 100).toByte()
 

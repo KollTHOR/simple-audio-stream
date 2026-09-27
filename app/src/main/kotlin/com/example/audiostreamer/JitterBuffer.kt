@@ -81,6 +81,16 @@ class JitterBuffer(
     private var packetDurationMs: Float = 5.0f
     private var lastSampleRate: Int = AudioConfig.SAMPLE_RATE_48000
 
+    // Actual Opus frames-per-packet, learned from the decoder so FEC/drift math matches the sender
+    // even when an OEM encoder ignores the requested 10 ms and emits 20 ms. Defaults to the
+    // requested size so a stream with no decodes yet still behaves.
+    @Volatile private var opusFramesPerPacket: Int = AudioConfig.OPUS_FRAME_SAMPLES_48K
+
+    /** Reports the frame size the Opus decoder actually produced for the latest packet. */
+    fun reportOpusFrameSize(samples: Int) {
+        if (samples > 0) opusFramesPerPacket = samples
+    }
+
     var lastReadStatus: ReadStatus = ReadStatus.PACKET
         private set
 
@@ -107,7 +117,7 @@ class JitterBuffer(
 
     fun calculateFramesForPayload(length: Int): Int {
         if (isOpusStream) {
-            return 960
+            return opusFramesPerPacket
         }
         if (isCompressedStream) {
             return if (length in 1..400) 960 else 1024
@@ -195,7 +205,9 @@ class JitterBuffer(
                 maxUnderrunFrames = AudioConfig.LOW_LATENCY_MAX_UNDERRUN_FRAMES
                 waitTimeoutMs = AudioConfig.LOW_LATENCY_WAIT_TIMEOUT_MS
                 val targetSlots = AudioConfig.LOW_LATENCY_TARGET_WATERMARK_SLOTS
-                val targetMs = 40.0f
+                // Was 40 ms; with 10 ms Opus frames + ARQ/FEC recovery, 25 ms (≈2-3 frames) is enough
+                // jitter headroom without re-adding the latency the frame-size change just removed.
+                val targetMs = 25.0f
                 jitterEstimator.configure(targetSlots, targetMs)
                 adaptiveController.configure(normProfile, targetMs, packetDurationMs)
             } else {
