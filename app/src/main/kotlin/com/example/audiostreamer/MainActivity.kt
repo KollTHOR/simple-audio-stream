@@ -27,7 +27,6 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -401,9 +400,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        val prefs = getSharedPreferences("stream_prefs", android.content.Context.MODE_PRIVATE)
-        val themeMode = prefs.getInt("theme_mode", AppCompatDelegate.MODE_NIGHT_YES) // default: dark
-        AppCompatDelegate.setDefaultNightMode(themeMode)
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
@@ -1048,7 +1044,7 @@ class MainActivity : AppCompatActivity() {
                 this,
                 when (alert.severity) {
                     AlertSeverity.ERROR -> R.color.status_red
-                    AlertSeverity.WARN -> R.color.status_amber
+                    AlertSeverity.WARN -> R.color.status_orange
                     AlertSeverity.INFO -> R.color.card_bg
                 }
             )

@@ -29,6 +29,10 @@
     <color name="pill_stroke">#334155</color>
     <color name="pill_text">#60A5FA</color>
 
+    <!-- Slider tracks -->
+    <color name="slider_track_inactive">#2A2A38</color>
+    <color name="slider_track">#272732</color>
+
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
 </resources>

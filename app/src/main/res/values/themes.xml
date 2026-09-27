@@ -46,7 +46,7 @@
         <item name="haloRadius">14dp</item>
         <item name="thumbColor">@color/primary</item>
         <item name="trackColorActive">@color/primary</item>
-        <item name="trackColorInactive">#2A2A38</item>
+        <item name="trackColorInactive">@color/slider_track_inactive</item>
     </style>
 
     <!-- Light mode variant: dark status bar icons -->

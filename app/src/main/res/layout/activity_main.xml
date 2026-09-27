@@ -958,7 +958,7 @@
                                 android:value="100.0"
                                 app:thumbColor="@color/primary"
                                 app:trackColorActive="@color/primary"
-                                app:trackColorInactive="#2A2A38"
+                                app:trackColorInactive="@color/slider_track_inactive"
                                 app:trackHeight="4dp"
                                 app:thumbWidth="14dp"
                                 app:thumbHeight="14dp"
