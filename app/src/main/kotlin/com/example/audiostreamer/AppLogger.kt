@@ -34,6 +34,9 @@ object AppLogger {
     )
 
     private const val MAX_LOG_ENTRIES = 1000
+
+    /** Lines kept on screen in the live viewer. Small on purpose: re-render + pin-to-bottom each tick. */
+    private const val LIVE_TAIL_LINES = 120
     private val logBuffer = ConcurrentLinkedQueue<LogEntry>()
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
     private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
@@ -89,16 +92,27 @@ object AppLogger {
 
     fun getEntries(): List<LogEntry> = logBuffer.toList()
 
+    /**
+     * Reads the most recent logcat lines for this process. Because [AppLogger] mirrors every
+     * call into [android.util.Log], this returns the in-app entries *and* the raw `Log.*` calls
+     * made across the codebase (discovery, transport, codecs) — everything the live viewer needs.
+     *
+     * Uses `logcat -d -t <n>` so the platform trims to the last n lines rather than dumping the
+     * full ring buffer on every refresh.
+     */
     fun captureSystemLogcat(maxLines: Int = 300): List<String> {
         val lines = mutableListOf<String>()
         try {
             val pid = Process.myPid()
-            val process = Runtime.getRuntime().exec(arrayOf("logcat", "-d", "-v", "time", "--pid=$pid"))
+            val process = Runtime.getRuntime().exec(
+                arrayOf("logcat", "-d", "-v", "threadtime", "-t", maxLines.toString(), "--pid=$pid")
+            )
             val reader = BufferedReader(InputStreamReader(process.inputStream))
             var line: String?
             val ring = ArrayDeque<String>(maxLines)
             while (reader.readLine().also { line = it } != null) {
                 line?.let {
+                    if (it.isBlank()) return@let
                     if (ring.size >= maxLines) ring.removeFirst()
                     ring.addLast(it)
                 }
@@ -110,6 +124,13 @@ object AppLogger {
             lines.add("Failed to capture system logcat: ${e.message}")
         }
         return lines
+    }
+
+    /** Compact, render-ready live feed: the last [LIVE_TAIL_LINES] lines of this process' log. */
+    fun buildLiveFeed(): String {
+        val lines = captureSystemLogcat(LIVE_TAIL_LINES)
+        if (lines.isEmpty()) return "No log activity captured yet…"
+        return lines.joinToString("\n")
     }
 
     fun buildDiagnosticReport(context: Context, includeSystemLogcat: Boolean = true, sessionTime: Long? = null): String {
@@ -261,6 +282,27 @@ object AppLogger {
         var liveRunnable: Runnable? = null
         var sessionStartTime = System.currentTimeMillis()
         var lastRenderedReport = ""
+        var lastRenderedFeed = ""
+
+        fun scrollToBottom() {
+            scrollVertical?.post {
+                val c = scrollVertical.getChildAt(0)
+                if (c != null) scrollVertical.scrollTo(0, c.bottom)
+                else scrollVertical.fullScroll(android.view.View.FOCUS_DOWN)
+            }
+        }
+
+        // Compact, append-at-bottom live feed. Deliberately NOT the full diagnostic report: that
+        // is thousands of lines and re-laying it out every second is what made the view jump.
+        fun refreshLiveFeed() {
+            val feed = buildLiveFeed()
+            activity.runOnUiThread {
+                if (feed == lastRenderedFeed) return@runOnUiThread
+                lastRenderedFeed = feed
+                tvContent.text = feed
+                scrollToBottom()
+            }
+        }
 
         fun refreshContent(includeSystemLogcat: Boolean = true, autoScroll: Boolean = false) {
             if (!isLive && includeSystemLogcat && lastRenderedReport.isEmpty()) {
@@ -285,18 +327,9 @@ object AppLogger {
                     tvContent.text = report
 
                     if (autoScroll && isNearBottom) {
-                        scrollVertical?.post {
-                            val c = scrollVertical.getChildAt(0)
-                            if (c != null) {
-                                scrollVertical.scrollTo(0, c.bottom)
-                            } else {
-                                scrollVertical.fullScroll(android.view.View.FOCUS_DOWN)
-                            }
-                        }
+                        scrollToBottom()
                     } else if (prevScrollY > 0) {
-                        scrollVertical?.post {
-                            scrollVertical.scrollTo(0, prevScrollY)
-                        }
+                        scrollVertical?.post { scrollVertical.scrollTo(0, prevScrollY) }
                     }
                 }
             }.start()
@@ -315,13 +348,14 @@ object AppLogger {
             isLive = true
             sessionStartTime = System.currentTimeMillis()
             lastRenderedReport = ""
+            lastRenderedFeed = ""
             btnLive?.text = "Live: ON"
             btnLive?.setTextColor(activity.getColor(R.color.status_green))
             btnLive?.strokeColor = android.content.res.ColorStateList.valueOf(activity.getColor(R.color.status_green))
             liveRunnable = object : Runnable {
                 override fun run() {
                     if (!isLive || !dialog.isShowing) return
-                    refreshContent(includeSystemLogcat = false, autoScroll = true)
+                    refreshLiveFeed()
                     liveHandler.postDelayed(this, 1000L)
                 }
             }
@@ -331,6 +365,9 @@ object AppLogger {
         btnLive?.setOnClickListener {
             if (isLive) {
                 stopLiveFeed()
+                // Leaving live mode: show the complete report once more so the user can read it.
+                lastRenderedReport = ""
+                refreshContent(includeSystemLogcat = true, autoScroll = false)
             } else {
                 startLiveFeed()
             }
@@ -345,7 +382,13 @@ object AppLogger {
         }
 
         btnRefresh.setOnClickListener {
-            refreshContent(includeSystemLogcat = true, autoScroll = false)
+            if (isLive) {
+                lastRenderedFeed = ""
+                refreshLiveFeed()
+            } else {
+                lastRenderedReport = ""
+                refreshContent(includeSystemLogcat = true, autoScroll = false)
+            }
         }
 
         btnClear.setOnClickListener {

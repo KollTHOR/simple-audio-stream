@@ -56,6 +56,9 @@ object WifiDirectManager {
     private val _discoveredPeers = MutableStateFlow<List<WifiP2pDevice>>(emptyList())
     val discoveredPeers: StateFlow<List<WifiP2pDevice>> = _discoveredPeers.asStateFlow()
 
+    /** Last peer-set signature, so PEERS_CHANGED spam is logged only on real membership change. */
+    private var lastPeerSignature = ""
+
     private val _isScanningPeers = MutableStateFlow(false)
     val isScanningPeers: StateFlow<Boolean> = _isScanningPeers.asStateFlow()
 
@@ -122,9 +125,18 @@ object WifiDirectManager {
                             val peers = peerList.deviceList.toList()
                             _discoveredPeers.value = peers
                             _isScanningPeers.value = false
-                            Log.i(TAG, "Discovered ${peers.size} Wi-Fi Direct peer(s)")
-                            for (p in peers) {
-                                Log.i(TAG, " -> Peer: '${p.deviceName}' (${p.deviceAddress}), status=${p.status}")
+                            // PEERS_CHANGED fires continuously while scanning; only log on an actual
+                            // membership change so the peer set doesn't flood the live log tail.
+                            val signature = peers
+                                .map { "${it.deviceName}@${it.deviceAddress}/${it.status}" }
+                                .sorted()
+                                .joinToString("|")
+                            if (signature != lastPeerSignature) {
+                                lastPeerSignature = signature
+                                Log.i(TAG, "Discovered ${peers.size} Wi-Fi Direct peer(s)")
+                                for (p in peers) {
+                                    Log.i(TAG, " -> Peer: '${p.deviceName}' (${p.deviceAddress}), status=${p.status}")
+                                }
                             }
                         }
                     }
@@ -352,6 +364,7 @@ object WifiDirectManager {
         }
 
         _discoveredPeers.value = emptyList()
+        lastPeerSignature = ""
         _isScanningPeers.value = true
         _statusMessage.value = "Scanning Wi-Fi Direct peers..."
         Log.i(TAG, "Initiating WifiP2pManager.discoverPeers()...")

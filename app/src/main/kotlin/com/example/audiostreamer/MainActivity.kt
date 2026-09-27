@@ -908,16 +908,28 @@ class MainActivity : AppCompatActivity() {
                 DiscoveryManager.startReceiverResponder(this, lifecycleScope)
                 LanDiscoveryProvider.advertiseNode(this, localNode, port)
 
-                if (DirectReceiverPolicy.shouldHostWifiDirectGroup(
-                        localLanAvailable = NetworkUtils.isLanAvailable(this),
-                        wifiDirectSupported = packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)
-                    )
-                ) {
+                val lanAvailable = NetworkUtils.isLanAvailable(this)
+                val p2pSupported = packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)
+                val hostGroup = DirectReceiverPolicy.shouldHostWifiDirectGroup(
+                    localLanAvailable = lanAvailable,
+                    wifiDirectSupported = p2pSupported
+                )
+                AppLogger.i(
+                    "MainActivity",
+                    "Receiver transport setup: lanAvailable=$lanAvailable p2pSupported=$p2pSupported willHostGroup=$hostGroup"
+                )
+
+                if (hostGroup) {
                     if (!switchReceiverP2p.isChecked) {
                         switchReceiverP2p.isChecked = true
                     } else if (!WifiDirectManager.isGroupCreated.value) {
                         startReceiverP2pGroup()
                     }
+                } else {
+                    AppLogger.i(
+                        "MainActivity",
+                        "Receiver staying on Local Wi-Fi only; no group hosted so BLE bootstrap will not advertise"
+                    )
                 }
 
                 startReceiverBleAdvertisements()
@@ -983,7 +995,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun startReceiverBleAdvertisements() {
         if (currentMode != Mode.RECEIVER) return
-        if (WifiDirectManager.isGroupCreated.value && BleDiscoveryManager.hasPermissions(this)) {
+        val groupReady = WifiDirectManager.isGroupCreated.value
+        val blePerms = BleDiscoveryManager.hasPermissions(this)
+        if (groupReady && blePerms) {
             BleDiscoveryManager.startAdvertising(
                 context = this,
                 role = "receiver",
@@ -995,6 +1009,10 @@ class MainActivity : AppCompatActivity() {
             )
         } else {
             BleDiscoveryManager.stopAdvertising()
+            AppLogger.d(
+                "MainActivity",
+                "BLE bootstrap skipped: groupReady=$groupReady blePermissions=$blePerms"
+            )
         }
     }
 

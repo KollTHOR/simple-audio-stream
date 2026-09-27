@@ -1063,7 +1063,9 @@ class AudioCaptureService : Service() {
                     }
 
                     val typeName = HatPacket.describePacketType(header.packetType)
-                    Log.d(TAG, "Received control packet type $typeName (${header.packetType}) from $endpoint")
+                    if (header.packetType != HatPacket.TYPE_RECEIVER_HEARTBEAT) {
+                        Log.d(TAG, "Received control packet type $typeName (${header.packetType}) from $endpoint")
+                    }
 
                     val byteVal = header.volumeOrCaps.toInt() and 0xFF
 
