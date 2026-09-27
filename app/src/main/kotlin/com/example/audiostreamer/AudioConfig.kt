@@ -131,6 +131,12 @@ object AudioConfig {
     const val CODEC_PCM = "PCM"
     const val OPUS_MIME_TYPE = "audio/opus"
     const val OPUS_BIT_RATE_HIGH = 320000 // 320 kbps (transparent studio quality)
+
+    // Opus framing latency: the capture thread feeds 10 ms chunks (480 samples/ch @ 48 kHz).
+    // The actual per-packet frame size is read from the Opus TOC at send time (see OpusPacket),
+    // so an OEM encoder that pins to 20 ms still advances the timeline correctly.
+    const val OPUS_FRAME_SAMPLES_48K = 480 // 10 ms at 48 kHz
+    const val OPUS_CAPTURE_READ_BYTES = OPUS_FRAME_SAMPLES_48K * CHANNELS * 2 // 1920 bytes
     const val OPUS_BIT_RATE_LOW = 192000 // 192 kbps
     const val AAC_BIT_RATE = 192000 // 192 kbps
     const val AAC_MIME_TYPE = "audio/mp4a-latm"

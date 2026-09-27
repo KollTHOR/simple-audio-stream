@@ -8,22 +8,32 @@ import java.net.DatagramSocket
 class Wifi4ResilienceAndOpusTest {
 
     @Test
-    fun testOpusCalculateFramesForPayloadReturns960RegardlessOfByteLength() {
+    fun testOpusCalculateFramesForPayloadReturnsFixedFrameSizeRegardlessOfByteLength() {
         val jb = JitterBuffer(initialProfile = AudioConfig.PROFILE_LOW_LATENCY)
         jb.setIsOpus(true)
         jb.setProfile(AudioConfig.PROFILE_LOW_LATENCY, isCompressed = true, isOpus = true)
 
+        // Default frame size is now the requested 10 ms (480 @ 48 kHz), not the old hard-coded 960.
+        val expected = AudioConfig.OPUS_FRAME_SAMPLES_48K
+
         // Low bitrate / small Opus frame (e.g. 150 bytes)
-        assertEquals(960, jb.calculateFramesForPayload(150))
+        assertEquals(expected, jb.calculateFramesForPayload(150))
 
         // Medium bitrate Opus frame (e.g. 350 bytes)
-        assertEquals(960, jb.calculateFramesForPayload(350))
+        assertEquals(expected, jb.calculateFramesForPayload(350))
 
         // High bitrate 320 kbps Opus frame (typically ~800 bytes)
-        // CRITICAL REGRESSION TEST: previously, length > 400 returned 1024 frames,
-        // causing clock drift and periodic buffer flushes every 10 seconds!
+        // CRITICAL REGRESSION TEST: frame size must NOT be derived from the compressed byte length
+        // (previously length > 400 returned 1024 frames, causing clock drift and periodic buffer
+        // flushes every ~10 seconds).
+        assertEquals(expected, jb.calculateFramesForPayload(800))
+        assertEquals(expected, jb.calculateFramesForPayload(1200))
+
+        // The learned size (e.g. a 20 ms OEM encoder) overrides the default but stays fixed across
+        // all byte lengths — still never length-derived.
+        jb.reportOpusFrameSize(960)
+        assertEquals(960, jb.calculateFramesForPayload(150))
         assertEquals(960, jb.calculateFramesForPayload(800))
-        assertEquals(960, jb.calculateFramesForPayload(1200))
     }
 
     @Test
