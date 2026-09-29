@@ -1398,8 +1398,7 @@ class MainActivity : AppCompatActivity() {
 
                     // Multi-receiver Volume Control Row
                     layoutDeviceVolume.visibility = View.VISIBLE
-                    val masterVol = AudioCaptureService.remoteVolumePercent.get()
-                    val vol = rec.volumePercent.coerceIn(0, masterVol)
+                    val vol = rec.volumePercent.coerceIn(0, 100)
                     if (!sliderDeviceVol.isPressed && sliderDeviceVol.value.toInt() != vol) {
                         sliderDeviceVol.value = vol.toFloat()
                         tvDeviceVolVal.text = "$vol%"
@@ -1444,11 +1443,16 @@ class MainActivity : AppCompatActivity() {
                         sliderDeviceVol.addOnChangeListener { _, value, fromUser ->
                             if (fromUser) {
                                 val curMaster = AudioCaptureService.remoteVolumePercent.get()
-                                val clampedVol = value.toInt().coerceIn(0, curMaster)
-                                if (value.toInt() > curMaster) {
-                                    sliderDeviceVol.value = curMaster.toFloat()
-                                }
+                                val clampedVol = value.toInt().coerceIn(0, 100)
                                 tvDeviceVolVal.text = "$clampedVol%"
+                                if (clampedVol > curMaster) {
+                                    AudioCaptureService.remoteVolumePercent.set(clampedVol)
+                                    if (!sliderRemoteVol.isPressed) {
+                                        sliderRemoteVol.value = clampedVol.toFloat()
+                                    }
+                                    tvRemoteVolLabel.text = "$clampedVol%"
+                                    StreamState.update { it.copy(remoteVolumePercent = clampedVol) }
+                                }
                                 val volIntent = Intent(this, AudioCaptureService::class.java).apply {
                                     action = AudioCaptureService.ACTION_SET_RECEIVER_VOLUME
                                     putExtra(AudioCaptureService.EXTRA_RECEIVER_IP, rec.ip)
@@ -1461,7 +1465,8 @@ class MainActivity : AppCompatActivity() {
 
                         btnDeviceMute.setOnClickListener {
                             val curMaster = AudioCaptureService.remoteVolumePercent.get()
-                            val newVol = if (rec.isMuted || vol == 0) curMaster else 0
+                            val curVol = AudioCaptureService.getReceiverVolume(rec.ip, rec.nodeId)
+                            val newVol = if (rec.isMuted || curVol == 0) curMaster else 0
                             val volIntent = Intent(this, AudioCaptureService::class.java).apply {
                                 action = AudioCaptureService.ACTION_SET_RECEIVER_VOLUME
                                 putExtra(AudioCaptureService.EXTRA_RECEIVER_IP, rec.ip)
@@ -2763,15 +2768,39 @@ class MainActivity : AppCompatActivity() {
 
     private fun sendVolumeIntent(volumePercent: Int) {
         val clamped = volumePercent.coerceIn(0, 100)
+        val oldMaster = AudioCaptureService.remoteVolumePercent.get()
+        val delta = clamped - oldMaster
         if (!sliderRemoteVol.isPressed && sliderRemoteVol.value.toInt() != clamped) {
             sliderRemoteVol.value = clamped.toFloat()
         }
         tvRemoteVolLabel.text = "$clamped%"
-        val intent = Intent(this, AudioCaptureService::class.java).apply {
-            action = AudioCaptureService.ACTION_SET_VOLUME
-            putExtra(AudioCaptureService.EXTRA_VOLUME_PERCENT, clamped)
+        if (delta != 0) {
+            for (i in 0 until layoutConnectedDevicesContainer.childCount) {
+                val child = layoutConnectedDevicesContainer.getChildAt(i)
+                val slider = child.findViewById<Slider>(R.id.slider_device_vol)
+                val label = child.findViewById<TextView>(R.id.tv_device_vol_val)
+                if (slider != null && !slider.isPressed) {
+                    val devVol = (slider.value.toInt() + delta).coerceIn(0, 100)
+                    slider.value = devVol.toFloat()
+                    if (label != null) label.text = "$devVol%"
+                }
+            }
         }
-        startService(intent)
+        if (AudioCaptureService.isRunning.get()) {
+            val intent = Intent(this, AudioCaptureService::class.java).apply {
+                action = AudioCaptureService.ACTION_SET_VOLUME
+                putExtra(AudioCaptureService.EXTRA_VOLUME_PERCENT, clamped)
+            }
+            startService(intent)
+        } else {
+            AudioCaptureService.remoteVolumePercent.set(clamped)
+            if (delta != 0) {
+                for (entry in AudioCaptureService.receiverVolumes.entries) {
+                    entry.setValue((entry.value + delta).coerceIn(0, 100))
+                }
+            }
+            StreamState.update { it.copy(remoteVolumePercent = clamped) }
+        }
     }
 
     private fun sendVolumeDeltaIntent(delta: Int) {
@@ -2783,7 +2812,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (currentMode == Mode.TRANSMITTER && AudioCaptureService.isRunning.get()) {
+        if (currentMode == Mode.TRANSMITTER) {
             val keyCode = event.keyCode
             if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
                 if (event.action == KeyEvent.ACTION_DOWN) {
