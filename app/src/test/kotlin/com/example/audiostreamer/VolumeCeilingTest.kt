@@ -13,21 +13,64 @@ class VolumeCeilingTest {
     }
 
     @Test
-    fun testMasterVolumeActsAsCeilingForReceiverVolumes() {
-        // Master at 70%
-        AudioCaptureService.remoteVolumePercent.set(70)
+    fun testMasterVolumeDeltaMovesReceiverVolumesEquallyWhenMisaligned() {
+        // Master at 80%
+        AudioCaptureService.remoteVolumePercent.set(80)
+        // Two misaligned receivers: 60% and 40%
+        AudioCaptureService.setReceiverVolume("192.168.1.10", "node-1", 60)
+        AudioCaptureService.setReceiverVolume("192.168.1.20", "node-2", 40)
 
-        // Attempt to set receiver volume higher than master ceiling (e.g. 90%)
-        AudioCaptureService.setReceiverVolume("192.168.1.50", "node-1", 90)
+        assertEquals(60, AudioCaptureService.getReceiverVolume("192.168.1.10", "node-1"))
+        assertEquals(40, AudioCaptureService.getReceiverVolume("192.168.1.20", "node-2"))
 
-        // Must be clamped to 70%
-        assertEquals(70, AudioCaptureService.getReceiverVolume("192.168.1.50", "node-1"))
+        // Lower master by 10% (delta = -10, newMaster = 70%)
+        AudioCaptureService.applyMasterVolumeDelta(-10)
+        assertEquals(70, AudioCaptureService.remoteVolumePercent.get())
+        // Both receivers moved down by 10%
+        assertEquals(50, AudioCaptureService.getReceiverVolume("192.168.1.10", "node-1"))
+        assertEquals(30, AudioCaptureService.getReceiverVolume("192.168.1.20", "node-2"))
 
-        // Set receiver volume lower than master ceiling (e.g. 40%)
-        AudioCaptureService.setReceiverVolume("192.168.1.50", "node-1", 40)
+        // Lower master by another 20% (delta = -20, newMaster = 50%)
+        AudioCaptureService.applyMasterVolumeDelta(-20)
+        assertEquals(50, AudioCaptureService.remoteVolumePercent.get())
+        // Both receivers moved down by 20%
+        assertEquals(30, AudioCaptureService.getReceiverVolume("192.168.1.10", "node-1"))
+        assertEquals(10, AudioCaptureService.getReceiverVolume("192.168.1.20", "node-2"))
 
-        // Must remain 40%
-        assertEquals(40, AudioCaptureService.getReceiverVolume("192.168.1.50", "node-1"))
+        // Raise master by 20% (delta = +20, newMaster = 70%)
+        AudioCaptureService.applyMasterVolumeDelta(20)
+        assertEquals(70, AudioCaptureService.remoteVolumePercent.get())
+        // Both receivers moved up by 20%
+        assertEquals(50, AudioCaptureService.getReceiverVolume("192.168.1.10", "node-1"))
+        assertEquals(30, AudioCaptureService.getReceiverVolume("192.168.1.20", "node-2"))
+
+        // Raise master by 10% (delta = +10, newMaster = 80%)
+        AudioCaptureService.applyMasterVolumeDelta(10)
+        assertEquals(80, AudioCaptureService.remoteVolumePercent.get())
+        // Both receivers returned to original volumes
+        assertEquals(60, AudioCaptureService.getReceiverVolume("192.168.1.10", "node-1"))
+        assertEquals(40, AudioCaptureService.getReceiverVolume("192.168.1.20", "node-2"))
+    }
+
+    @Test
+    fun testBoundaryClampingWhenMasterChanges() {
+        AudioCaptureService.remoteVolumePercent.set(30)
+        AudioCaptureService.setReceiverVolume("192.168.1.10", "node-1", 10)
+        AudioCaptureService.setReceiverVolume("192.168.1.20", "node-2", 25)
+
+        // Drop master by 15% (newMaster = 15%)
+        AudioCaptureService.applyMasterVolumeDelta(-15)
+        assertEquals(15, AudioCaptureService.remoteVolumePercent.get())
+        // Node 1 clamped to 0 (10 - 15 = -5 -> 0)
+        assertEquals(0, AudioCaptureService.getReceiverVolume("192.168.1.10", "node-1"))
+        // Node 2 is 10 (25 - 15 = 10)
+        assertEquals(10, AudioCaptureService.getReceiverVolume("192.168.1.20", "node-2"))
+
+        // Raise master by 15% (newMaster = 30%)
+        AudioCaptureService.applyMasterVolumeDelta(15)
+        assertEquals(30, AudioCaptureService.remoteVolumePercent.get())
+        assertEquals(15, AudioCaptureService.getReceiverVolume("192.168.1.10", "node-1"))
+        assertEquals(25, AudioCaptureService.getReceiverVolume("192.168.1.20", "node-2"))
     }
 
     @Test
@@ -37,26 +80,12 @@ class VolumeCeilingTest {
     }
 
     @Test
-    fun testMasterVolumeClampRules() {
-        AudioCaptureService.remoteVolumePercent.set(80)
-        AudioCaptureService.setReceiverVolume("192.168.1.10", null, 60)
-        AudioCaptureService.setReceiverVolume("192.168.1.20", null, 40)
+    fun testDeviceSpecificVolumeAllowsIndependentSetting() {
+        AudioCaptureService.remoteVolumePercent.set(70)
+        AudioCaptureService.setReceiverVolume("192.168.1.50", "node-1", 90)
+        assertEquals(90, AudioCaptureService.getReceiverVolume("192.168.1.50", "node-1"))
 
-        assertEquals(60, AudioCaptureService.getReceiverVolume("192.168.1.10", null))
-        assertEquals(40, AudioCaptureService.getReceiverVolume("192.168.1.20", null))
-
-        // Lower master to 50%
-        val newMaster = 50
-        AudioCaptureService.remoteVolumePercent.set(newMaster)
-        for (entry in AudioCaptureService.receiverVolumes.entries) {
-            if (entry.value > newMaster) {
-                entry.setValue(newMaster)
-            }
-        }
-
-        // Receiver 1 (was 60%) is now clamped to 50%
-        assertEquals(50, AudioCaptureService.getReceiverVolume("192.168.1.10", null))
-        // Receiver 2 (was 40%) stays at 40%
-        assertEquals(40, AudioCaptureService.getReceiverVolume("192.168.1.20", null))
+        AudioCaptureService.setReceiverVolume("192.168.1.50", "node-1", 40)
+        assertEquals(40, AudioCaptureService.getReceiverVolume("192.168.1.50", "node-1"))
     }
 }
