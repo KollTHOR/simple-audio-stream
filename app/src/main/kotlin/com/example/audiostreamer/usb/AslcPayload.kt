@@ -195,6 +195,26 @@ object AslcPayload {
         return ErrorInfo(code, offending, msg)
     }
 
-    // START / STOP carry no payload. PCM_DATA layout (frameCount prefix) is handled in AslcProtocol's
-    // reader together with PcmFormat.bytesPerFrame so it can validate the exact byte length.
+    // START / STOP carry no payload.
+
+    /**
+     * PCM_DATA payload layout: a u32 frameCount (number of interleaved multichannel frames in this
+     * message) followed by exactly frameCount * bytesPerFrame raw PCM bytes. The prefix lets the
+     * receiver validate the message's byte length against the negotiated format and detect
+     * [AslcProtocol.ERR_FRAME_LENGTH_INVALID] precisely (spec §12).
+     */
+    const val PCM_FRAME_COUNT_SIZE = 4
+
+    /** Serializes a complete PCM_DATA frame (header + payload). Convenience for tests / host side. */
+    fun pcmDataFrame(frameCount: Int, pcm: ByteArray, sequence: Long): ByteArray {
+        val payload = ByteArray(PCM_FRAME_COUNT_SIZE + pcm.size)
+        AslcProtocol.writeUInt32BE(payload, 0, frameCount.toLong())
+        System.arraycopy(pcm, 0, payload, PCM_FRAME_COUNT_SIZE, pcm.size)
+        return AslcProtocol.encodeFrame(AslcProtocol.MSG_PCM_DATA, payload, sequence)
+    }
+
+    /** Reads the frameCount prefix from an already-read PCM_DATA payload. */
+    fun pcmFrameCount(payload: ByteArray, offset: Int): Int =
+        AslcProtocol.readUInt32BE(payload, offset).toInt()
 }
+
