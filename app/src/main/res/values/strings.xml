@@ -12,4 +12,13 @@
     <string name="status_streaming">Status: Streaming System Audio</string>
     <string name="status_listening">Status: Listening for Audio</string>
     <string name="accessibility_desc">Intercepts hardware volume buttons exclusively while audio streaming is active to adjust remote DAP volume and prevent phone speakers from playing in the background. No personal data, screen content, or keystrokes are logged or stored.</string>
+
+    <!-- USB PCM input (experimental) -->
+    <string name="usb_input_channel">USB Audio Input</string>
+    <string name="usb_input_notif_title">USB audio input active</string>
+    <string name="usb_input_notif_text">Receiving PCM over USB</string>
+    <string name="usb_source_title">USB Input</string>
+    <string name="usb_connected">Connected</string>
+    <string name="usb_disconnected">Disconnected</string>
+    <string name="usb_status_idle">Idle</string>
 </resources>
