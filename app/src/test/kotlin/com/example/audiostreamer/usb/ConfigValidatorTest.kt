@@ -83,4 +83,32 @@ class ConfigValidatorTest {
         val r = ConfigValidator.validate(PcmFormat(96000, 24, 2), narrowed, alwaysOk)
         assertTrue("96k was narrowed out -> must reject", r is ConfigValidator.Result.Rejected)
     }
+
+    @Test
+    fun proberAdvertisesOnlyRenderableCombinations() {
+        // Device renders only 16-bit stereo at 48k/96k. Everything else "fails" the probe.
+        val probe: (PcmFormat) -> Int = { f ->
+            if (f.bitDepth == 16 && f.channels == 2 && (f.sampleRate == 48000 || f.sampleRate == 96000)) 4096 else -1
+        }
+        val narrowed = UsbPcmProber.narrow(caps, probe)
+        assertEquals(listOf(48000, 96000), narrowed.sampleRates.toList())
+        assertEquals(listOf(16), narrowed.bitDepths.toList())
+        assertEquals(listOf(2), narrowed.channels.toList())
+    }
+
+    @Test
+    fun proberKeepsARateIfAnyDepthWorksAtIt() {
+        val probe: (PcmFormat) -> Int = { f -> if (f.sampleRate == 44100 && f.bitDepth == 24) 100 else -1 }
+        val narrowed = UsbPcmProber.narrow(caps, probe)
+        assertTrue(narrowed.sampleRates.toList() == listOf(44100))
+        assertTrue(narrowed.bitDepths.toList() == listOf(24))
+    }
+
+    @Test
+    fun proberYieldsEmptyWhenNothingRenders() {
+        val narrowed = UsbPcmProber.narrow(caps) { -1 }
+        assertTrue(narrowed.sampleRates.isEmpty())
+        assertTrue(narrowed.bitDepths.isEmpty())
+        assertTrue(narrowed.channels.isEmpty())
+    }
 }

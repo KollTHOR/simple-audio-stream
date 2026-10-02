@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    AOA (Android Open Accessory) filter for the USB PCM input path.
+
+    A bare <accessory/> element with no manufacturer/product/version constraints matches ANY host that
+    issues an AOA handshake, which is what we want while the desktop-side identity strings are still
+    being finalized. Once the Windows/Linux ASLC node settles on fixed AOA identify strings, add
+    manufacturer/product/version attributes here to auto-launch only for ASLC hosts.
+-->
+<resources>
+    <accessory />
+</resources>

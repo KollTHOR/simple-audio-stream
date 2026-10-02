@@ -56,30 +56,37 @@ class PcmRingBuffer(requestedCapacityBytes: Int) {
     fun remainingCapacity(): Int = capacity - available()
 
     /**
-     * Writes up to [length] bytes from [src]. Returns the number actually written. If the buffer
-     * cannot hold the whole input, it writes as much as fits and counts the rest as an overflow drop
-     * (real-time path prefers dropping the newest bytes over blocking the USB reader).
+     * Writes up to [length] bytes from [src]; returns the number actually written (may be less when
+     * the buffer is near-full). A partial write is NOT an overflow — backpressure/drop policy belongs
+     * to the caller (the receiver decides whether to retry or drop). Returns 0 when full.
      */
     fun write(src: ByteArray, offset: Int, length: Int): Int {
         val h = head.get()
         val t = tail.get()
         val free = capacity - (h - t).toInt()
-        if (free <= 0) {
-            _overflowDrops.addAndGet(length.toLong())
-            return 0
-        }
+        if (free <= 0 || length <= 0) return 0
         val toWrite = minOf(length, free)
-        val firstChunk = minOf(toWrite, capacity - (h and mask.toLong()).toInt())
         val destOff = (h and mask.toLong()).toInt()
+        val firstChunk = minOf(toWrite, capacity - destOff)
         System.arraycopy(src, offset, buffer, destOff, firstChunk)
         val secondChunk = toWrite - firstChunk
         if (secondChunk > 0) {
             System.arraycopy(src, offset + firstChunk, buffer, 0, secondChunk)
         }
         head.set(h + toWrite)
-        val dropped = length - toWrite
-        if (dropped > 0) _overflowDrops.addAndGet(dropped.toLong())
         return toWrite
+    }
+
+    /**
+     * Real-time convenience: write as much as fits and return the number of *newest* bytes that had
+     * to be dropped because the buffer was full (consumer starvation). Increments [overflowDroppedBytes]
+     * by that amount. The receive path uses this so a stalled consumer never blocks the USB reader.
+     */
+    fun writeDroppingNewest(src: ByteArray, offset: Int, length: Int): Int {
+        val written = write(src, offset, length)
+        val dropped = length - written
+        if (dropped > 0) _overflowDrops.addAndGet(dropped.toLong())
+        return written
     }
 
     /**

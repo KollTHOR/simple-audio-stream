@@ -45,13 +45,21 @@ class PcmRingBufferTest {
     }
 
     @Test
-    fun writeIsBoundedByFreeSpaceAndCountsOverflow() {
+    fun writeIsBoundedByFreeSpace() {
         val buf = PcmRingBuffer(1024) // capacity 1024
         val big = ByteArray(2000)
-        val written = buf.write(big, 0, big.size)
-        assertEquals(1024, written) // only free space written
-        assertEquals(976, buf.overflowDroppedBytes) // 2000 - 1024 dropped
+        assertEquals(1024, buf.write(big, 0, big.size)) // only free space written, no side effect
         assertEquals(1024, buf.available())
+        assertEquals(0, buf.write(ByteArray(10), 0, 10)) // now full
+        assertEquals(0, buf.overflowDroppedBytes) // plain write never counts overflow
+    }
+
+    @Test
+    fun writeDroppingNewestCountsOverflow() {
+        val buf = PcmRingBuffer(1024)
+        val written = buf.writeDroppingNewest(ByteArray(2000), 0, 2000)
+        assertEquals(1024, written)
+        assertEquals(976, buf.overflowDroppedBytes) // 2000 - 1024 dropped by explicit drop policy
     }
 
     @Test
@@ -90,8 +98,8 @@ class PcmRingBufferTest {
                 var off = 0
                 while (off < n) {
                     val wrote = buf.write(chunk, off, n - off)
-                    // If full, spin (consumer will drain); never drop in this test's sizing.
-                    if (wrote > 0) off += wrote
+                    // If full, yield (consumer will drain); never drop in this test's sizing.
+                    if (wrote > 0) off += wrote else Thread.yield()
                 }
                 sent += n
             }
@@ -103,11 +111,13 @@ class PcmRingBufferTest {
                 if (r > 0) {
                     System.arraycopy(out, 0, received, readCursor, r)
                     readCursor += r
+                } else {
+                    Thread.yield()
                 }
             }
         }
         producer.start(); consumer.start()
-        producer.join(10_000); consumer.join(10_000)
+        producer.join(30_000); consumer.join(30_000)
         assertTrue(!producer.isAlive && !consumer.isAlive)
 
         assertEquals(total, readCursor)

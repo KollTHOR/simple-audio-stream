@@ -24,9 +24,11 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.NFC" />
 
-    <uses-feature android:name="android.hardware.wifi.direct" android:required="false" />
-    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
-    <uses-feature android:name="android.hardware.nfc" android:required="false" />
+        <uses-feature android:name="android.hardware.wifi.direct" android:required="false" />
+        <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+        <uses-feature android:name="android.hardware.nfc" android:required="false" />
+        <!-- USB PCM input (AOA accessory mode) — optional hardware capability -->
+        <uses-feature android:name="android.hardware.usb.accessory" android:required="false" />
 
     <queries>
         <intent>
@@ -92,6 +94,24 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
+
+        <!--
+            USB PCM Input Service (AOA accessory mode; desktop is the USB host).
+            Auto-starts when the host issues the AOA handshake and the accessory matches
+            res/xml/accessory_filter.xml. Experimental / additive: not part of the network path.
+        -->
+        <service
+            android:name=".usb.UsbPcmService"
+            android:enabled="true"
+            android:exported="true"
+            android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED"
+                android:resource="@xml/accessory_filter" />
+        </service>
 
         <!-- Optional Accessibility Service for Background Hardware Volume Interception (Pocket Mode) -->
         <service
