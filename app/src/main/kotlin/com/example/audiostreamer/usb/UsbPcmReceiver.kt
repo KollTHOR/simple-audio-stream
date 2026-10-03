@@ -254,9 +254,10 @@ class UsbPcmReceiver(
             return null
         }
 
-        val written = ring.writeDroppingNewest(pcmScratch, AslcPayload.PCM_FRAME_COUNT_SIZE, bodyBytes)
-        val dropped = bodyBytes - written
-        if (dropped > 0) stats.bufferOverflows.addAndGet(dropped.toLong())
+        val before = ring.overflowDroppedBytes
+        val written = ring.write(pcmScratch, AslcPayload.PCM_FRAME_COUNT_SIZE, bodyBytes)
+        val after = ring.overflowDroppedBytes
+        if (after > before) stats.bufferOverflows.addAndGet(after - before)
         stats.receivedBytes.addAndGet(written.toLong())
         stats.receivedFrames.addAndGet((written / fmt.bytesPerFrame).toLong())
         stats.receivedPackets.incrementAndGet()
