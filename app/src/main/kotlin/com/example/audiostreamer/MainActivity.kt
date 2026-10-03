@@ -8,7 +8,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.hardware.usb.UsbManager
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -846,7 +845,6 @@ class MainActivity : AppCompatActivity() {
 
         HatNfcBootstrapProvider.probeCapability(this)
         intent?.let { handleNfcIntent(it) }
-        intent?.let { handleUsbAccessoryIntent(it) }
         HatDiscoveryRegistry.startMonitoring(lifecycleScope)
     }
 
@@ -854,23 +852,6 @@ class MainActivity : AppCompatActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleNfcIntent(intent)
-        handleUsbAccessoryIntent(intent)
-    }
-
-    /**
-     * AOA entry point: when the desktop host performs the AOA handshake, the system launches this
-     * activity via the ACCESSORY_ATTACHED intent-filter, which also implicitly grants the
-     * accessory permission to us. Forward straight to the USB PCM service, which adopts the
-     * connected accessory in its onStartCommand/onCreate.
-     */
-    private fun handleUsbAccessoryIntent(intent: Intent) {
-        if (intent.action == UsbManager.ACTION_USB_ACCESSORY_ATTACHED) {
-            ContextCompat.startForegroundService(
-                this,
-                Intent(this, com.example.audiostreamer.usb.UsbPcmService::class.java)
-                    .setAction(com.example.audiostreamer.usb.UsbPcmService.ACTION_START)
-            )
-        }
     }
 
     private fun handleNfcIntent(intent: Intent) {

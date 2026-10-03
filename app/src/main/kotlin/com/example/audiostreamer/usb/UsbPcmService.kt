@@ -52,11 +52,6 @@ class UsbPcmService : Service() {
         const val TAG = "UsbPcmService"
         const val ACTION_STOP = "com.example.audiostreamer.USB_ACTION_STOP"
         const val ACTION_START = "com.example.audiostreamer.USB_ACTION_START"
-
-        /** Internal: fires when the accessory-permission dialog (requestPermission, API 33+) is
-         *  answered, so the service can retry adoption. */
-        const val ACTION_ACCESSORY_PERMISSION_RESULT =
-            "com.example.audiostreamer.USB_ACTION_ACCESSORY_PERMISSION_RESULT"
         private const val CHANNEL_ID = "UsbInputChannel"
         private const val NOTIFICATION_ID = 4001
         private const val RING_BYTES = 1 shl 17 // 128 KiB (~50-160 ms depending on format)
@@ -113,23 +108,10 @@ class UsbPcmService : Service() {
         ensureDiagnosticsSectionRegistered()
 
         // Adopt an accessory that is already connected when we start (late service launch).
-        tryAdoptAccessory()
-    }
-
-    /**
-     * Poll the accessory list and adopt a connected accessory if present. Used from onCreate,
-     * ACTION_START and the permission-result callback — the ATTACHED broadcast may arrive before
-     * the service exists, so adoption must not depend on catching a fresh event.
-     */
-    @Synchronized
-    private fun tryAdoptAccessory() {
         try {
             @Suppress("DEPRECATION")
             val existing: Array<UsbAccessory>? = usbManager.accessoryList
-            if (existing != null && existing.isNotEmpty()) {
-                logTransport("connected accessory found (${existing[0].manufacturer ?: "?"})")
-                onAccessoryAttached(existing[0])
-            }
+            if (existing != null && existing.isNotEmpty()) onAccessoryAttached(existing[0])
         } catch (e: Exception) {
             logTransport("accessoryList probe failed: ${e.message}")
         }
@@ -138,9 +120,6 @@ class UsbPcmService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                // If this is also the service's first start, honor the FGS contract briefly so the
-                // stop can proceed without the did-not-start-foreground kill.
-                startForegroundCompat()
                 mainHandler.post { teardownSession(); stopSelf() }
                 return START_NOT_STICKY
             }
@@ -149,20 +128,6 @@ class UsbPcmService : Service() {
                 startForegroundCompat()
                 logTransport("input enabled — waiting for USB host")
                 UsbState.update { it.copy(statusDetail = "Waiting for host") }
-                // We may have been started BY the attach event (via MainActivity): adopt now.
-                tryAdoptAccessory()
-            }
-            ACTION_ACCESSORY_PERMISSION_RESULT -> {
-                // Don't trust PendingIntent fill-in (mutability/OEM quirks) — re-check live state.
-                @Suppress("DEPRECATION")
-                val acc = try { usbManager.accessoryList?.firstOrNull() } catch (e: Exception) { null }
-                if (acc != null && usbManager.hasPermission(acc)) {
-                    logTransport("accessory permission granted")
-                    onAccessoryAttached(acc)
-                } else {
-                    logTransport("accessory permission not granted — USB input idle")
-                    UsbState.update { it.copy(statusDetail = "Permission denied") }
-                }
             }
         }
         return START_STICKY
@@ -184,39 +149,8 @@ class UsbPcmService : Service() {
 
     @Synchronized
     private fun onAccessoryAttached(accessory: UsbAccessory) {
-        // This method is reached under a startForegroundService() contract from every entry path
-        // (receiver, ACTION_START, permission retry) — promote NOW, before any early return, or the
-        // 10s FGS deadline kills the process mid-grant-dialog (observed on M300).
-        startForegroundCompat()
-
         // A re-attach while a session is live: tear the old pipe down first, then rebuild.
         if (transport?.isAlive == true) teardownSession()
-
-        // openAccessory() requires the accessory permission. Primary grant path: the system
-        // launches MainActivity from the ACCESSORY_ATTACHED filter and grants it implicitly.
-        // Fallback (manual enable before any filtered attach): ask via the system dialog
-        // (UsbManager.requestPermission(UsbAccessory,…) — API 33+), retried on the result PI;
-        // older OSes fall back to a reconnect, which re-fires the filtered attach.
-        if (!usbManager.hasPermission(accessory)) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                logTransport("no accessory permission yet — showing grant dialog")
-                val piFlags = PendingIntent.FLAG_UPDATE_CURRENT or
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
-                val pi = PendingIntent.getService(
-                    this, 0,
-                    Intent(this, UsbPcmService::class.java).setAction(ACTION_ACCESSORY_PERMISSION_RESULT),
-                    piFlags
-                )
-                UsbState.update { it.copy(statusDetail = "Waiting for permission") }
-                try { usbManager.requestPermission(accessory, pi) }
-                catch (e: Exception) { logTransport("requestPermission(accessory) failed: ${e.message}") }
-            } else {
-                logTransport("no accessory permission yet — reconnect the USB cable (attach grants it via the activity filter)")
-                UsbState.update { it.copy(statusDetail = "Waiting for accessory permission") }
-                UserAlertCenter.warn("USB: reconnect the cable so the accessory grant can be issued")
-            }
-            return
-        }
 
         val fd = try {
             usbManager.openAccessory(accessory)

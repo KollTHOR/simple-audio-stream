@@ -63,18 +63,6 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/vnd.hat.bootstrap" />
             </intent-filter>
-            <!--
-                AOA: launching the activity from the ACCESSORY_ATTACHED intent implicitly grants
-                the accessory permission to this app (a manifest service filter cannot start a
-                service from that broadcast on modern Android; the activity launch is the
-                supported entry point). MainActivity then starts UsbPcmService.
-            -->
-            <intent-filter>
-                <action android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" />
-            </intent-filter>
-            <meta-data
-                android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED"
-                android:resource="@xml/accessory_filter" />
         </activity>
 
         <activity
@@ -112,18 +100,6 @@
             Auto-starts when the host issues the AOA handshake and the accessory matches
             res/xml/accessory_filter.xml. Experimental / additive: not part of the network path.
         -->
-        <receiver
-            android:name=".usb.UsbAccessoryReceiver"
-            android:enabled="true"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" />
-            </intent-filter>
-            <meta-data
-                android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED"
-                android:resource="@xml/accessory_filter" />
-        </receiver>
-
         <service
             android:name=".usb.UsbPcmService"
             android:enabled="true"
