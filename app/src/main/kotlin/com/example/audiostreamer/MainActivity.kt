@@ -8,6 +8,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.hardware.usb.UsbManager
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -167,6 +168,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnMediaPrev: ImageView
     private lateinit var btnMediaPlayPause: ImageView
     private lateinit var btnMediaNext: ImageView
+
+    // USB PCM Input (experimental)
+    private lateinit var cardUsbInput: MaterialCardView
+    private lateinit var tvUsbStatusPill: TextView
+    private lateinit var tvUsbFormat: TextView
+    private lateinit var tvUsbBuffer: TextView
+    private lateinit var tvUsbMeta: TextView
+    private lateinit var btnUsbToggle: com.google.android.material.button.MaterialButton
 
     private var currentMode: Mode = Mode.TRANSMITTER
     private var detectedLocalIp: String? = null
@@ -444,6 +453,16 @@ class MainActivity : AppCompatActivity() {
         btnMediaPlayPause = findViewById(R.id.btn_media_play_pause)
         btnMediaNext = findViewById(R.id.btn_media_next)
 
+        // USB PCM input binding
+        cardUsbInput = findViewById(R.id.card_usb_input)
+        tvUsbStatusPill = findViewById(R.id.tv_usb_status_pill)
+        tvUsbFormat = findViewById(R.id.tv_usb_format)
+        tvUsbBuffer = findViewById(R.id.tv_usb_buffer)
+        tvUsbMeta = findViewById(R.id.tv_usb_meta)
+        btnUsbToggle = findViewById(R.id.btn_usb_toggle)
+        btnUsbToggle.setOnClickListener { onUsbToggleClicked() }
+        renderUsbCard(com.example.audiostreamer.usb.UsbState.state.value)
+
         AudioSinkService.onMediaMetadataChanged = { _, _, _, _, _ ->
             runOnUiThread { updateMediaPlaybackUi() }
         }
@@ -669,6 +688,11 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 launch {
+                    com.example.audiostreamer.usb.UsbState.state.collect { usb ->
+                        renderUsbCard(usb)
+                    }
+                }
+                launch {
                     LocalNodeManager.localNode.collect { node ->
                         updateLocalNodeUi(node)
                     }
@@ -822,6 +846,7 @@ class MainActivity : AppCompatActivity() {
 
         HatNfcBootstrapProvider.probeCapability(this)
         intent?.let { handleNfcIntent(it) }
+        intent?.let { handleUsbAccessoryIntent(it) }
         HatDiscoveryRegistry.startMonitoring(lifecycleScope)
     }
 
@@ -829,6 +854,54 @@ class MainActivity : AppCompatActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleNfcIntent(intent)
+        handleUsbAccessoryIntent(intent)
+    }
+
+    /**
+     * AOA entry point: when the desktop host performs the AOA handshake, the system launches this
+     * activity via the ACCESSORY_ATTACHED intent-filter, which also implicitly grants the
+     * accessory permission to us. Forward straight to the USB PCM service, which adopts the
+     * connected accessory in its onStartCommand/onCreate.
+     */
+    private fun handleUsbAccessoryIntent(intent: Intent) {
+        if (intent.action == UsbManager.ACTION_USB_ACCESSORY_ATTACHED) {
+            ContextCompat.startForegroundService(
+                this,
+                Intent(this, com.example.audiostreamer.usb.UsbPcmService::class.java)
+                    .setAction(com.example.audiostreamer.usb.UsbPcmService.ACTION_START)
+            )
+        }
+    }
+
+    /**
+     * AOA entry point fallback for devices whose USB stack does not deliver
+     * ACTION_USB_ACCESSORY_ATTACHED to manifest receivers/activities (observed on the HiBy M300:
+     * the framework enters accessory mode but the broadcast never reaches the app, so
+     * [handleUsbAccessoryIntent] never fires). Instead, adopt any connected accessory whenever the
+     * app is foregrounded. The desktop host performs the AOA handshake first; the user then opens
+     * the app, which starts UsbPcmService; the system still shows the accessory "Allow" dialog the
+     * first time. The service is START_STICKY, so once launched its dynamic receiver handles later
+     * re-attaches without reopening the app.
+     */
+    private fun adoptConnectedAccessoryIfPresent() {
+        try {
+            val usbManager = getSystemService(UsbManager::class.java) ?: return
+            val accessories = usbManager.accessoryList
+            if (!accessories.isNullOrEmpty() &&
+                !com.example.audiostreamer.usb.UsbPcmService.isRunning.get()
+            ) {
+                ContextCompat.startForegroundService(
+                    this,
+                    Intent(this, com.example.audiostreamer.usb.UsbPcmService::class.java)
+                        .setAction(com.example.audiostreamer.usb.UsbPcmService.ACTION_START)
+                )
+            }
+        } catch (e: Exception) {
+            com.example.audiostreamer.AppLogger.i(
+                "MainActivity",
+                "USB: accessory adoption check failed: ${e.message}"
+            )
+        }
     }
 
     private fun handleNfcIntent(intent: Intent) {
@@ -848,6 +921,8 @@ class MainActivity : AppCompatActivity() {
         UserAlertCenter.uiVisible = true
         refreshLocalIp()
         HatNfcBootstrapProvider.enableNfcDispatch(this)
+        // HiBy does not dispatch the accessory-attach intent; adopt on foreground instead.
+        adoptConnectedAccessoryIfPresent()
 
         val currentRemoteVol = AudioCaptureService.remoteVolumePercent.get()
         sliderRemoteVol.value = currentRemoteVol.toFloat()
@@ -2630,6 +2705,14 @@ class MainActivity : AppCompatActivity() {
         isStarting = true
         isStopping = false
         ContextCompat.startForegroundService(this, serviceIntent)
+        // Receiver mode also arms the USB PCM input: the desktop companion may connect over AOA.
+        // Harmless when no accessory is present - the service just waits, and the UI card stays
+        // hidden until one actually attaches.
+        ContextCompat.startForegroundService(
+            this,
+            Intent(this, com.example.audiostreamer.usb.UsbPcmService::class.java)
+                .setAction(com.example.audiostreamer.usb.UsbPcmService.ACTION_START)
+        )
         updateModeAndButtonUi()
     }
 
@@ -2640,6 +2723,13 @@ class MainActivity : AppCompatActivity() {
         isStopping = true
         isStarting = false
         startService(stopIntent)
+        // Disarm the USB input that receiver mode armed (only if it was actually started).
+        if (com.example.audiostreamer.usb.UsbPcmService.isRunning.get()) {
+            startService(
+                Intent(this, com.example.audiostreamer.usb.UsbPcmService::class.java)
+                    .setAction(com.example.audiostreamer.usb.UsbPcmService.ACTION_STOP)
+            )
+        }
         syncDiscoveryMode()
         updateModeAndButtonUi()
     }
@@ -2825,5 +2915,56 @@ class MainActivity : AppCompatActivity() {
             }
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    // ---- USB PCM input (experimental) -----------------------------------------------------
+
+    private fun onUsbToggleClicked() {
+        if (com.example.audiostreamer.usb.UsbPcmService.isRunning.get()) {
+            startService(
+                Intent(this, com.example.audiostreamer.usb.UsbPcmService::class.java)
+                    .setAction(com.example.audiostreamer.usb.UsbPcmService.ACTION_STOP)
+            )
+        } else {
+            androidx.core.content.ContextCompat.startForegroundService(
+                this,
+                Intent(this, com.example.audiostreamer.usb.UsbPcmService::class.java)
+                    .setAction(com.example.audiostreamer.usb.UsbPcmService.ACTION_START)
+            )
+        }
+        // Reflect immediately; the state flow will keep it in sync.
+        renderUsbCard(com.example.audiostreamer.usb.UsbState.state.value)
+    }
+
+    private fun renderUsbCard(usb: com.example.audiostreamer.usb.UsbUiState) {
+        val running = com.example.audiostreamer.usb.UsbPcmService.isRunning.get()
+        // Only surface the card when an accessory is actually connected. Receiver mode arms the
+        // USB input automatically, so a Wi-Fi-only listen must not show a USB card.
+        val show = usb.connected
+        cardUsbInput.visibility = if (show) View.VISIBLE else View.GONE
+        if (!show) return
+
+        btnUsbToggle.text = if (running) "Disable" else "Enable"
+        tvUsbStatusPill.text = if (usb.connected) getString(R.string.usb_connected) else getString(R.string.usb_disconnected)
+        tvUsbStatusPill.setTextColor(
+            ContextCompat.getColor(this, if (usb.connected) R.color.status_green else R.color.text_secondary)
+        )
+
+        val fmt = usb.format
+        if (usb.connected && fmt != null) {
+            tvUsbFormat.text = "Format: ${fmt.displayLabel()}  (${usb.channelLabel})"
+            tvUsbBuffer.text = "Buffer: ${usb.bufferFillPercent}% fill • ${usb.bytesPerSec / 1024} KB/s • ${usb.bufferUnderruns} underruns"
+            val upS = usb.uptimeMs / 1000
+            tvUsbMeta.text = "Status: ${usb.statusDetail} • out: ${usb.outputDevice}" +
+                if (usb.streaming) " • up ${upS}s" else ""
+        } else if (usb.connected) {
+            tvUsbFormat.text = "Format: negotiating…"
+            tvUsbBuffer.text = "Buffer: —"
+            tvUsbMeta.text = "Status: ${usb.statusDetail}"
+        } else {
+            tvUsbFormat.text = "Format: —"
+            tvUsbBuffer.text = "Buffer: —"
+            tvUsbMeta.text = "Status: ${usb.statusDetail}"
+        }
     }
 }
