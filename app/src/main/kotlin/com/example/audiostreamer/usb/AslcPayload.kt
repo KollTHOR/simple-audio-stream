@@ -198,6 +198,44 @@ object AslcPayload {
     // START / STOP carry no payload.
 
     /**
+     * TELEMETRY payload (device -> host, sent periodically while STREAMING). Reports the receiver's
+     * buffered audio so the host can display real latency figures.
+     *
+     * Layout: u16 ringFillMs, u16 ringCapacityMs, u16 deviceLatencyMs, u16 reserved, u32 underruns.
+     */
+    fun telemetryPayload(
+        ringFillMs: Int,
+        ringCapacityMs: Int,
+        deviceLatencyMs: Int,
+        underruns: Long
+    ): ByteArray {
+        val buf = ByteArray(12)
+        AslcProtocol.writeUInt16BE(buf, 0, ringFillMs and 0xFFFF)
+        AslcProtocol.writeUInt16BE(buf, 2, ringCapacityMs and 0xFFFF)
+        AslcProtocol.writeUInt16BE(buf, 4, deviceLatencyMs and 0xFFFF)
+        AslcProtocol.writeUInt16BE(buf, 6, 0)
+        AslcProtocol.writeUInt32BE(buf, 8, underruns and 0xFFFFFFFFL)
+        return buf
+    }
+
+    data class Telemetry(
+        val ringFillMs: Int,
+        val ringCapacityMs: Int,
+        val deviceLatencyMs: Int,
+        val underruns: Long
+    )
+
+    fun parseTelemetry(payload: ByteArray, offset: Int, length: Int): Telemetry? {
+        if (length < 12) return null
+        return Telemetry(
+            ringFillMs = AslcProtocol.readUInt16BE(payload, offset),
+            ringCapacityMs = AslcProtocol.readUInt16BE(payload, offset + 2),
+            deviceLatencyMs = AslcProtocol.readUInt16BE(payload, offset + 4),
+            underruns = AslcProtocol.readUInt32BE(payload, offset + 8)
+        )
+    }
+
+    /**
      * PCM_DATA payload layout: a u32 frameCount (number of interleaved multichannel frames in this
      * message) followed by exactly frameCount * bytesPerFrame raw PCM bytes. The prefix lets the
      * receiver validate the message's byte length against the negotiated format and detect

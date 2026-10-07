@@ -22,6 +22,8 @@ class UsbPcmReceiver(
     private val probe: (PcmFormat) -> Int,
     private val ring: PcmRingBuffer,
     private val stats: UsbPcmStats,
+    /** Device-side (AudioTrack) buffered latency in ms, for the periodic TELEMETRY frame. */
+    private val latencyProvider: () -> Int = { 0 },
     private val listener: Listener = NOOP_LISTENER,
     private val verboseLogging: () -> Boolean = { false }
 ) {
@@ -110,8 +112,29 @@ class UsbPcmReceiver(
                 }
                 handleControlFrame(header, payload)
             }
+            maybeSendTelemetry()
         }
         return EndReason.STOPPED
+    }
+
+    @Volatile private var lastTelemetryMs = 0L
+
+    /** While streaming, report buffer/latency figures to the host about twice a second. */
+    private fun maybeSendTelemetry() {
+        if (state != State.STREAMING) return
+        val now = System.currentTimeMillis()
+        if (now - lastTelemetryMs < 500) return
+        lastTelemetryMs = now
+        val fmt = configuredFormat ?: return
+        val bytesPerSecond = fmt.sampleRate.toLong() * fmt.bytesPerFrame
+        if (bytesPerSecond <= 0) return
+        val fillMs = (ring.available().toLong() * 1000 / bytesPerSecond).toInt().coerceIn(0, 65535)
+        val capMs = (ring.capacity.toLong() * 1000 / bytesPerSecond).toInt().coerceIn(0, 65535)
+        val deviceMs = latencyProvider().coerceIn(0, 65535)
+        writeMessage(
+            AslcProtocol.MSG_TELEMETRY,
+            AslcPayload.telemetryPayload(fillMs, capMs, deviceMs, stats.bufferUnderruns.get())
+        )
     }
 
     enum class EndReason { EOF, MALFORMED, VERSION_MISMATCH, STOPPED }
@@ -179,6 +202,7 @@ class UsbPcmReceiver(
                 ring.reset()
                 stats.resetStreamCounters()
                 stats.streamStartMs.set(System.currentTimeMillis())
+                lastTelemetryMs = System.currentTimeMillis()
                 transition(State.STREAMING)
                 listener.onStreamStarted(fmt)
             }

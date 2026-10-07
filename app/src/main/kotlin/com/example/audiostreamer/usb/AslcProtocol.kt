@@ -51,6 +51,7 @@ object AslcProtocol {
     const val MSG_PCM_DATA: Int = 0x06     // host -> device: PCM frame(s)
     const val MSG_STOP: Int = 0x07         // host -> device: end the PCM stream
     const val MSG_ERROR: Int = 0x08        // either direction: protocol-level error report
+    const val MSG_TELEMETRY: Int = 0x09    // device -> host: periodic buffer/latency figures
 
     fun describeMessageType(type: Int): String = when (type) {
         MSG_HELLO -> "HELLO"
@@ -61,6 +62,7 @@ object AslcProtocol {
         MSG_PCM_DATA -> "PCM_DATA"
         MSG_STOP -> "STOP"
         MSG_ERROR -> "ERROR"
+        MSG_TELEMETRY -> "TELEMETRY"
         else -> "UNKNOWN(0x${(type and 0xFF).toString(16)})"
     }
 

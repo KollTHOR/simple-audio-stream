@@ -290,6 +290,7 @@ class UsbPcmService : Service() {
             probe = { UsbPcmProber.probeMinBufferBytes(it) },
             ring = r,
             stats = s,
+            latencyProvider = { output?.bufferedMs() ?: 0 },
             verboseLogging = { HatDiagnostics.isPacketLoggingEnabled() || BuildConfig.DEBUG },
             listener = receiverListener
         )
