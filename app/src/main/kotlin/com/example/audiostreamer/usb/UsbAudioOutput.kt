@@ -44,6 +44,9 @@ class UsbAudioOutput(
         // Drain queued bytes: they were framed in the old geometry and would misalign the playout
         // reader once the format changes (live reconfigure).
         ring.reset()
+        // Size the jitter cushion to the format (~120 ms before power-of-two rounding) so high
+        // sample rates / 32-bit streams don't underrun on a fixed 48k-sized ring.
+        ring.resize(newFormat.sampleRate * newFormat.bytesPerFrame * 12 / 100)
         val encoding = newFormat.toAudioEncodingConstant()
         if (encoding == null) {
             onLog("USB: no AudioFormat encoding for ${newFormat.displayLabel()}")

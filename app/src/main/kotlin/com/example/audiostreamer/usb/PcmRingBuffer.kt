@@ -20,11 +20,12 @@ import java.util.concurrent.atomic.AtomicLong
  */
 class PcmRingBuffer(requestedCapacityBytes: Int) {
 
-    /** Actual power-of-two capacity in bytes. */
-    val capacity: Int = ceilPowerOfTwo(requestedCapacityBytes.coerceAtLeast(MIN_CAPACITY))
+    /** Actual power-of-two capacity in bytes (can grow via [resize]). */
+    @Volatile var capacity: Int = ceilPowerOfTwo(requestedCapacityBytes.coerceAtLeast(MIN_CAPACITY))
+        private set
 
-    private val buffer = ByteArray(capacity)
-    private val mask = capacity - 1
+    private var buffer = ByteArray(capacity)
+    private var mask = capacity - 1
 
     // Monotonic byte counters (never masked). head = written, tail = read.
     private val head = AtomicLong(0L)
@@ -115,6 +116,24 @@ class PcmRingBuffer(requestedCapacityBytes: Int) {
         head.set(0L)
         tail.set(0L)
         _overflowDrops.set(0L)
+    }
+
+    /**
+     * Re-sizes the ring for a new PCM format (power-of-two, >= [MIN_CAPACITY], >= requested). Must
+     * only be called while the consumer is stopped (the producer thread does this on (re)configure):
+     * it reallocates the backing array and clears occupancy. No-op if the size is unchanged.
+     */
+    @Synchronized
+    fun resize(requestedCapacityBytes: Int) {
+        val newCapacity = ceilPowerOfTwo(requestedCapacityBytes.coerceAtLeast(MIN_CAPACITY))
+        if (newCapacity == capacity) {
+            reset()
+            return
+        }
+        capacity = newCapacity
+        buffer = ByteArray(newCapacity)
+        mask = newCapacity - 1
+        reset()
     }
 
     private companion object {
