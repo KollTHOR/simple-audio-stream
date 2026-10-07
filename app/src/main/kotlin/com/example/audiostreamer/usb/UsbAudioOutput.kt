@@ -31,6 +31,7 @@ class UsbAudioOutput(
     private var thread: Thread? = null
     private var track: AudioTrack? = null
     private var format: PcmFormat? = null
+    private var framesWritten: Long = 0L
 
     /** (Re)builds the AudioTrack for [newFormat]. Safe to call before [start] or on a format change. */
     @Synchronized
@@ -150,13 +151,19 @@ class UsbAudioOutput(
                 stats.bufferUnderruns.incrementAndGet()
                 onUnderrun()
                 val n = silence.size
-                try { t.write(silence, 0, n, AudioTrack.WRITE_BLOCKING) } catch (e: Exception) { break }
+                try {
+                    t.write(silence, 0, n, AudioTrack.WRITE_BLOCKING)
+                    framesWritten += (n / bpf).toLong()
+                } catch (e: Exception) { break }
                 continue
             }
             // Keep writes frame-aligned (USB gives us whole frames, but clamp defensively).
             val aligned = got - (got % bpf)
             if (aligned > 0) {
-                try { t.write(chunk, 0, aligned, AudioTrack.WRITE_BLOCKING) } catch (e: Exception) { break }
+                try {
+                    t.write(chunk, 0, aligned, AudioTrack.WRITE_BLOCKING)
+                    framesWritten += (aligned / bpf).toLong()
+                } catch (e: Exception) { break }
             }
         }
     }
@@ -186,6 +193,22 @@ class UsbAudioOutput(
         stop()
         releaseTrack()
         format = null
+        framesWritten = 0L
+    }
+
+    /** Audio still queued in the AudioTrack (frames written but not yet played), in ms. */
+    fun bufferedMs(): Int {
+        val f = format ?: return 0
+        val t = track ?: return 0
+        if (f.sampleRate <= 0) return 0
+        val head = try {
+            t.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+        } catch (_: Exception) {
+            return 0
+        }
+        val pending = ((framesWritten and 0xFFFFFFFFL) - head) and 0xFFFFFFFFL
+        val frames = if (pending > 0x80000000L) 0L else pending
+        return (frames * 1000 / f.sampleRate).toInt()
     }
 
     @Synchronized
