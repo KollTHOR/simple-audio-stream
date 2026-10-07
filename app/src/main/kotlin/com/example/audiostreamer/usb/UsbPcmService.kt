@@ -59,7 +59,7 @@ class UsbPcmService : Service() {
             "com.example.audiostreamer.USB_ACTION_ACCESSORY_PERMISSION_RESULT"
         private const val CHANNEL_ID = "UsbInputChannel"
         private const val NOTIFICATION_ID = 4001
-        private const val RING_BYTES = 1 shl 17 // 128 KiB (~50-160 ms depending on format)
+        private const val RING_BYTES = 1 shl 15 // 32 KiB (~170 ms at 48k/16/2): jitter cushion only
 
         val isRunning = AtomicBoolean(false)
         @Volatile var currentInstance: UsbPcmService? = null
@@ -325,9 +325,12 @@ class UsbPcmService : Service() {
         }
 
         override fun onConfigured(format: PcmFormat) {
+            val wasStreaming = UsbState.state.value.streaming
             logTransport("configured ${format.displayLabel()}")
             output?.configure(format)
-            UsbState.update { it.copy(format = format, statusDetail = "Configured") }
+            UsbState.update {
+                it.copy(format = format, statusDetail = if (wasStreaming) "Reconfigured" else "Configured")
+            }
         }
 
         override fun onStreamStarted(format: PcmFormat) {

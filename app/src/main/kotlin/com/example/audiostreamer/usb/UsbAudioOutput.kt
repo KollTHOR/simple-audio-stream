@@ -36,7 +36,14 @@ class UsbAudioOutput(
     @Synchronized
     fun configure(newFormat: PcmFormat) {
         if (format == newFormat && track?.state == AudioTrack.STATE_INITIALIZED) return
+        // A format change mid-session must restart the playout on the NEW track: start()'s running
+        // guard would otherwise skip play() and the ring would back up (silent, 0 KB/s).
+        val wasRunning = running
+        if (wasRunning) stopPlayout()
         releaseTrack()
+        // Drain queued bytes: they were framed in the old geometry and would misalign the playout
+        // reader once the format changes (live reconfigure).
+        ring.reset()
         val encoding = newFormat.toAudioEncodingConstant()
         if (encoding == null) {
             onLog("USB: no AudioFormat encoding for ${newFormat.displayLabel()}")
@@ -48,8 +55,9 @@ class UsbAudioOutput(
             onLog("USB: device cannot render ${newFormat.displayLabel()} (minBuffer=$minBuffer)")
             return
         }
-        // Headroom over min so a scheduling hiccup does not underrun; bounded by the ring capacity.
-        val bufferBytes = maxOf(minBuffer * 2, ring.capacity).coerceAtMost(ring.capacity)
+        // Low latency: size the AudioTrack at the device minimum. The ring buffer (not the track)
+        // absorbs USB jitter, so sizing the track to ring.capacity only added ~680 ms of latency.
+        val bufferBytes = minBuffer
 
         val attrs = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -97,11 +105,13 @@ class UsbAudioOutput(
             return
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            try { t.setBufferSizeInFrames(maxOf(minBuffer / newFormat.bytesPerFrame, t.bufferCapacityInFrames / 2)) } catch (_: Exception) {}
+            try { t.setBufferSizeInFrames(minBuffer / newFormat.bytesPerFrame) } catch (_: Exception) {}
         }
         track = t
         format = newFormat
         onLog("USB: output ready ${newFormat.displayLabel()} minBuf=$minBuffer buf=$bufferBytes")
+        // Resume on the newly built track if we were playing before the reconfigure.
+        if (wasRunning) start()
     }
 
     @Synchronized
@@ -148,12 +158,18 @@ class UsbAudioOutput(
         }
     }
 
+    /** Stops the playout thread without touching the track (used on teardown and reconfigure). */
     @Synchronized
-    fun stop() {
+    private fun stopPlayout() {
         running = false
         val th = thread
         thread = null
-        try { th?.join(500) } catch (_: InterruptedException) {}
+        try { th?.join(750) } catch (_: InterruptedException) {}
+    }
+
+    @Synchronized
+    fun stop() {
+        stopPlayout()
         val t = track
         if (t != null) {
             try { t.stop() } catch (e: Exception) { Log.d(TAG, "track.stop: ${e.message}") }

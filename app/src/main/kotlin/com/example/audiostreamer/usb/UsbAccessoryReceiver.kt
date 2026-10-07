@@ -24,6 +24,13 @@ class UsbAccessoryReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != UsbManager.ACTION_USB_ACCESSORY_ATTACHED) return
+        // Gate: only arm the USB input while the receiver is listening. This broadcast can start
+        // the process when nothing is listening; in that case ignore it and let the user's
+        // "Start listening" arm UsbPcmService later (the accessory stays connected).
+        if (!com.example.audiostreamer.AudioSinkService.isRunning.get()) {
+            AppLogger.i(TAG, "USB: accessory attach while not listening — deferring (press Start listening)")
+            return
+        }
         AppLogger.i(TAG, "USB: accessory attach received — starting USB input service")
         try {
             ContextCompat.startForegroundService(
