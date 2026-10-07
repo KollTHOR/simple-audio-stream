@@ -227,17 +227,52 @@ class UsbAudioOutput(
     /** Audio still queued in the AudioTrack (frames written but not yet played), in ms. */
     fun bufferedMs(): Int {
         val f = format ?: return 0
-        val t = track ?: return 0
         if (f.sampleRate <= 0) return 0
+        return (pendingFrames() * 1000 / f.sampleRate).toInt()
+    }
+
+    /** Audio still queued in the AudioTrack (frames written but not yet played). */
+    fun pendingFrames(): Long {
+        val t = track ?: return 0L
         val head = try {
             t.playbackHeadPosition.toLong() and 0xFFFFFFFFL
         } catch (_: Exception) {
-            return 0
+            return 0L
         }
         val pending = ((framesWritten and 0xFFFFFFFFL) - head) and 0xFFFFFFFFL
-        val frames = if (pending > 0x80000000L) 0L else pending
-        return (frames * 1000 / f.sampleRate).toInt()
+        return if (pending > 0x80000000L) 0L else pending
     }
+
+    /** Active AudioTrack buffer size target in frames (from setBufferSizeInFrames). */
+    fun bufferSizeFrames(): Int = try { track?.bufferSizeInFrames ?: 0 } catch (_: Exception) { 0 }
+
+    /** Maximum allocated AudioTrack buffer capacity in frames. */
+    fun bufferCapacityFrames(): Int =
+        try { track?.bufferCapacityInFrames ?: 0 } catch (_: Exception) { 0 }
+
+    /** Actual AudioTrack performance mode (LOW_LATENCY = 1), API 26+. */
+    fun performanceMode(): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try { track?.performanceMode ?: 0 } catch (_: Exception) { 0 }
+        } else {
+            0
+        }
+
+    /** Current drift-correction ratio relative to unity (1.0 = nominal). */
+    fun driftRatio(): Double = drift.correctionRatio
+
+    /** The negotiated sample rate, or 0. */
+    fun sampleRate(): Int = format?.sampleRate ?: 0
+
+    /** The negotiated bit depth, or 0. */
+    fun bitDepth(): Int = format?.bitDepth ?: 0
+
+    /** Frames written to the AudioTrack since the stream started. */
+    fun totalFramesWritten(): Long = framesWritten
+
+    /** Frames the AudioTrack has actually played (from the playback head). */
+    fun playbackHeadFrames(): Long =
+        try { track?.playbackHeadPosition?.toLong()?.and(0xFFFFFFFFL) ?: 0L } catch (_: Exception) { 0L }
 
     @Synchronized
     private fun releaseTrack() {

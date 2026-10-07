@@ -704,13 +704,15 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     /**
-     * While this device is actively receiving, the transmitter dictates the streaming profile and
-     * audio format, so the local profile/rate/bit controls below are inert and only cause confusion
-     * (e.g. the user left it on "Auto" but the source is sending "Music"). Disable them and show
-     * what is actually arriving instead. When not receiving, restore normal editing.
+     * While this device is actively receiving (network) OR the USB input is armed, the source
+     * dictates the streaming profile and audio format, so the profile/rate/bit controls are inert.
+     * Disable them and show what is actually being received instead.
      */
-    private fun applyReceiverQualityLock(tel: Telemetry) {
-        val receiving = tel.isActive && !tel.isTransmitter
+    private fun applyQualityLock() {
+        val tel = StreamState.telemetry.value
+        val netReceiving = tel.isActive && !tel.isTransmitter
+        val usbActive = com.example.audiostreamer.usb.UsbPcmService.isRunning.get()
+        val receiving = netReceiving || usbActive
         if (receiving == qualityControlsLocked) return
         qualityControlsLocked = receiving
 
@@ -723,9 +725,13 @@ class SettingsActivity : AppCompatActivity() {
         cardBitDepth.alpha = alpha
 
         if (receiving) {
-            tvReceiverQualityLock.text =
+            tvReceiverQualityLock.text = if (usbActive) {
+                "USB input active — the PC sets the sample rate / bit depth (and its own buffering), " +
+                    "so the streaming profile and format options below don't apply."
+            } else {
                 "Receiving from ${tel.connectedTransmitter?.name ?: "a transmitter"} — the transmitter sets " +
                     "quality, so the options below are disabled. Incoming: ${tel.streamProfileName} • ${tel.negotiatedFormatDesc}."
+            }
             cardReceiverQualityLock.visibility = View.VISIBLE
         } else {
             cardReceiverQualityLock.visibility = View.GONE
@@ -913,7 +919,10 @@ class SettingsActivity : AppCompatActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
                     diagnosticsViewModel.state.collect { state ->
-                        updateDiagnosticsUi(state)
+                        // USB input feeds the same UI from its own poller below.
+                        if (!com.example.audiostreamer.usb.UsbPcmService.isRunning.get()) {
+                            updateDiagnosticsUi(state)
+                        }
                     }
                 }
                 launch {
@@ -922,8 +931,20 @@ class SettingsActivity : AppCompatActivity() {
                     }
                 }
                 launch {
-                    StreamState.telemetry.collect { tel ->
-                        applyReceiverQualityLock(tel)
+                    StreamState.telemetry.collect {
+                        applyQualityLock()
+                    }
+                }
+                // USB (AOA) input: feed the diagnostics UI + quality lock while it is the active source.
+                launch {
+                    while (true) {
+                        val usbActive = com.example.audiostreamer.usb.UsbPcmService.isRunning.get()
+                        if (usbActive) {
+                            com.example.audiostreamer.usb.UsbPcmService.snapshotUsbDiagnostics()
+                                ?.let { updateDiagnosticsUi(it) }
+                        }
+                        applyQualityLock()
+                        kotlinx.coroutines.delay(500)
                     }
                 }
             }
@@ -1038,7 +1059,17 @@ class SettingsActivity : AppCompatActivity() {
         val greenColor = ContextCompat.getColor(this, R.color.status_green)
         val hintColor = ContextCompat.getColor(this, R.color.text_hint)
 
-        if (isRx) {
+        if (state.isUsb) {
+            val kHz = String.format(Locale.US, "%.1f", state.sampleRate / 1000.0)
+            val native = if (state.deviceNativeRate > 0) " • HAL native ${state.deviceNativeRate / 1000}kHz" else ""
+            val perf = if (state.performanceMode == 1) " • low-latency" else ""
+            tvDiagReceiverStatus.text = if (isRx) {
+                "USB Input Active • ${state.trackBitDepth}-bit / ${kHz}kHz$native$perf"
+            } else {
+                "USB Input Armed (waiting for host)"
+            }
+            tvDiagReceiverStatus.setTextColor(if (isRx) greenColor else hintColor)
+        } else if (isRx) {
             tvDiagReceiverStatus.text = "Receiver Active • ${state.sampleRate / 1000}kHz (${state.profileName})"
             tvDiagReceiverStatus.setTextColor(greenColor)
         } else {
@@ -1072,12 +1103,21 @@ class SettingsActivity : AppCompatActivity() {
 
         // Estimated Playout breakdown
         if (isRx && latencyMs > 0f) {
-            tvDiagTimelineBreakdown.text = String.format(
-                Locale.US,
-                "Jitter Buffer: %.1fms | AudioTrack Queue: %.1fms",
-                state.jitterBufferMs,
-                state.audioTrackQueuedMs
-            )
+            tvDiagTimelineBreakdown.text = if (state.isUsb) {
+                String.format(
+                    Locale.US,
+                    "USB ring: %.1fms | AudioTrack: %.1fms",
+                    state.jitterBufferMs,
+                    state.audioTrackQueuedMs
+                )
+            } else {
+                String.format(
+                    Locale.US,
+                    "Jitter Buffer: %.1fms | AudioTrack Queue: %.1fms",
+                    state.jitterBufferMs,
+                    state.audioTrackQueuedMs
+                )
+            }
         } else {
             tvDiagTimelineBreakdown.text = "Jitter Buffer: -- | AudioTrack Queue: --"
         }
@@ -1135,7 +1175,19 @@ class SettingsActivity : AppCompatActivity() {
 
         // Realtime diagnostic snapshot preview
         val snapText = diagnosticsViewModel.getDiagnosticSnapshotText()
-        tvDiagSnapshotPreview.text = if (snapText.isNotBlank()) snapText else "Waiting for stream metrics..."
+        tvDiagSnapshotPreview.text = when {
+            state.isUsb -> String.format(
+                Locale.US,
+                "USB output: %d-bit / %d Hz • device native %d Hz • perfMode %d (1=low-latency) • drift %.4fx",
+                state.trackBitDepth,
+                state.trackSampleRate,
+                state.deviceNativeRate,
+                state.performanceMode,
+                state.driftCorrectionRatio
+            )
+            snapText.isNotBlank() -> snapText
+            else -> "Waiting for stream metrics..."
+        }
     }
 
     private fun copyDiagnosticsToClipboard() {

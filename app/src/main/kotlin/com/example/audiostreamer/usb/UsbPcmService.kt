@@ -64,6 +64,10 @@ class UsbPcmService : Service() {
         val isRunning = AtomicBoolean(false)
         @Volatile var currentInstance: UsbPcmService? = null
 
+        /** Diagnostics snapshot (shared shape) when USB input is active, else null. */
+        fun snapshotUsbDiagnostics(): com.example.audiostreamer.diagnostics.ReceiverDiagnosticsState? =
+            currentInstance?.buildUsbDiagnostics()
+
         /** True once the "USB" diagnostics section has been registered for this process. */
         @Volatile private var diagnosticsRegistered = false
     }
@@ -442,6 +446,56 @@ class UsbPcmService : Service() {
     }
 
     // ---- Diagnostics ------------------------------------------------------------------------
+
+    /**
+     * USB-mode diagnostics in the same shape the network receiver uses, so the existing diagnostics
+     * screen renders it (latency graph, ring/track queue, drift, underruns). Null until a format is
+     * negotiated.
+     */
+    private fun buildUsbDiagnostics(): com.example.audiostreamer.diagnostics.ReceiverDiagnosticsState? {
+        val st = UsbState.state.value
+        val fmt = st.format ?: return null
+        val s = stats ?: return null
+        val r = ring
+        val o = output
+        val bps = fmt.sampleRate.toLong() * fmt.bytesPerFrame
+        fun bytesToMs(b: Int): Int = if (bps > 0) (b.toLong() * 1000 / bps).toInt() else 0
+        val fillBytes = r?.available() ?: 0
+        val capBytes = r?.capacity ?: 0
+        val ringMs = bytesToMs(fillBytes)
+        val ringCapMs = bytesToMs(capBytes)
+        val trackMs = o?.bufferedMs() ?: 0
+        val slotBytes = fmt.bytesPerFrame * (fmt.sampleRate / 100).coerceAtLeast(1)
+        val nativeRate = try {
+            (getSystemService(Context.AUDIO_SERVICE) as AudioManager)
+                .getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: 0
+        } catch (_: Exception) {
+            0
+        }
+        return com.example.audiostreamer.diagnostics.ReceiverDiagnosticsState(
+            isReceiving = st.streaming,
+            sampleRate = fmt.sampleRate,
+            profileName = "USB",
+            estimatedPlayoutLatencyMs = (ringMs + trackMs).toFloat(),
+            jitterBufferMs = ringMs.toFloat(),
+            audioTrackQueuedMs = trackMs.toFloat(),
+            audioTrackQueuedFrames = o?.pendingFrames() ?: 0L,
+            audioTrackBufferSizeFrames = o?.bufferSizeFrames() ?: 0,
+            audioTrackBufferCapacityFrames = o?.bufferCapacityFrames() ?: 0,
+            bufferAvailableSlots = if (slotBytes > 0) fillBytes / slotBytes else 0,
+            bufferTotalSlots = if (slotBytes > 0) capBytes / slotBytes else 0,
+            bufferFillPercent = r?.fillPercent() ?: 0,
+            driftCorrectionRatio = o?.driftRatio() ?: 1.0,
+            underruns = s.bufferUnderruns.get(),
+            framesWritten = o?.totalFramesWritten() ?: 0L,
+            playbackHead = o?.playbackHeadFrames() ?: 0L,
+            isUsb = true,
+            trackSampleRate = fmt.sampleRate,
+            trackBitDepth = fmt.bitDepth,
+            deviceNativeRate = nativeRate,
+            performanceMode = o?.performanceMode() ?: 0,
+        )
+    }
 
     private fun ensureDiagnosticsSectionRegistered() {
         if (diagnosticsRegistered) return
