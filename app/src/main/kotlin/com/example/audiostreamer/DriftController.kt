@@ -102,15 +102,27 @@ class DriftController(initialFill: Float = 2.0f) {
     }
 
     /**
-     * Resamples a PCM chunk using Catmull-Rom cubic Hermite interpolation.
-     * Modifies output buffer in-place and returns the number of valid bytes in output.
+     * Resamples a PCM chunk using Catmull-Rom cubic Hermite interpolation. Modifies [output]
+     * in-place and returns the number of valid bytes. (Legacy signature: 16/24-bit stereo.)
      */
     fun resamplePcmChunk(
         output: ByteArray,
         len: Int,
         is24Bit: Boolean
+    ): Int = resamplePcmChunk(output, len, if (is24Bit) 6 else 4, if (is24Bit) 3 else 2, 2)
+
+    /**
+     * Format-generic fractional resampler (see class docs). [frameBytes] = channels *
+     * bytesPerSample. Supports 16/24/32-bit and 1..n channels so the USB path can reuse it.
+     */
+    fun resamplePcmChunk(
+        output: ByteArray,
+        len: Int,
+        frameBytes: Int,
+        bytesPerSample: Int,
+        channels: Int
     ): Int {
-        val frameBytes = if (is24Bit) 6 else 4
+        if (frameBytes <= 0 || bytesPerSample <= 0 || channels <= 0) return len
         val inFrames = len / frameBytes
         if (inFrames < 4 || len > AudioConfig.MAX_PACKET_SIZE) {
             return len
@@ -130,22 +142,14 @@ class DriftController(initialFill: Float = 2.0f) {
         while (p < inFrames && outFrame < maxOutFrames) {
             val k = p.toInt()
             val mu = p - k
-
-            // Extract control points for Left and Right channels
-            val y0L = getSample(output, len, frameBytes, is24Bit, k - 1, 0)
-            val y1L = getSample(output, len, frameBytes, is24Bit, k, 0)
-            val y2L = getSample(output, len, frameBytes, is24Bit, k + 1, 0)
-            val y3L = getSample(output, len, frameBytes, is24Bit, k + 2, 0)
-
-            val y0R = getSample(output, len, frameBytes, is24Bit, k - 1, 1)
-            val y1R = getSample(output, len, frameBytes, is24Bit, k, 1)
-            val y2R = getSample(output, len, frameBytes, is24Bit, k + 1, 1)
-            val y3R = getSample(output, len, frameBytes, is24Bit, k + 2, 1)
-
-            val interpL = interpolateHermite(y0L, y1L, y2L, y3L, mu)
-            val interpR = interpolateHermite(y0R, y1R, y2R, y3R, mu)
-
-            writeSample(resampleScratch, outFrame, frameBytes, is24Bit, interpL, interpR)
+            for (ch in 0 until channels) {
+                val y0 = getSample(output, len, frameBytes, bytesPerSample, channels, k - 1, ch)
+                val y1 = getSample(output, len, frameBytes, bytesPerSample, channels, k, ch)
+                val y2 = getSample(output, len, frameBytes, bytesPerSample, channels, k + 1, ch)
+                val y3 = getSample(output, len, frameBytes, bytesPerSample, channels, k + 2, ch)
+                val interp = interpolateHermite(y0, y1, y2, y3, mu)
+                writeSample(resampleScratch, outFrame, frameBytes, bytesPerSample, channels, ch, interp)
+            }
             outFrame++
             p += ratio
         }
@@ -164,6 +168,10 @@ class DriftController(initialFill: Float = 2.0f) {
 
     private fun cacheHistory(buffer: ByteArray, len: Int, frameBytes: Int) {
         val framesToSave = minOf(3, len / frameBytes)
+        if (framesToSave <= 0) {
+            historyFramesCount = 0
+            return
+        }
         val srcOffset = len - framesToSave * frameBytes
         System.arraycopy(buffer, srcOffset, historyBuffer, 0, framesToSave * frameBytes)
         historyFramesCount = framesToSave
@@ -173,42 +181,52 @@ class DriftController(initialFill: Float = 2.0f) {
         data: ByteArray,
         len: Int,
         frameBytes: Int,
-        is24Bit: Boolean,
+        bytesPerSample: Int,
+        channels: Int,
         frameIndex: Int,
-        channel: Int // 0: Left, 1: Right
+        channel: Int
     ): Double {
         val inFrames = len / frameBytes
         if (frameIndex < 0) {
             // Read from history buffer if available
             if (historyFramesCount > 0) {
                 val histIndex = (historyFramesCount + frameIndex).coerceIn(0, historyFramesCount - 1)
-                return readSampleFromBuffer(historyBuffer, histIndex, frameBytes, is24Bit, channel)
+                return readSampleFromBuffer(historyBuffer, frameBytes, bytesPerSample, histIndex, channel)
             }
             // Clamping fallback for start of stream
-            return readSampleFromBuffer(data, 0, frameBytes, is24Bit, channel)
+            return readSampleFromBuffer(data, frameBytes, bytesPerSample, 0, channel)
         }
         if (frameIndex >= inFrames) {
             // Clamp to last frame of current chunk
-            return readSampleFromBuffer(data, inFrames - 1, frameBytes, is24Bit, channel)
+            return readSampleFromBuffer(data, frameBytes, bytesPerSample, inFrames - 1, channel)
         }
-        return readSampleFromBuffer(data, frameIndex, frameBytes, is24Bit, channel)
+        return readSampleFromBuffer(data, frameBytes, bytesPerSample, frameIndex, channel)
     }
 
     private fun readSampleFromBuffer(
         buf: ByteArray,
-        frameIndex: Int,
         frameBytes: Int,
-        is24Bit: Boolean,
+        bytesPerSample: Int,
+        frameIndex: Int,
         channel: Int
     ): Double {
-        val base = frameIndex * frameBytes + (if (channel == 0) 0 else if (is24Bit) 3 else 2)
-        return if (is24Bit) {
-            val raw = (buf[base].toInt() and 0xFF) or
-                ((buf[base + 1].toInt() and 0xFF) shl 8) or
-                ((buf[base + 2].toInt() and 0xFF) shl 16)
-            (if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw).toDouble()
-        } else {
-            ((buf[base].toInt() and 0xFF) or (buf[base + 1].toInt() shl 8)).toShort().toDouble()
+        val base = frameIndex * frameBytes + channel * bytesPerSample
+        return when (bytesPerSample) {
+            2 -> ((buf[base].toInt() and 0xFF) or (buf[base + 1].toInt() shl 8)).toShort().toDouble()
+            3 -> {
+                val raw = (buf[base].toInt() and 0xFF) or
+                    ((buf[base + 1].toInt() and 0xFF) shl 8) or
+                    ((buf[base + 2].toInt() and 0xFF) shl 16)
+                (if (raw and 0x800000 != 0) raw or 0xFF000000.toInt() else raw).toDouble()
+            }
+            4 -> {
+                val raw = (buf[base].toInt() and 0xFF).toLong() or
+                    ((buf[base + 1].toInt() and 0xFF).toLong() shl 8) or
+                    ((buf[base + 2].toInt() and 0xFF).toLong() shl 16) or
+                    (buf[base + 3].toLong() shl 24)
+                raw.toDouble()
+            }
+            else -> 0.0
         }
     }
 
@@ -216,29 +234,31 @@ class DriftController(initialFill: Float = 2.0f) {
         buf: ByteArray,
         frameIndex: Int,
         frameBytes: Int,
-        is24Bit: Boolean,
-        sampleL: Double,
-        sampleR: Double
+        bytesPerSample: Int,
+        channels: Int,
+        channel: Int,
+        sample: Double
     ) {
-        val base = frameIndex * frameBytes
-        if (is24Bit) {
-            val sL = sampleL.toInt().coerceIn(-8388608, 8388607)
-            buf[base] = (sL and 0xFF).toByte()
-            buf[base + 1] = ((sL shr 8) and 0xFF).toByte()
-            buf[base + 2] = ((sL shr 16) and 0xFF).toByte()
-
-            val sR = sampleR.toInt().coerceIn(-8388608, 8388607)
-            buf[base + 3] = (sR and 0xFF).toByte()
-            buf[base + 4] = ((sR shr 8) and 0xFF).toByte()
-            buf[base + 5] = ((sR shr 16) and 0xFF).toByte()
-        } else {
-            val sL = sampleL.toInt().coerceIn(-32768, 32767)
-            buf[base] = (sL and 0xFF).toByte()
-            buf[base + 1] = ((sL shr 8) and 0xFF).toByte()
-
-            val sR = sampleR.toInt().coerceIn(-32768, 32767)
-            buf[base + 2] = (sR and 0xFF).toByte()
-            buf[base + 3] = ((sR shr 8) and 0xFF).toByte()
+        val base = frameIndex * frameBytes + channel * bytesPerSample
+        when (bytesPerSample) {
+            2 -> {
+                val v = sample.toInt().coerceIn(-32768, 32767)
+                buf[base] = (v and 0xFF).toByte()
+                buf[base + 1] = ((v shr 8) and 0xFF).toByte()
+            }
+            3 -> {
+                val v = sample.toInt().coerceIn(-8388608, 8388607)
+                buf[base] = (v and 0xFF).toByte()
+                buf[base + 1] = ((v shr 8) and 0xFF).toByte()
+                buf[base + 2] = ((v shr 16) and 0xFF).toByte()
+            }
+            4 -> {
+                val v = sample.toLong().coerceIn(Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong()).toInt()
+                buf[base] = (v and 0xFF).toByte()
+                buf[base + 1] = ((v shr 8) and 0xFF).toByte()
+                buf[base + 2] = ((v shr 16) and 0xFF).toByte()
+                buf[base + 3] = ((v shr 24) and 0xFF).toByte()
+            }
         }
     }
 

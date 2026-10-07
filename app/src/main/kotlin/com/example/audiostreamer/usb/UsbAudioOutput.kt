@@ -6,6 +6,8 @@ import android.media.AudioTrack
 import android.os.Build
 import android.util.Log
 
+import com.example.audiostreamer.DriftController
+
 /**
  * Consumes PCM from the [PcmRingBuffer] and plays it through a self-contained [AudioTrack]
  * (spec §5 "UsbTransport -> UsbPcmReceiver -> PcmStream -> AudioOutput", §7, §8).
@@ -33,6 +35,13 @@ class UsbAudioOutput(
     private var format: PcmFormat? = null
     private var framesWritten: Long = 0L
 
+    /**
+     * Continuous clock-drift correction (same Catmull-Rom fractional resampler + PI controller the
+     * Wi-Fi path uses). Lets the ring stay small: instead of buffering the PC<->phone crystal
+     * difference, we nudge the consume rate by <= ~1000 ppm (inaudible).
+     */
+    private val drift = DriftController(TARGET_SLOTS.toFloat())
+
     /** (Re)builds the AudioTrack for [newFormat]. Safe to call before [start] or on a format change. */
     @Synchronized
     fun configure(newFormat: PcmFormat) {
@@ -45,9 +54,10 @@ class UsbAudioOutput(
         // Drain queued bytes: they were framed in the old geometry and would misalign the playout
         // reader once the format changes (live reconfigure).
         ring.reset()
-        // Size the jitter cushion to the format (~40 ms before power-of-two rounding) so latency
-        // stays low while still absorbing USB jitter at high sample rate / 32-bit.
-        ring.resize(newFormat.sampleRate * newFormat.bytesPerFrame * 4 / 100)
+        // Ring capacity is headroom only; the drift controller holds the *fill* near TARGET_SLOTS.
+        // ~80 ms capacity lets it absorb USB bursts without overflow, at any format.
+        ring.resize(newFormat.sampleRate * newFormat.bytesPerFrame * 8 / 100)
+        drift.reset(TARGET_SLOTS.toFloat())
         val encoding = newFormat.toAudioEncodingConstant()
         if (encoding == null) {
             onLog("USB: no AudioFormat encoding for ${newFormat.displayLabel()}")
@@ -115,7 +125,7 @@ class UsbAudioOutput(
             try {
                 val targetFrames = minOf(
                     minBuffer / newFormat.bytesPerFrame,
-                    newFormat.sampleRate * 40 / 1000
+                    newFormat.sampleRate * 30 / 1000
                 )
                 t.setBufferSizeInFrames(targetFrames)
             } catch (_: Exception) {}
@@ -147,16 +157,20 @@ class UsbAudioOutput(
     private fun playoutLoop(t: AudioTrack) {
         val fmt = format ?: return
         val bpf = fmt.bytesPerFrame
+        val bytesPerSample = (fmt.bitDepth / 8).coerceAtLeast(1)
         // Reusable write buffer; never allocate per callback in the steady state (spec §11).
         val chunkFrames = (fmt.sampleRate / 100).coerceAtLeast(16) // ~10ms granularity
         val chunk = ByteArray(chunkFrames * bpf)
         val silence = ByteArray(chunk.size)
         while (running) {
             val want = chunk.size - (chunk.size % bpf)
+            // Report the ring fill (in ~10ms slots) so the drift controller can hold it near target.
+            drift.updateFill(ring.available() / chunk.size, TARGET_SLOTS)
             val got = ring.read(chunk, 0, want)
             if (got <= 0) {
                 // No data yet: feed silence to keep the track clocked, and record the underrun so the
                 // consumer can see USB starved the output (spec §6/§12) without killing the stream.
+                drift.onUnderrun()
                 stats.bufferUnderruns.incrementAndGet()
                 onUnderrun()
                 val n = silence.size
@@ -169,10 +183,14 @@ class UsbAudioOutput(
             // Keep writes frame-aligned (USB gives us whole frames, but clamp defensively).
             val aligned = got - (got % bpf)
             if (aligned > 0) {
-                try {
-                    t.write(chunk, 0, aligned, AudioTrack.WRITE_BLOCKING)
-                    framesWritten += (aligned / bpf).toLong()
-                } catch (e: Exception) { break }
+                // Continuous drift correction: resample by <= ~1000 ppm to track the phone's clock.
+                val outLen = drift.resamplePcmChunk(chunk, aligned, bpf, bytesPerSample, fmt.channels)
+                if (outLen > 0) {
+                    try {
+                        t.write(chunk, 0, outLen, AudioTrack.WRITE_BLOCKING)
+                        framesWritten += (outLen / bpf).toLong()
+                    } catch (e: Exception) { break }
+                }
             }
         }
     }
@@ -203,6 +221,7 @@ class UsbAudioOutput(
         releaseTrack()
         format = null
         framesWritten = 0L
+        drift.reset(TARGET_SLOTS.toFloat())
     }
 
     /** Audio still queued in the AudioTrack (frames written but not yet played), in ms. */
@@ -231,5 +250,7 @@ class UsbAudioOutput(
 
     private companion object {
         const val TAG = "UsbAudioOutput"
+        /** Target ring fill, in ~10 ms slots (~30 ms of buffered audio). */
+        const val TARGET_SLOTS = 3
     }
 }
