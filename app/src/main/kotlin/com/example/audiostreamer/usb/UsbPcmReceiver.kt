@@ -144,13 +144,19 @@ class UsbPcmReceiver(
                 }
                 when (val result = ConfigValidator.validate(req, capabilities(), probe)) {
                     is ConfigValidator.Result.Accepted -> {
+                        val wasStreaming = state == State.STREAMING
                         configuredFormat = result.format
                         stats.setFormat(result.format)
+                        // Tell the output layer to (re)build for this format. On a live reconfigure
+                        // (PC is master) this stops/restarts playout and drains the ring, so the new
+                        // frame geometry stays aligned — the phone follows without a teardown.
+                        listener.onConfigured(result.format)
                         writeMessage(
                             AslcProtocol.MSG_CONFIGURE_ACK,
                             AslcPayload.configureAckPayload(result.format, capabilities().maxFrameBytes)
                         )
-                        transition(State.CONFIGURED)
+                        // Live reconfigure keeps STREAMING; an initial CONFIGURE arms CONFIGURED.
+                        if (!wasStreaming) transition(State.CONFIGURED)
                     }
                     is ConfigValidator.Result.Rejected -> {
                         sendError(result.errorCode, header.messageType, result.reason)

@@ -124,18 +124,16 @@
                 android:resource="@xml/accessory_filter" />
         </receiver>
 
+        <!--
+            Started ONLY by the app itself (receiver "Start listening" or MainActivity) so USB
+            playback stays gated on the listen state. No accessory intent-filter here: that would
+            let the system start the service out of band, bypassing the listen gate.
+        -->
         <service
             android:name=".usb.UsbPcmService"
             android:enabled="true"
-            android:exported="true"
-            android:foregroundServiceType="mediaPlayback">
-            <intent-filter>
-                <action android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" />
-            </intent-filter>
-            <meta-data
-                android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED"
-                android:resource="@xml/accessory_filter" />
-        </service>
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
 
         <!-- Optional Accessibility Service for Background Hardware Volume Interception (Pocket Mode) -->
         <service

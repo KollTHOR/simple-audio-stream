@@ -821,15 +821,6 @@
                                         android:textStyle="bold"
                                         android:textColor="@color/text_secondary" />
 
-                                    <com.google.android.material.button.MaterialButton
-                                        android:id="@+id/btn_usb_toggle"
-                                        style="@style/Widget.MaterialComponents.Button.TextButton"
-                                        android:layout_width="wrap_content"
-                                        android:layout_height="wrap_content"
-                                        android:minHeight="0dp"
-                                        android:layout_marginStart="8dp"
-                                        android:textSize="12sp"
-                                        android:text="Enable" />
                                 </LinearLayout>
 
                                 <TextView
