@@ -120,5 +120,17 @@ data class ReceiverDiagnosticsState(
     val opusPlcFrames: Long = 0L,
     val opusDecodeErrors: Long = 0L,
 
+    // --- USB (AOA) input mode ---
+    /** True when these metrics are from the USB input, not the network receiver. */
+    val isUsb: Boolean = false,
+    /** Negotiated USB track sample rate. */
+    val trackSampleRate: Int = 0,
+    /** Negotiated USB track bit depth. */
+    val trackBitDepth: Int = 0,
+    /** Device's declared native output sample rate (AudioManager), 0 if unknown. */
+    val deviceNativeRate: Int = 0,
+    /** AudioTrack performance mode (1 = LOW_LATENCY). */
+    val performanceMode: Int = 0,
+
     val timestampMs: Long = System.currentTimeMillis()
 )
