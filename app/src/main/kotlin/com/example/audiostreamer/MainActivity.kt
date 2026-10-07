@@ -2927,10 +2927,11 @@ class MainActivity : AppCompatActivity() {
     // ---- USB PCM input (experimental) -----------------------------------------------------
 
     private fun renderUsbCard(usb: com.example.audiostreamer.usb.UsbUiState) {
-        // Status-only card: the USB input is controlled by "Start/Stop listening", not a button.
-        // Only surface it when an accessory is actually connected (i.e. listening with the host
-        // attached); a Wi-Fi-only listen must not show a USB card.
-        val show = usb.connected
+        // Status-only card: the USB input is controlled by "Start/Stop listening". Show it whenever
+        // the USB input service is armed (i.e. listening) OR an accessory is attached, so the user
+        // gets feedback ("Waiting for host") even before the desktop host connects.
+        val armed = com.example.audiostreamer.usb.UsbPcmService.isRunning.get()
+        val show = usb.connected || armed
         cardUsbInput.visibility = if (show) View.VISIBLE else View.GONE
         if (!show) return
 
