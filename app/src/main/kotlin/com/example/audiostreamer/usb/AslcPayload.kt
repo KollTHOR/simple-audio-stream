@@ -236,6 +236,35 @@ object AslcPayload {
     }
 
     /**
+     * AUDIO_INFO payload (device -> host): the device's audio-output characteristics, sent once per
+     * connection so the host can flag when the negotiated stream rate will be resampled by the phone.
+     *
+     * Layout: u32 outputSampleRate, u32 outputFramesPerBuffer, u32 flags.
+     */
+    fun audioInfoPayload(outputSampleRate: Int, outputFramesPerBuffer: Int, flags: Int = 0): ByteArray {
+        val buf = ByteArray(12)
+        AslcProtocol.writeUInt32BE(buf, 0, outputSampleRate.toLong())
+        AslcProtocol.writeUInt32BE(buf, 4, outputFramesPerBuffer.toLong())
+        AslcProtocol.writeUInt32BE(buf, 8, flags.toLong())
+        return buf
+    }
+
+    data class AudioInfo(
+        val outputSampleRate: Int,
+        val outputFramesPerBuffer: Int,
+        val flags: Int
+    )
+
+    fun parseAudioInfo(payload: ByteArray, offset: Int, length: Int): AudioInfo? {
+        if (length < 12) return null
+        return AudioInfo(
+            outputSampleRate = AslcProtocol.readUInt32BE(payload, offset).toInt(),
+            outputFramesPerBuffer = AslcProtocol.readUInt32BE(payload, offset + 4).toInt(),
+            flags = AslcProtocol.readUInt32BE(payload, offset + 8).toInt()
+        )
+    }
+
+    /**
      * PCM_DATA payload layout: a u32 frameCount (number of interleaved multichannel frames in this
      * message) followed by exactly frameCount * bytesPerFrame raw PCM bytes. The prefix lets the
      * receiver validate the message's byte length against the negotiated format and detect

@@ -91,6 +91,20 @@ class AslcPayloadTest {
     }
 
     @Test
+    fun audioInfoRoundTrips() {
+        val p = AslcPayload.audioInfoPayload(outputSampleRate = 192000, outputFramesPerBuffer = 192)
+        assertEquals(12, p.size)
+        val parsed = AslcPayload.parseAudioInfo(p, 0, p.size)!!
+        assertEquals(192000, parsed.outputSampleRate)
+        assertEquals(192, parsed.outputFramesPerBuffer)
+    }
+
+    @Test
+    fun audioInfoRejectsShortPayload() {
+        assertNull(AslcPayload.parseAudioInfo(ByteArray(11), 0, 11))
+    }
+
+    @Test
     fun pcmFormatDerivedGeometry() {
         assertEquals(4, PcmFormat(48000, 16, 2).bytesPerFrame)
         assertEquals(6, PcmFormat(48000, 24, 2).bytesPerFrame)
