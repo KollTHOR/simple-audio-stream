@@ -295,6 +295,7 @@ class UsbPcmService : Service() {
             ring = r,
             stats = s,
             latencyProvider = { output?.bufferedMs() ?: 0 },
+            audioInfo = { deviceAudioInfo() },
             verboseLogging = { HatDiagnostics.isPacketLoggingEnabled() || BuildConfig.DEBUG },
             listener = receiverListener
         )
@@ -495,6 +496,14 @@ class UsbPcmService : Service() {
             deviceNativeRate = nativeRate,
             performanceMode = o?.performanceMode() ?: 0,
         )
+    }
+
+    /** The device's declared audio-output characteristics, advertised to the host (AUDIO_INFO). */
+    private fun deviceAudioInfo(): AslcPayload.AudioInfo {
+        val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        val rate = am?.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: 0
+        val frames = am?.getProperty(AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER)?.toIntOrNull() ?: 0
+        return AslcPayload.AudioInfo(rate, frames, 0)
     }
 
     private fun ensureDiagnosticsSectionRegistered() {

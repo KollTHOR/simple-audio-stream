@@ -24,6 +24,8 @@ class UsbPcmReceiver(
     private val stats: UsbPcmStats,
     /** Device-side (AudioTrack) buffered latency in ms, for the periodic TELEMETRY frame. */
     private val latencyProvider: () -> Int = { 0 },
+    /** The device's audio-output characteristics, advertised to the host in AUDIO_INFO. */
+    private val audioInfo: () -> AslcPayload.AudioInfo = { AslcPayload.AudioInfo(0, 0, 0) },
     private val listener: Listener = NOOP_LISTENER,
     private val verboseLogging: () -> Boolean = { false }
 ) {
@@ -55,6 +57,8 @@ class UsbPcmReceiver(
         val caps = capabilities()
         writeMessage(AslcProtocol.MSG_HELLO, AslcPayload.helloPayload(AslcProtocol.PROTOCOL_VERSION, isDevice = true, roleTag = "Android"))
         writeMessage(AslcProtocol.MSG_CAPABILITIES, AslcPayload.capabilitiesPayload(caps))
+        val info = audioInfo()
+        writeMessage(AslcProtocol.MSG_AUDIO_INFO, AslcPayload.audioInfoPayload(info.outputSampleRate, info.outputFramesPerBuffer, info.flags))
         transition(State.CAPABLES_SENT)
     }
 
