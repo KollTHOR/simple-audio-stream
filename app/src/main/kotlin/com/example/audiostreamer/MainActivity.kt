@@ -2963,6 +2963,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 // First step: the device must be plugged into the PC before Start can be pressed.
                 btnAction.isEnabled = active || usbCableConnected || usbAttached
+                btnAction.alpha = if (btnAction.isEnabled) 1f else 0.4f
                 btnAction.setIconResource(if (active) R.drawable.ic_stop else R.drawable.ic_play)
                 btnAction.backgroundTintList =
                     ColorStateList.valueOf(if (active) colorRed else colorPrimary)
