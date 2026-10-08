@@ -2,11 +2,14 @@ package com.example.audiostreamer
 
 import android.Manifest
 import android.app.Activity
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.hardware.usb.UsbManager
 import android.content.res.ColorStateList
@@ -71,6 +74,10 @@ class MainActivity : AppCompatActivity() {
         RECEIVER,
         USB
     }
+
+    /** Broadcast action for our own AOA accessory-permission result. */
+    private val ACTION_USB_ACCESSORY_PERMISSION =
+        "com.example.audiostreamer.USB_ACCESSORY_PERMISSION"
 
     private lateinit var layoutIpPill: LinearLayout
     private lateinit var viewHeaderNodeDot: View
@@ -847,10 +854,24 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 Mode.USB -> {
-                    // Fully automatic: the action button is hidden in USB mode, nothing to do.
+                    if (com.example.audiostreamer.usb.UsbPcmService.isRunning.get()) {
+                        stopUsbInput()
+                    } else {
+                        // Trigger the accessory-permission check from this Activity, then arm.
+                        requestUsbAccessoryPermissionIfNeeded()
+                        startUsbInput()
+                    }
+                    updateModeAndButtonUi()
                 }
             }
         }
+
+        ContextCompat.registerReceiver(
+            this,
+            usbPermissionReceiver,
+            IntentFilter(ACTION_USB_ACCESSORY_PERMISSION),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
 
         observeTelemetry()
         updateModeAndButtonUi()
@@ -944,6 +965,9 @@ class MainActivity : AppCompatActivity() {
         HatNfcBootstrapProvider.enableNfcDispatch(this)
         // HiBy does not dispatch the accessory-attach intent; adopt on foreground instead.
         adoptConnectedAccessoryIfPresent()
+        if (usbInputDesired()) {
+            requestUsbAccessoryPermissionIfNeeded()
+        }
 
         val currentRemoteVol = AudioCaptureService.remoteVolumePercent.get()
         sliderRemoteVol.value = currentRemoteVol.toFloat()
@@ -971,6 +995,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        try { unregisterReceiver(usbPermissionReceiver) } catch (_: Exception) {}
         activeScanJob?.cancel()
         activeScanJob = null
         com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.stopScan(this)
@@ -2768,6 +2793,42 @@ class MainActivity : AppCompatActivity() {
         updateModeAndButtonUi()
     }
 
+    /**
+     * Request the AOA accessory permission from this Activity (not the Service) so the system's
+     * "allow" dialog reliably appears. Safe when there is no accessory or we already have it.
+     */
+    private fun requestUsbAccessoryPermissionIfNeeded() {
+        try {
+            val usb = getSystemService(UsbManager::class.java) ?: return
+            val accessory = usb.accessoryList?.firstOrNull() ?: return
+            if (usb.hasPermission(accessory)) return
+            AppLogger.i("MainActivity", "USB mode: requesting accessory permission")
+            val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+            val pi = PendingIntent.getBroadcast(
+                this,
+                0,
+                Intent(ACTION_USB_ACCESSORY_PERMISSION).setPackage(packageName),
+                flags
+            )
+            usb.requestPermission(accessory, pi)
+        } catch (e: Exception) {
+            AppLogger.i("MainActivity", "USB: permission request failed: ${e.message}")
+        }
+    }
+
+    private val usbPermissionReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != ACTION_USB_ACCESSORY_PERMISSION) return
+            val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+            AppLogger.i("MainActivity", "USB mode: accessory permission granted=$granted")
+            if (granted && currentMode == Mode.USB) {
+                startUsbInput()
+            }
+            updateModeAndButtonUi()
+        }
+    }
+
     /** Arm the USB PCM input (host-driven). Idempotent. */
     private fun startUsbInput() {
         AppLogger.i("MainActivity", "USB mode: arming USB input")
@@ -2942,8 +3003,13 @@ class MainActivity : AppCompatActivity() {
                 layoutVolumeControl.visibility = View.GONE
                 layoutAdvancedHeader.visibility = View.GONE
                 layoutAdvancedContent.visibility = View.GONE
-                // Fully automatic: no action button in USB mode.
-                btnAction.visibility = View.GONE
+                val usbArmed = com.example.audiostreamer.usb.UsbPcmService.isRunning.get()
+                btnAction.visibility = View.VISIBLE
+                btnAction.isEnabled = true
+                btnAction.text = if (usbArmed) "Stop USB input" else "Start USB input"
+                btnAction.setIconResource(if (usbArmed) R.drawable.ic_stop else R.drawable.ic_play)
+                btnAction.backgroundTintList =
+                    ColorStateList.valueOf(if (usbArmed) colorRed else colorPrimary)
             }
         }
         updateNfcUi(HatNfcBootstrapProvider.state.value)
