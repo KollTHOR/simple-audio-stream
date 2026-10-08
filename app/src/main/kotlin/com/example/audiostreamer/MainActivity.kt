@@ -11,6 +11,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
@@ -137,6 +138,10 @@ class MainActivity : AppCompatActivity() {
     private var tvReceiverTransportsList: TextView? = null
     private lateinit var tvReceiverEndpointPill: TextView
     private var activeScanJob: Job? = null
+    /** Accessory identity we've already asked permission for (avoids dialog spam). */
+    private var usbPermissionRequestedFor: String? = null
+    /** Polls for the accessory + permission while USB mode is in the foreground. */
+    private var usbSyncJob: Job? = null
     private lateinit var layoutDiscoveredDevicesContainer: LinearLayout
 
     private lateinit var layoutReceiverP2p: LinearLayout
@@ -856,10 +861,10 @@ class MainActivity : AppCompatActivity() {
                 Mode.USB -> {
                     if (com.example.audiostreamer.usb.UsbPcmService.isRunning.get()) {
                         stopUsbInput()
+                        usbPermissionRequestedFor = null
                     } else {
-                        // Trigger the accessory-permission check from this Activity, then arm.
-                        requestUsbAccessoryPermissionIfNeeded()
-                        startUsbInput()
+                        // Request the permission if needed; listening starts only once granted.
+                        syncUsbModeState()
                     }
                     updateModeAndButtonUi()
                 }
@@ -897,13 +902,17 @@ class MainActivity : AppCompatActivity() {
      */
     private fun handleUsbAccessoryIntent(intent: Intent) {
         if (intent.action == UsbManager.ACTION_USB_ACCESSORY_ATTACHED) {
-            // Gate: only accept USB playback while the receiver is listening. If we are not
-            // listening, ignore the attach (the launch still grants accessory permission); the
-            // accessory stays connected and is adopted when the user presses "Start listening".
-            if (!usbInputDesired()) {
+            if (currentMode == Mode.USB) {
+                // USB mode: permission-gated — listening starts only once the user has allowed.
+                syncUsbModeState()
+                return
+            }
+            // Network Receive mode arms the USB input too; the launch also grants the accessory
+            // permission implicitly.
+            if (!AudioSinkService.isRunning.get()) {
                 com.example.audiostreamer.AppLogger.i(
                     "MainActivity",
-                    "USB: accessory attached while USB input is not armed — ignoring"
+                    "USB: accessory attached while not listening — ignoring"
                 )
                 return
             }
@@ -929,7 +938,7 @@ class MainActivity : AppCompatActivity() {
             val usbManager = getSystemService(UsbManager::class.java) ?: return
             val accessories = usbManager.accessoryList
             if (!accessories.isNullOrEmpty() &&
-                usbInputDesired() &&
+                AudioSinkService.isRunning.get() &&
                 !com.example.audiostreamer.usb.UsbPcmService.isRunning.get()
             ) {
                 ContextCompat.startForegroundService(
@@ -965,9 +974,7 @@ class MainActivity : AppCompatActivity() {
         HatNfcBootstrapProvider.enableNfcDispatch(this)
         // HiBy does not dispatch the accessory-attach intent; adopt on foreground instead.
         adoptConnectedAccessoryIfPresent()
-        if (usbInputDesired()) {
-            requestUsbAccessoryPermissionIfNeeded()
-        }
+        startUsbSync()
 
         val currentRemoteVol = AudioCaptureService.remoteVolumePercent.get()
         sliderRemoteVol.value = currentRemoteVol.toFloat()
@@ -988,6 +995,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        usbSyncJob?.cancel()
+        usbSyncJob = null
         // Alerts raised from now on go to the heads-up notification path instead of a Snackbar.
         UserAlertCenter.uiVisible = false
         HatNfcBootstrapProvider.disableNfcDispatch(this)
@@ -2529,8 +2538,16 @@ class MainActivity : AppCompatActivity() {
     private fun observeTelemetry() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                StreamState.telemetry.collect { t ->
-                    renderTelemetry(t)
+                launch {
+                    StreamState.telemetry.collect { t ->
+                        renderTelemetry(t)
+                    }
+                }
+                launch {
+                    // Keep the USB-mode button/status in sync with the real USB service state.
+                    com.example.audiostreamer.usb.UsbState.state.collect {
+                        updateModeAndButtonUi()
+                    }
                 }
             }
         }
@@ -2797,11 +2814,9 @@ class MainActivity : AppCompatActivity() {
      * Request the AOA accessory permission from this Activity (not the Service) so the system's
      * "allow" dialog reliably appears. Safe when there is no accessory or we already have it.
      */
-    private fun requestUsbAccessoryPermissionIfNeeded() {
+    private fun requestUsbAccessoryPermission(accessory: UsbAccessory) {
         try {
             val usb = getSystemService(UsbManager::class.java) ?: return
-            val accessory = usb.accessoryList?.firstOrNull() ?: return
-            if (usb.hasPermission(accessory)) return
             AppLogger.i("MainActivity", "USB mode: requesting accessory permission")
             val flags = PendingIntent.FLAG_UPDATE_CURRENT or
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
@@ -2817,13 +2832,62 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Drives USB mode toward "listening", gated on the accessory permission. Listening (the USB
+     * service) starts ONLY once permission is granted, so we never arm it before the user allows —
+     * which is what produced the broken stop/start-again state.
+     */
+    private fun syncUsbModeState() {
+        if (currentMode != Mode.USB) return
+        val usb = getSystemService(UsbManager::class.java) ?: return
+        val accessory = try {
+            usb.accessoryList?.firstOrNull()
+        } catch (_: Exception) {
+            null
+        }
+        if (accessory == null) {
+            // No accessory yet — the host's AOA handshake will bring one; nothing to grant.
+            updateModeAndButtonUi()
+            return
+        }
+        if (usb.hasPermission(accessory)) {
+            usbPermissionRequestedFor = null
+            if (!com.example.audiostreamer.usb.UsbPcmService.isRunning.get()) {
+                AppLogger.i("MainActivity", "USB mode: permission present — starting USB input")
+                startUsbInput()
+            }
+        } else {
+            val id = accessory.serial?.takeIf { it.isNotBlank() }
+                ?: accessory.model?.takeIf { it.isNotBlank() }
+                ?: "accessory"
+            if (usbPermissionRequestedFor != id) {
+                usbPermissionRequestedFor = id
+                requestUsbAccessoryPermission(accessory)
+            }
+        }
+        updateModeAndButtonUi()
+    }
+
+    /** While USB mode is in the foreground, keep polling for the accessory + permission. */
+    private fun startUsbSync() {
+        usbSyncJob?.cancel()
+        usbSyncJob = lifecycleScope.launch {
+            while (true) {
+                if (currentMode == Mode.USB) syncUsbModeState()
+                kotlinx.coroutines.delay(1000L)
+            }
+        }
+    }
+
     private val usbPermissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != ACTION_USB_ACCESSORY_PERMISSION) return
             val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
             AppLogger.i("MainActivity", "USB mode: accessory permission granted=$granted")
+            usbPermissionRequestedFor = null
             if (granted && currentMode == Mode.USB) {
-                startUsbInput()
+                // Only now start listening.
+                syncUsbModeState()
             }
             updateModeAndButtonUi()
         }
@@ -2849,15 +2913,6 @@ class MainActivity : AppCompatActivity() {
             )
         }
     }
-
-    /**
-     * True when the USB input should be armed: network Receive is listening, or USB mode is active.
-     * USB mode is host-driven, so it does not need the network receiver running.
-     */
-    private fun usbInputDesired(): Boolean =
-        AudioSinkService.isRunning.get() ||
-            currentMode == Mode.USB ||
-            com.example.audiostreamer.usb.UsbPcmService.isRunning.get()
 
     private fun updateModeAndButtonUi() {
         val isSenderActive = AudioCaptureService.isRunning.get()
@@ -2995,7 +3050,6 @@ class MainActivity : AppCompatActivity() {
                     b.iconTint = ColorStateList.valueOf(colorTextSecondary)
                 }
 
-                tvModeGuide?.text = "Wired USB input — the desktop ASLC Node controls playback"
                 cardReceiverDiscoverable.visibility = View.GONE
                 layoutSavedProfilesSection.visibility = View.GONE
                 layoutDiscoverySection.visibility = View.GONE
@@ -3003,13 +3057,27 @@ class MainActivity : AppCompatActivity() {
                 layoutVolumeControl.visibility = View.GONE
                 layoutAdvancedHeader.visibility = View.GONE
                 layoutAdvancedContent.visibility = View.GONE
-                val usbArmed = com.example.audiostreamer.usb.UsbPcmService.isRunning.get()
+
+                // Button + status driven by the real USB state (never stale).
+                val usbRunning = com.example.audiostreamer.usb.UsbPcmService.isRunning.get()
+                val usbStreaming = com.example.audiostreamer.usb.UsbState.state.value.streaming
+                val waitingPermission = !usbRunning && usbPermissionRequestedFor != null
                 btnAction.visibility = View.VISIBLE
                 btnAction.isEnabled = true
-                btnAction.text = if (usbArmed) "Stop USB input" else "Start USB input"
-                btnAction.setIconResource(if (usbArmed) R.drawable.ic_stop else R.drawable.ic_play)
+                btnAction.text = when {
+                    usbRunning -> "Stop USB input"
+                    waitingPermission -> "Cancel"
+                    else -> "Start USB input"
+                }
+                btnAction.setIconResource(if (usbRunning) R.drawable.ic_stop else R.drawable.ic_play)
                 btnAction.backgroundTintList =
-                    ColorStateList.valueOf(if (usbArmed) colorRed else colorPrimary)
+                    ColorStateList.valueOf(if (usbRunning) colorRed else colorPrimary)
+                tvModeGuide?.text = when {
+                    usbStreaming -> "USB streaming — controlled by the desktop node"
+                    usbRunning -> "USB input armed — waiting for the desktop node"
+                    waitingPermission -> "Waiting for the accessory permission…"
+                    else -> "Wired USB input — press Start, then allow the permission prompt"
+                }
             }
         }
         updateNfcUi(HatNfcBootstrapProvider.state.value)
