@@ -213,18 +213,6 @@
                         app:iconGravity="textStart"
                         app:iconPadding="6dp"
                         app:iconSize="18dp" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btn_mode_usb"
-                        style="?attr/materialButtonOutlinedStyle"
-                        android:layout_width="0dp"
-                        android:layout_height="match_parent"
-                        android:layout_weight="1"
-                        android:text="@string/mode_usb"
-                        android:textSize="13sp"
-                        android:textStyle="bold"
-                        android:textColor="@color/text_primary"
-                        app:strokeColor="@color/card_stroke" />
                 </com.google.android.material.button.MaterialButtonToggleGroup>
 
                 <!-- Currently Playing Media & Remote Controls Card -->

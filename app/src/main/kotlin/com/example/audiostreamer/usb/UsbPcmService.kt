@@ -77,8 +77,6 @@ class UsbPcmService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var transport: AoaUsbTransport? = null
-    /** Identity (serial, else manufacturer+model) of the accessory currently adopted. */
-    private var adoptedAccessoryId: String? = null
     private var receiver: UsbPcmReceiver? = null
     private var ring: PcmRingBuffer? = null
     private var stats: UsbPcmStats? = null
@@ -213,16 +211,6 @@ class UsbPcmService : Service() {
 
     // ---- Attach / detach --------------------------------------------------------------------
 
-    /** A stable identity for an attached accessory (serial, else manufacturer+model). */
-    private fun accessoryIdentity(accessory: UsbAccessory): String {
-        val serial = accessory.serial?.trim().orEmpty()
-        if (serial.isNotEmpty()) return serial
-        return listOfNotNull(accessory.manufacturer, accessory.model)
-            .joinToString(" ")
-            .trim()
-            .ifEmpty { "unknown" }
-    }
-
     @Synchronized
     private fun onAccessoryAttached(accessory: UsbAccessory) {
         // This method is reached under a startForegroundService() contract from every entry path
@@ -235,19 +223,10 @@ class UsbPcmService : Service() {
         // (its START is lost, then the app rejects every PCM frame as "PCM_DATA before START").
         // A genuine re-attach clears the transport via DETACHED or a pump EOF first, so a live
         // transport here means this accessory is already adopted - ignore the duplicate.
-        // Ignore a duplicate adopt of the SAME accessory, but never ignore a DIFFERENT one: when the
-        // user switches phones back-to-back the previous session's transport can still look alive,
-        // and ignoring the new accessory wedged the input until the service was restarted.
-        val identity = accessoryIdentity(accessory)
         if (transport?.isAlive == true) {
-            if (identity == adoptedAccessoryId) {
-                logTransport("session already active - ignoring duplicate adopt")
-                return
-            }
-            logTransport("different accessory attached ($identity) - replacing the active session")
-            teardownSession()
+            logTransport("session already active - ignoring duplicate adopt")
+            return
         }
-        adoptedAccessoryId = identity
 
         // openAccessory() requires the accessory permission. Primary grant path: the system
         // launches MainActivity from the ACCESSORY_ATTACHED filter and grants it implicitly.
@@ -418,7 +397,6 @@ class UsbPcmService : Service() {
         try { output?.shutdown() } catch (_: Exception) {}
         try { transport?.close() } catch (_: Exception) {}
         transport = null
-        adoptedAccessoryId = null
         receiver = null
         output = null
         ring = null
