@@ -26,6 +26,8 @@ class UsbPcmReceiver(
     private val latencyProvider: () -> Int = { 0 },
     /** The device's audio-output characteristics, advertised to the host in AUDIO_INFO. */
     private val audioInfo: () -> AslcPayload.AudioInfo = { AslcPayload.AudioInfo(0, 0, 0) },
+    /** This node's display name, advertised to the host in HELLO (usually the device name). */
+    private val deviceName: () -> String = { "Android" },
     private val listener: Listener = NOOP_LISTENER,
     private val verboseLogging: () -> Boolean = { false }
 ) {
@@ -55,7 +57,7 @@ class UsbPcmReceiver(
 
     fun sendHelloAndCapabilities() {
         val caps = capabilities()
-        writeMessage(AslcProtocol.MSG_HELLO, AslcPayload.helloPayload(AslcProtocol.PROTOCOL_VERSION, isDevice = true, roleTag = "Android"))
+        writeMessage(AslcProtocol.MSG_HELLO, AslcPayload.helloPayload(AslcProtocol.PROTOCOL_VERSION, isDevice = true, roleTag = deviceName()))
         writeMessage(AslcProtocol.MSG_CAPABILITIES, AslcPayload.capabilitiesPayload(caps))
         val info = audioInfo()
         writeMessage(AslcProtocol.MSG_AUDIO_INFO, AslcPayload.audioInfoPayload(info.outputSampleRate, info.outputFramesPerBuffer, info.flags))
@@ -157,7 +159,7 @@ class UsbPcmReceiver(
                 } else {
                     transition(State.HELLO_SEEN)
                     // Reply with our greeting + capabilities so the host knows what it can ask for.
-                    writeMessage(AslcProtocol.MSG_HELLO, AslcPayload.helloPayload(AslcProtocol.PROTOCOL_VERSION, isDevice = true, roleTag = "Android"))
+                    writeMessage(AslcProtocol.MSG_HELLO, AslcPayload.helloPayload(AslcProtocol.PROTOCOL_VERSION, isDevice = true, roleTag = deviceName()))
                     writeMessage(AslcProtocol.MSG_CAPABILITIES, AslcPayload.capabilitiesPayload(capabilities()))
                     transition(State.CAPABLES_SENT)
                 }
