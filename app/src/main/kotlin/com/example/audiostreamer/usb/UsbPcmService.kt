@@ -27,6 +27,7 @@ import com.example.audiostreamer.HatDiagnostics
 import com.example.audiostreamer.MainActivity
 import com.example.audiostreamer.R
 import com.example.audiostreamer.UserAlertCenter
+import com.example.audiostreamer.node.LocalNodeManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -296,6 +297,7 @@ class UsbPcmService : Service() {
             stats = s,
             latencyProvider = { output?.bufferedMs() ?: 0 },
             audioInfo = { deviceAudioInfo() },
+            deviceName = { usbDeviceName() },
             verboseLogging = { HatDiagnostics.isPacketLoggingEnabled() || BuildConfig.DEBUG },
             listener = receiverListener
         )
@@ -504,6 +506,18 @@ class UsbPcmService : Service() {
         val rate = am?.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: 0
         val frames = am?.getProperty(AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER)?.toIntOrNull() ?: 0
         return AslcPayload.AudioInfo(rate, frames, 0)
+    }
+
+    /**
+     * This node's display name, sent to the host in HELLO so the PC can label the device. Uses the
+     * HAT node name (usually the device name, user-editable), falling back to Build.MODEL.
+     */
+    private fun usbDeviceName(): String {
+        val nodeName = runCatching { LocalNodeManager.getLocalNode().name }.getOrNull()
+        val raw = nodeName?.takeIf { it.isNotBlank() }
+            ?: Build.MODEL?.takeIf { it.isNotBlank() }
+            ?: "Android"
+        return raw.replace(Regex("[\\p{Cntrl}]"), "").trim().take(64).ifBlank { "Android" }
     }
 
     private fun ensureDiagnosticsSectionRegistered() {
