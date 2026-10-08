@@ -2526,6 +2526,12 @@ class MainActivity : AppCompatActivity() {
                         updateModeAndButtonUi()
                     }
                 }
+                launch {
+                    // And with the USB controller's phase (e.g. the host stopped → Idle).
+                    com.example.audiostreamer.usb.UsbConnectionController.phase.collect {
+                        updateModeAndButtonUi()
+                    }
+                }
             }
         }
     }
@@ -2834,6 +2840,7 @@ class MainActivity : AppCompatActivity() {
                 btnModeUsb.backgroundTintList = ColorStateList.valueOf(colorCard)
                 btnModeUsb.setTextColor(colorTextSecondary)
                 btnAction.visibility = View.VISIBLE
+                btnAction.alpha = 1f
 
                 tvModeGuide?.text = "Broadcast audio to nearby speakers, receivers, or devices"
                 cardReceiverDiscoverable.visibility = View.GONE
@@ -2888,6 +2895,7 @@ class MainActivity : AppCompatActivity() {
                 btnModeUsb.backgroundTintList = ColorStateList.valueOf(colorCard)
                 btnModeUsb.setTextColor(colorTextSecondary)
                 btnAction.visibility = View.VISIBLE
+                btnAction.alpha = 1f
 
                 tvModeGuide?.text = "Accept and play audio streams from nearby transmitters"
                 cardReceiverDiscoverable.visibility = View.VISIBLE
