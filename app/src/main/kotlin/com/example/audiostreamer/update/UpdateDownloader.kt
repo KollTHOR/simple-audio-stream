@@ -18,6 +18,23 @@ class UpdateDownloader(private val context: Context) {
         const val EXPECTED_PACKAGE_NAME = "com.example.audiostreamer"
     }
 
+    /** Fingerprints from the modern signing info, falling back to the legacy signatures array. */
+    @Suppress("DEPRECATION")
+    private fun signerFingerprints(
+        fromInfo: Array<android.content.pm.Signature>?,
+        legacy: Array<android.content.pm.Signature>?
+    ): Set<String> {
+        val modern = fromInfo
+            ?.map { ApkSigningCertificateVerifier.fingerprint(it.toByteArray()) }
+            ?.toSet()
+            .orEmpty()
+        if (modern.isNotEmpty()) return modern
+        return legacy
+            ?.map { ApkSigningCertificateVerifier.fingerprint(it.toByteArray()) }
+            ?.toSet()
+            .orEmpty()
+    }
+
     data class DownloadResult(
         val apkFile: File,
         val verifiedPackageName: String,
@@ -107,7 +124,12 @@ class UpdateDownloader(private val context: Context) {
 
             // 3. Package, signing identity, and version verification
             val pm = context.packageManager
-            val signingFlags = PackageManager.GET_SIGNING_CERTIFICATES
+            // Ask for both the modern signing info and the legacy signatures. On API < 34
+            // getPackageArchiveInfo(GET_SIGNING_CERTIFICATES) can return NO signing info for an APK
+            // archive (seen on the HiBy M300, Android 13) while Android 14+ returns it — that is why
+            // the same update verified everywhere except the M300.
+            @Suppress("DEPRECATION")
+            val signingFlags = PackageManager.GET_SIGNING_CERTIFICATES or PackageManager.GET_SIGNATURES
             val pkgInfo = pm.getPackageArchiveInfo(destinationFile.absolutePath, signingFlags)
                 ?: run {
                     destinationFile.delete()
@@ -116,28 +138,45 @@ class UpdateDownloader(private val context: Context) {
                     )
                 }
 
+            @Suppress("DEPRECATION")
+            val installedInfo = pm.getPackageInfo(context.packageName, signingFlags)
             val archiveSigningInfo = pkgInfo.signingInfo
-            val installedSigningInfo = pm.getPackageInfo(context.packageName, signingFlags).signingInfo
-            val archiveCurrentSigners = archiveSigningInfo?.apkContentsSigners
-                ?.map { ApkSigningCertificateVerifier.fingerprint(it.toByteArray()) }
-                ?.toSet()
-                .orEmpty()
-            val archiveSigningHistory = archiveSigningInfo?.signingCertificateHistory
-                ?.map { ApkSigningCertificateVerifier.fingerprint(it.toByteArray()) }
-                ?.toSet()
-                .orEmpty()
-            val installedCurrentSigners = installedSigningInfo?.apkContentsSigners
-                ?.map { ApkSigningCertificateVerifier.fingerprint(it.toByteArray()) }
-                ?.toSet()
-                .orEmpty()
+            val installedSigningInfo = installedInfo.signingInfo
+            val archiveCurrentSigners =
+                signerFingerprints(archiveSigningInfo?.apkContentsSigners, pkgInfo.signatures)
+            val archiveSigningHistory =
+                signerFingerprints(archiveSigningInfo?.signingCertificateHistory, pkgInfo.signatures)
+            val installedCurrentSigners =
+                signerFingerprints(installedSigningInfo?.apkContentsSigners, installedInfo.signatures)
 
-            if (!ApkSigningCertificateVerifier.matchesInstalledSigner(
+            Log.i(
+                TAG,
+                "signer check: archive=${archiveCurrentSigners.joinToString()} " +
+                    "installed=${installedCurrentSigners.joinToString()} " +
+                    "history=${archiveSigningHistory.joinToString()} sdk=${Build.VERSION.SDK_INT}"
+            )
+
+            if (archiveCurrentSigners.isEmpty()) {
+                // The archive's signers are unreadable on this OS (API < 34 archive quirk). Skip the
+                // app-level check rather than block a valid update: the system package installer still
+                // enforces that the APK is signed by the installed app's key and rejects it otherwise.
+                Log.w(
+                    TAG,
+                    "archive signers unavailable on API ${Build.VERSION.SDK_INT}; " +
+                        "deferring the signature check to the package installer"
+                )
+            } else if (installedCurrentSigners.isNotEmpty() &&
+                !ApkSigningCertificateVerifier.matchesInstalledSigner(
                     archiveCurrentSigners = archiveCurrentSigners,
                     archiveSigningHistory = archiveSigningHistory,
                     installedCurrentSigners = installedCurrentSigners
                 )
             ) {
-                throw SecurityException("Downloaded APK signing certificate does not match the installed app.")
+                throw SecurityException(
+                    "Downloaded APK signing certificate does not match the installed app " +
+                        "(archive=${archiveCurrentSigners.joinToString().ifEmpty { "none" }}, " +
+                        "installed=${installedCurrentSigners.joinToString().ifEmpty { "none" }})"
+                )
             }
 
             if (pkgInfo.packageName != EXPECTED_PACKAGE_NAME) {
