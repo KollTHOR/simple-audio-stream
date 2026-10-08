@@ -68,7 +68,8 @@ class MainActivity : AppCompatActivity() {
 
     private enum class Mode {
         TRANSMITTER,
-        RECEIVER
+        RECEIVER,
+        USB
     }
 
     private lateinit var layoutIpPill: LinearLayout
@@ -92,6 +93,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var toggleModeGroup: MaterialButtonToggleGroup
     private lateinit var btnModeTransmitter: MaterialButton
     private lateinit var btnModeReceiver: MaterialButton
+    private lateinit var btnModeUsb: MaterialButton
     private var tvModeGuide: TextView? = null
 
     // Redesigned Connection Setup & Profiles
@@ -519,6 +521,7 @@ class MainActivity : AppCompatActivity() {
         toggleModeGroup = findViewById(R.id.toggle_mode_group)
         btnModeTransmitter = findViewById(R.id.btn_mode_transmitter)
         btnModeReceiver = findViewById(R.id.btn_mode_receiver)
+        btnModeUsb = findViewById(R.id.btn_mode_usb)
 
         layoutSavedProfilesSection = findViewById(R.id.layout_saved_profiles_section)
         tvSavedProfilesTitle = findViewById(R.id.tv_saved_profiles_title)
@@ -803,14 +806,22 @@ class MainActivity : AppCompatActivity() {
 
         toggleModeGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
             if (isChecked) {
-                val newMode = if (checkedId == R.id.btn_mode_transmitter) {
-                    Mode.TRANSMITTER
-                } else {
-                    Mode.RECEIVER
+                val newMode = when (checkedId) {
+                    R.id.btn_mode_transmitter -> Mode.TRANSMITTER
+                    R.id.btn_mode_usb -> Mode.USB
+                    else -> Mode.RECEIVER
                 }
                 if (currentMode != newMode) {
-                    onModeSwitched(currentMode, newMode)
+                    val previous = currentMode
+                    onModeSwitched(previous, newMode)
                     currentMode = newMode
+                    // USB mode is host-driven and fully automatic: arm the input on entry, disarm on
+                    // exit. Nothing to press on the phone (only the accessory-permission prompt).
+                    if (newMode == Mode.USB) {
+                        startUsbInput()
+                    } else if (previous == Mode.USB) {
+                        stopUsbInput()
+                    }
                     syncDiscoveryMode()
                     updateModeAndButtonUi()
                 }
@@ -834,6 +845,9 @@ class MainActivity : AppCompatActivity() {
                     } else {
                         startReceiverWorkflow()
                     }
+                }
+                Mode.USB -> {
+                    // Fully automatic: the action button is hidden in USB mode, nothing to do.
                 }
             }
         }
@@ -865,10 +879,10 @@ class MainActivity : AppCompatActivity() {
             // Gate: only accept USB playback while the receiver is listening. If we are not
             // listening, ignore the attach (the launch still grants accessory permission); the
             // accessory stays connected and is adopted when the user presses "Start listening".
-            if (!AudioSinkService.isRunning.get()) {
+            if (!usbInputDesired()) {
                 com.example.audiostreamer.AppLogger.i(
                     "MainActivity",
-                    "USB: accessory attached while not listening — deferring adoption until Start listening"
+                    "USB: accessory attached while USB input is not armed — ignoring"
                 )
                 return
             }
@@ -894,7 +908,7 @@ class MainActivity : AppCompatActivity() {
             val usbManager = getSystemService(UsbManager::class.java) ?: return
             val accessories = usbManager.accessoryList
             if (!accessories.isNullOrEmpty() &&
-                AudioSinkService.isRunning.get() &&
+                usbInputDesired() &&
                 !com.example.audiostreamer.usb.UsbPcmService.isRunning.get()
             ) {
                 ContextCompat.startForegroundService(
@@ -972,6 +986,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun syncDiscoveryMode() {
         when (currentMode) {
+            Mode.USB -> {
+                // Wired mode: no discovery, no advertisements — the host drives everything.
+                DiscoveryManager.stopReceiverResponder()
+                LanDiscoveryProvider.stopAdvertisement()
+                BleDiscoveryManager.stopAdvertising()
+                com.example.audiostreamer.node.discovery.DiscoveryScanCoordinator.stopScan(this)
+                DiscoveryManager.stopDiscovery()
+                LanDiscoveryProvider.stopDiscovery()
+                BleDiscoveryManager.stopScanning()
+            }
             Mode.TRANSMITTER -> {
                 // 1. Stop all receiver advertisements & responders
                 DiscoveryManager.stopReceiverResponder()
@@ -2047,6 +2071,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun onModeSwitched(oldMode: Mode, newMode: Mode) {
         layoutConnectedDevicesContainer.removeAllViews()
+        if (oldMode == Mode.USB && newMode != Mode.USB) {
+            stopUsbInput()
+        }
         if (oldMode == Mode.RECEIVER && newMode == Mode.TRANSMITTER) {
             BleDiscoveryManager.stopAdvertising()
 
@@ -2741,6 +2768,36 @@ class MainActivity : AppCompatActivity() {
         updateModeAndButtonUi()
     }
 
+    /** Arm the USB PCM input (host-driven). Idempotent. */
+    private fun startUsbInput() {
+        AppLogger.i("MainActivity", "USB mode: arming USB input")
+        ContextCompat.startForegroundService(
+            this,
+            Intent(this, com.example.audiostreamer.usb.UsbPcmService::class.java)
+                .setAction(com.example.audiostreamer.usb.UsbPcmService.ACTION_START)
+        )
+    }
+
+    /** Disarm the USB PCM input. */
+    private fun stopUsbInput() {
+        if (com.example.audiostreamer.usb.UsbPcmService.isRunning.get()) {
+            AppLogger.i("MainActivity", "USB mode: disarming USB input")
+            startService(
+                Intent(this, com.example.audiostreamer.usb.UsbPcmService::class.java)
+                    .setAction(com.example.audiostreamer.usb.UsbPcmService.ACTION_STOP)
+            )
+        }
+    }
+
+    /**
+     * True when the USB input should be armed: network Receive is listening, or USB mode is active.
+     * USB mode is host-driven, so it does not need the network receiver running.
+     */
+    private fun usbInputDesired(): Boolean =
+        AudioSinkService.isRunning.get() ||
+            currentMode == Mode.USB ||
+            com.example.audiostreamer.usb.UsbPcmService.isRunning.get()
+
     private fun updateModeAndButtonUi() {
         val isSenderActive = AudioCaptureService.isRunning.get()
         val isSinkActive = AudioSinkService.isRunning.get()
@@ -2748,6 +2805,7 @@ class MainActivity : AppCompatActivity() {
 
         btnModeTransmitter.isEnabled = !isAnyActive
         btnModeReceiver.isEnabled = !isAnyActive
+        btnModeUsb.isEnabled = !isAnyActive
 
         // Update Toggle buttons styling for dark mode clarity
         val colorPrimary = ContextCompat.getColor(this, R.color.primary)
@@ -2765,6 +2823,10 @@ class MainActivity : AppCompatActivity() {
                 btnModeReceiver.backgroundTintList = ColorStateList.valueOf(colorCard)
                 btnModeReceiver.setTextColor(colorTextSecondary)
                 btnModeReceiver.iconTint = ColorStateList.valueOf(colorTextSecondary)
+
+                btnModeUsb.backgroundTintList = ColorStateList.valueOf(colorCard)
+                btnModeUsb.setTextColor(colorTextSecondary)
+                btnAction.visibility = View.VISIBLE
 
                 tvModeGuide?.text = "Broadcast audio to nearby speakers, receivers, or devices"
                 cardReceiverDiscoverable.visibility = View.GONE
@@ -2816,6 +2878,10 @@ class MainActivity : AppCompatActivity() {
                 btnModeTransmitter.setTextColor(colorTextSecondary)
                 btnModeTransmitter.iconTint = ColorStateList.valueOf(colorTextSecondary)
 
+                btnModeUsb.backgroundTintList = ColorStateList.valueOf(colorCard)
+                btnModeUsb.setTextColor(colorTextSecondary)
+                btnAction.visibility = View.VISIBLE
+
                 tvModeGuide?.text = "Accept and play audio streams from nearby transmitters"
                 cardReceiverDiscoverable.visibility = View.VISIBLE
                 updateReceiverDiscoverableBanner()
@@ -2858,6 +2924,26 @@ class MainActivity : AppCompatActivity() {
                         btnAction.backgroundTintList = ColorStateList.valueOf(colorGreen)
                     }
                 }
+            }
+            Mode.USB -> {
+                btnModeUsb.backgroundTintList = ColorStateList.valueOf(colorPrimary)
+                btnModeUsb.setTextColor(Color.WHITE)
+                for (b in listOf(btnModeTransmitter, btnModeReceiver)) {
+                    b.backgroundTintList = ColorStateList.valueOf(colorCard)
+                    b.setTextColor(colorTextSecondary)
+                    b.iconTint = ColorStateList.valueOf(colorTextSecondary)
+                }
+
+                tvModeGuide?.text = "Wired USB input — the desktop ASLC Node controls playback"
+                cardReceiverDiscoverable.visibility = View.GONE
+                layoutSavedProfilesSection.visibility = View.GONE
+                layoutDiscoverySection.visibility = View.GONE
+                layoutReceiverP2p.visibility = View.GONE
+                layoutVolumeControl.visibility = View.GONE
+                layoutAdvancedHeader.visibility = View.GONE
+                layoutAdvancedContent.visibility = View.GONE
+                // Fully automatic: no action button in USB mode.
+                btnAction.visibility = View.GONE
             }
         }
         updateNfcUi(HatNfcBootstrapProvider.state.value)
