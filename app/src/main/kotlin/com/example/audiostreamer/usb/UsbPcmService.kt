@@ -213,9 +213,21 @@ class UsbPcmService : Service() {
 
     // ---- Attach / detach --------------------------------------------------------------------
 
-    /** A stable identity for an attached accessory (serial, else manufacturer+model). */
+    /**
+     * A stable identity for an attached accessory. The serial is only read when we hold the
+     * accessory permission — `UsbAccessory.getSerial()` is permission-gated and throws
+     * SecurityException before the grant.
+     */
     private fun accessoryIdentity(accessory: UsbAccessory): String {
-        val serial = accessory.serial?.trim().orEmpty()
+        val serial = if (usbManager.hasPermission(accessory)) {
+            try {
+                accessory.serial?.trim().orEmpty()
+            } catch (_: Exception) {
+                ""
+            }
+        } else {
+            ""
+        }
         if (serial.isNotEmpty()) return serial
         return listOfNotNull(accessory.manufacturer, accessory.model)
             .joinToString(" ")
