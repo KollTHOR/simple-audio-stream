@@ -122,10 +122,8 @@ class UsbPcmService : Service() {
         ContextCompat.registerReceiver(this, accessoryReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         ensureDiagnosticsSectionRegistered()
 
-        // Adopt an accessory that is already connected when we start (late service launch).
-        tryAdoptAccessory()
-        // And keep watching: on some vendor ROMs the attach broadcast never reaches the app, so
-        // the host may connect at any time after receiver mode armed us.
+        // Adoption happens on ACTION_START (a fresh session) and from the poller — not here, so a
+        // Start never races an onCreate adopt.
         startAdoptPoller()
     }
 
@@ -179,7 +177,13 @@ class UsbPcmService : Service() {
                 startForegroundCompat()
                 logTransport("input enabled — waiting for USB host")
                 UsbState.update { it.copy(statusDetail = "Waiting for host") }
-                // We may have been started BY the attach event (via MainActivity): adopt now.
+                // A Start is always a FRESH session. A dead transport still reports isAlive (it is
+                // only cleared by close()), so without this teardown the duplicate-adopt guard keeps
+                // a stale session and the phone has to be stopped/started again to connect.
+                if (transport != null) {
+                    logTransport("fresh start — replacing the previous session")
+                    teardownSession()
+                }
                 tryAdoptAccessory()
             }
             ACTION_ACCESSORY_PERMISSION_RESULT -> {

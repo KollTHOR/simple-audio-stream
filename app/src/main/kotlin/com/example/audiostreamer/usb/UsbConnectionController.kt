@@ -61,10 +61,10 @@ object UsbConnectionController {
     /** True once the user (or USB mode) wants the input running. */
     private var wanted = false
 
-    /** Start (or re-arm) the USB input. Idempotent. */
+    /** Start (or re-arm) the USB input. Idempotent. A Start always begins a fresh session. */
     fun start(activity: Activity) {
         wanted = true
-        sync(activity)
+        sync(activity, force = true)
     }
 
     /** Stop the USB input and forget the pending permission request. */
@@ -81,7 +81,9 @@ object UsbConnectionController {
     }
 
     /** Recompute the phase from the live USB state. Call on the poll tick and on accessory attach. */
-    fun sync(activity: Activity) {
+    fun sync(activity: Activity) = sync(activity, force = false)
+
+    private fun sync(activity: Activity, force: Boolean) {
         if (!wanted) {
             _phase.value = Phase.IDLE
             return
@@ -98,7 +100,8 @@ object UsbConnectionController {
         }
         if (usb.hasPermission(accessory)) {
             requestedFor = null
-            if (!UsbPcmService.isRunning.get()) {
+            // force = a Start / a permission grant → always begin a fresh session.
+            if (force || !UsbPcmService.isRunning.get()) {
                 arm(activity)
             }
             _phase.value = when {
@@ -123,7 +126,8 @@ object UsbConnectionController {
         AppLogger.i(TAG, "accessory permission granted=$granted")
         requestedFor = null
         if (granted) {
-            sync(activity)
+            // A fresh session now that we hold the permission.
+            sync(activity, force = true)
         } else {
             _phase.value = if (wanted) Phase.WAITING_FOR_HOST else Phase.IDLE
         }
