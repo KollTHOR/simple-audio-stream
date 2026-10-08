@@ -133,6 +133,17 @@ object UsbConnectionController {
         }
     }
 
+    /**
+     * The host stopped the stream (ASLC STOP) or the pipe closed, or the accessory detached. Return
+     * to Idle so the phone UI matches the PC — stopping on either side stops both.
+     */
+    fun onRemoteStopped() {
+        AppLogger.i(TAG, "session ended by the host/accessory — disarming")
+        wanted = false
+        requestedFor = null
+        _phase.value = Phase.IDLE
+    }
+
     private fun arm(activity: Activity) {
         AppLogger.i(TAG, "arming USB input")
         ContextCompat.startForegroundService(

@@ -354,6 +354,8 @@ class UsbPcmService : Service() {
         logTransport("disconnected")
         grantRequested.set(false)
         teardownSession()
+        // The accessory is gone: go back to Idle so the UI matches (button back to Start).
+        UsbConnectionController.onRemoteStopped()
         UsbState.update {
             it.copy(connected = false, streaming = false, statusDetail = "Disconnected", format = null, bytesPerSec = 0, framesPerSec = 0)
         }
@@ -421,7 +423,20 @@ class UsbPcmService : Service() {
             UsbPcmReceiver.EndReason.MALFORMED
         }
         logTransport("pump ended ($reason)")
-        mainHandler.post { if (reason != UsbPcmReceiver.EndReason.STOPPED) teardownSession() }
+        mainHandler.post {
+            // A host stop (STOPPED) or a closed pipe (EOF) is a full stop: tell the controller so
+            // the phone returns to Idle, then tear down and disarm — stopping on the PC stops the
+            // phone too.
+            val remoteStop = reason == UsbPcmReceiver.EndReason.STOPPED ||
+                reason == UsbPcmReceiver.EndReason.EOF
+            if (remoteStop) {
+                UsbConnectionController.onRemoteStopped()
+            }
+            teardownSession()
+            if (remoteStop) {
+                stopSelf()
+            }
+        }
     }
 
     // ---- Teardown ---------------------------------------------------------------------------
