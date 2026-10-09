@@ -12,6 +12,10 @@ import kotlinx.coroutines.flow.asStateFlow
 data class UsbUiState(
     val connected: Boolean = false,
     val streaming: Boolean = false,
+    /** An AOA accessory is attached (the desktop host has performed the handshake). */
+    val accessoryPresent: Boolean = false,
+    /** The accessory is attached but we do not hold its permission yet (dialog pending). */
+    val awaitingPermission: Boolean = false,
     val format: PcmFormat? = null,
     val bytesPerSec: Long = 0L,
     val framesPerSec: Long = 0L,

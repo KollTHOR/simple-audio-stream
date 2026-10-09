@@ -1,39 +1,37 @@
 package com.example.audiostreamer.usb
 
 import android.app.Activity
-import android.app.PendingIntent
 import android.content.Intent
-import android.hardware.usb.UsbAccessory
-import android.hardware.usb.UsbManager
-import android.os.Build
 import androidx.core.content.ContextCompat
 import com.example.audiostreamer.AppLogger
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 
 /**
- * Owns the wired (AOA) USB input lifecycle, fully independent of the wireless modes.
+ * Thin façade over the wired (AOA) USB input.
  *
- * The desktop node is the USB host and the phone is the accessory. This controller is the single
- * place that knows the USB rules:
- *  - find the attached accessory (poll / attach),
- *  - request the accessory permission from the Activity so the system dialog reliably appears,
- *  - **wait for the user to accept** before arming [UsbPcmService] (arming early produced a broken
- *    stop/start-again state),
- *  - expose one [phase] the UI renders.
+ * The USB lifecycle is owned entirely by [UsbPcmService]: it polls for the accessory, requests the
+ * accessory permission (once), adopts the pipe and streams. This object only remembers whether the
+ * user wants USB input and derives a single [Phase] from the live [UsbState].
  *
- * The UI stays dumb: it renders [phase] + [UsbState] and forwards Start/Stop. Nothing here touches
- * the network path.
+ * Why: the accessory only exists *after* the desktop host performs the AOA handshake, so a one-shot
+ * "check the accessory list now" can never be reliable, and doing it from the Activity meant the
+ * phone only noticed the host on resume. Polling in the service makes the two sides converge no
+ * matter which one starts first, with no ordering constraints.
+ *
+ * The wireless path is untouched.
  */
 object UsbConnectionController {
     private const val TAG = "UsbConnection"
 
-    /** Broadcast action for our own accessory-permission result. */
-    const val ACTION_PERMISSION_RESULT = "com.example.audiostreamer.USB_ACCESSORY_PERMISSION"
-
     enum class Phase {
-        /** Not wanted (Start not pressed / stopped). */
+        /** Not wanted (USB mode not active / stopped). */
         IDLE,
 
         /** Wanted, but no accessory is attached yet (the host's handshake will bring one). */
@@ -52,84 +50,57 @@ object UsbConnectionController {
         STREAMING
     }
 
-    private val _phase = MutableStateFlow(Phase.IDLE)
-    val phase: StateFlow<Phase> = _phase.asStateFlow()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    /** The accessory identity we have already asked for (avoids dialog spam). */
-    private var requestedFor: String? = null
+    /** True once the user (USB mode) wants the input running. */
+    private val wanted = MutableStateFlow(false)
 
-    /** True once the user (or USB mode) wants the input running. */
-    private var wanted = false
+    /**
+     * The single phase the UI renders — a pure function of the live USB state (+ whether the user
+     * wants input), so it is never stale and needs no Activity to update.
+     */
+    val phase: StateFlow<Phase> = combine(wanted, UsbState.state) { want, st ->
+        when {
+            st.streaming -> Phase.STREAMING
+            st.connected -> Phase.CONNECTED
+            st.awaitingPermission -> Phase.REQUESTING_PERMISSION
+            st.accessoryPresent -> Phase.ARMED
+            want -> Phase.WAITING_FOR_HOST
+            else -> Phase.IDLE
+        }
+    }.stateIn(scope, SharingStarted.Eagerly, Phase.IDLE)
 
-    /** Start (or re-arm) the USB input. Idempotent. A Start always begins a fresh session. */
+    /** Start (or re-arm) the USB input. Idempotent; the service always begins a fresh session. */
     fun start(activity: Activity) {
-        wanted = true
-        sync(activity, force = true)
+        if (wanted.value && UsbPcmService.isRunning.get()) {
+            // Already armed — never restart a live session from an incidental trigger (cable
+            // broadcast, mode re-entry).
+            return
+        }
+        wanted.value = true
+        AppLogger.i(TAG, "arming USB input")
+        try {
+            ContextCompat.startForegroundService(
+                activity,
+                Intent(activity, UsbPcmService::class.java).setAction(UsbPcmService.ACTION_START)
+            )
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "could not start USB input service: ${e.message}")
+        }
     }
 
-    /** Stop the USB input and forget the pending permission request. */
+    /** Stop the USB input. */
     fun stop(activity: Activity) {
-        wanted = false
-        requestedFor = null
+        wanted.value = false
         if (UsbPcmService.isRunning.get()) {
             AppLogger.i(TAG, "disarming USB input")
-            activity.startService(
-                Intent(activity, UsbPcmService::class.java).setAction(UsbPcmService.ACTION_STOP)
-            )
-        }
-        _phase.value = Phase.IDLE
-    }
-
-    /** Recompute the phase from the live USB state. Call on the poll tick and on accessory attach. */
-    fun sync(activity: Activity) = sync(activity, force = false)
-
-    private fun sync(activity: Activity, force: Boolean) {
-        if (!wanted) {
-            _phase.value = Phase.IDLE
-            return
-        }
-        val usb = activity.getSystemService(UsbManager::class.java) ?: return
-        val accessory = try {
-            usb.accessoryList?.firstOrNull()
-        } catch (_: Exception) {
-            null
-        }
-        if (accessory == null) {
-            _phase.value = if (UsbPcmService.isRunning.get()) Phase.ARMED else Phase.WAITING_FOR_HOST
-            return
-        }
-        if (usb.hasPermission(accessory)) {
-            requestedFor = null
-            // force = a Start / a permission grant → always begin a fresh session.
-            if (force || !UsbPcmService.isRunning.get()) {
-                arm(activity)
+            try {
+                activity.startService(
+                    Intent(activity, UsbPcmService::class.java).setAction(UsbPcmService.ACTION_STOP)
+                )
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "could not stop USB input service: ${e.message}")
             }
-            _phase.value = when {
-                UsbState.state.value.streaming -> Phase.STREAMING
-                UsbState.state.value.connected -> Phase.CONNECTED
-                else -> Phase.ARMED
-            }
-        } else {
-            // Permission required. NEVER read accessory.serial here: getSerial() is permission-gated
-            // and throws SecurityException before the grant.
-            val id = safeIdentity(accessory)
-            if (requestedFor != id) {
-                requestedFor = id
-                requestPermission(activity, usb, accessory)
-            }
-            _phase.value = Phase.REQUESTING_PERMISSION
-        }
-    }
-
-    /** Handle the accessory-permission result (from the Activity's broadcast receiver). */
-    fun onPermissionResult(activity: Activity, granted: Boolean) {
-        AppLogger.i(TAG, "accessory permission granted=$granted")
-        requestedFor = null
-        if (granted) {
-            // A fresh session now that we hold the permission.
-            sync(activity, force = true)
-        } else {
-            _phase.value = if (wanted) Phase.WAITING_FOR_HOST else Phase.IDLE
         }
     }
 
@@ -139,44 +110,6 @@ object UsbConnectionController {
      */
     fun onRemoteStopped() {
         AppLogger.i(TAG, "session ended by the host/accessory — disarming")
-        wanted = false
-        requestedFor = null
-        _phase.value = Phase.IDLE
+        wanted.value = false
     }
-
-    private fun arm(activity: Activity) {
-        AppLogger.i(TAG, "arming USB input")
-        ContextCompat.startForegroundService(
-            activity,
-            Intent(activity, UsbPcmService::class.java).setAction(UsbPcmService.ACTION_START)
-        )
-    }
-
-    private fun requestPermission(activity: Activity, usb: UsbManager, accessory: UsbAccessory) {
-        try {
-            AppLogger.i(TAG, "requesting accessory permission")
-            val flags = PendingIntent.FLAG_UPDATE_CURRENT or
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    PendingIntent.FLAG_MUTABLE
-                } else {
-                    0
-                }
-            val pi = PendingIntent.getBroadcast(
-                activity,
-                0,
-                Intent(ACTION_PERMISSION_RESULT).setPackage(activity.packageName),
-                flags
-            )
-            usb.requestPermission(accessory, pi)
-        } catch (e: Exception) {
-            AppLogger.i(TAG, "permission request failed: ${e.message}")
-        }
-    }
-
-    /** Identity for de-dup that never touches permission-gated fields. */
-    private fun safeIdentity(accessory: UsbAccessory): String =
-        listOfNotNull(accessory.manufacturer, accessory.model, accessory.description)
-            .joinToString("|")
-            .trim()
-            .ifEmpty { "accessory" }
 }

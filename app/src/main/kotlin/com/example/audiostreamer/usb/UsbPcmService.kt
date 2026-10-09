@@ -130,18 +130,36 @@ class UsbPcmService : Service() {
     /**
      * Poll for a connected accessory while the service is armed. The HiBy M300 framework does not
      * reliably deliver ACTION_USB_ACCESSORY_ATTACHED to the app, so a one-shot adopt at start is
-     * not enough: receiver mode arms this service before the desktop host performs the AOA
-     * handshake, and the accessory appears later.
+     * not enough: the service is armed when the user enters USB mode (or presses Start), and the
+     * accessory appears later once the desktop host performs the AOA handshake. Polling here (not
+     * in the Activity) means the input converges no matter which side starts first, and without
+     * depending on the Activity being foregrounded.
      */
     private fun startAdoptPoller() {
         scope.launch {
             while (isRunning.get()) {
-                if (transport == null && !grantRequested.get()) {
+                val present = accessoryPresent()
+                if (UsbState.state.value.accessoryPresent != present) {
+                    UsbState.update {
+                        it.copy(
+                            accessoryPresent = present,
+                            awaitingPermission = if (present) it.awaitingPermission else false
+                        )
+                    }
+                }
+                if (present && transport == null && !grantRequested.get()) {
                     tryAdoptAccessory()
                 }
                 delay(1000L)
             }
         }
+    }
+
+    /** True when an AOA accessory is attached right now. */
+    private fun accessoryPresent(): Boolean = try {
+        usbManager.accessoryList?.isNotEmpty() == true
+    } catch (_: Exception) {
+        false
     }
 
     /**
@@ -164,7 +182,14 @@ class UsbPcmService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        val action = intent?.action
+        if (action == null) {
+            // System restarted us with no intent (START_STICKY): there is no user request to serve,
+            // so stop cleanly instead of lingering without a foreground notification.
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        when (action) {
             ACTION_STOP -> {
                 // If this is also the service's first start, honor the FGS contract briefly so the
                 // stop can proceed without the did-not-start-foreground kill.
@@ -272,6 +297,13 @@ class UsbPcmService : Service() {
         // (UsbManager.requestPermission(UsbAccessory,…) — API 33+), retried on the result PI;
         // older OSes fall back to a reconnect, which re-fires the filtered attach.
         if (!usbManager.hasPermission(accessory)) {
+            UsbState.update {
+                it.copy(
+                    accessoryPresent = true,
+                    awaitingPermission = true,
+                    statusDetail = "Waiting for permission"
+                )
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 // Ask at most once per attach; the adoption poll runs every second and must not
                 // re-open the dialog while the user is still answering it.
@@ -284,13 +316,11 @@ class UsbPcmService : Service() {
                         Intent(this, UsbPcmService::class.java).setAction(ACTION_ACCESSORY_PERMISSION_RESULT),
                         piFlags
                     )
-                    UsbState.update { it.copy(statusDetail = "Waiting for permission") }
                     try { usbManager.requestPermission(accessory, pi) }
                     catch (e: Exception) { logTransport("requestPermission(accessory) failed: ${e.message}") }
                 }
             } else {
                 logTransport("no accessory permission yet — reconnect the USB cable (attach grants it via the activity filter)")
-                UsbState.update { it.copy(statusDetail = "Waiting for accessory permission") }
                 UserAlertCenter.warn("USB: reconnect the cable so the accessory grant can be issued")
             }
             return
@@ -341,7 +371,14 @@ class UsbPcmService : Service() {
         )
         receiver = rcv
         lastTickMs = 0L
-        UsbState.update { it.copy(connected = true, statusDetail = "Negotiating") }
+        UsbState.update {
+            it.copy(
+                connected = true,
+                accessoryPresent = true,
+                awaitingPermission = false,
+                statusDetail = "Negotiating"
+            )
+        }
 
         // Advertise our capabilities immediately, then start pumping inbound frames.
         rcv.sendHelloAndCapabilities()
@@ -357,7 +394,16 @@ class UsbPcmService : Service() {
         // The accessory is gone: go back to Idle so the UI matches (button back to Start).
         UsbConnectionController.onRemoteStopped()
         UsbState.update {
-            it.copy(connected = false, streaming = false, statusDetail = "Disconnected", format = null, bytesPerSec = 0, framesPerSec = 0)
+            it.copy(
+                connected = false,
+                streaming = false,
+                accessoryPresent = false,
+                awaitingPermission = false,
+                statusDetail = "Disconnected",
+                format = null,
+                bytesPerSec = 0,
+                framesPerSec = 0
+            )
         }
         // Stay alive (START_STICKY) so a re-attach renegotiates automatically.
     }
@@ -457,6 +503,16 @@ class UsbPcmService : Service() {
         stats = null
         UsbState.stats = null
         UsbState.transportState = "DISCONNECTED"
+        UsbState.update {
+            it.copy(
+                connected = false,
+                streaming = false,
+                awaitingPermission = false,
+                format = null,
+                bytesPerSec = 0,
+                framesPerSec = 0
+            )
+        }
         if (startedForeground.compareAndSet(true, false)) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         }
