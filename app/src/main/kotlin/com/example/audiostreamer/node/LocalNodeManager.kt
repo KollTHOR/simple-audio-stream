@@ -1,5 +1,7 @@
 package com.example.audiostreamer.node
 
+import com.example.audiostreamer.AppLogger
+
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
@@ -10,7 +12,6 @@ import com.example.audiostreamer.AudioCodec
 import com.example.audiostreamer.DiscoveryManager
 import com.example.audiostreamer.HatPacket
 import com.example.audiostreamer.WifiDirectManager
-import com.example.audiostreamer.AppLogger as Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -69,7 +70,7 @@ object LocalNodeManager {
 
             _localNode.value = node
             isInitialized = true
-            Log.i(TAG, "Local HAT Node initialized: id=${identity.id}, name='${identity.name}'")
+            AppLogger.i(TAG, "Local HAT Node initialized: id=${identity.id}, name='${identity.name}'")
         }
     }
 
@@ -86,7 +87,7 @@ object LocalNodeManager {
                 activeStreamGeneration = generation,
                 lastSeenEpochMs = System.currentTimeMillis()
             )
-            Log.d(TAG, "Local node state updated: state=$newState, role=$role, gen=$generation")
+            AppLogger.d(TAG, "Local node state updated: state=$newState, role=$role, gen=$generation")
         }
     }
 
@@ -101,7 +102,7 @@ object LocalNodeManager {
             val updatedIdentity = current.identity.copy(name = trimmed)
             persistIdentity(context.applicationContext, updatedIdentity)
             _localNode.value = current.copy(identity = updatedIdentity)
-            Log.i(TAG, "Updated local node name to: '$trimmed'")
+            AppLogger.i(TAG, "Updated local node name to: '$trimmed'")
         }
     }
 
@@ -196,7 +197,7 @@ object LocalNodeManager {
             val internalFile = File(context.filesDir, BACKUP_FILE_NAME)
             internalFile.writeText(identity.toJson().toString())
         } catch (e: Exception) {
-            Log.w(TAG, "Failed writing internal backup identity file: ${e.message}")
+            AppLogger.w(TAG, "Failed writing internal backup identity file: ${e.message}")
         }
 
         // Write external app-storage backup file (if available)
@@ -227,7 +228,7 @@ object LocalNodeManager {
                 } else null
             } else null
         } catch (e: Exception) {
-            Log.w(TAG, "Failed reading backup file ${file.name}: ${e.message}")
+            AppLogger.w(TAG, "Failed reading backup file ${file.name}: ${e.message}")
             null
         }
     }

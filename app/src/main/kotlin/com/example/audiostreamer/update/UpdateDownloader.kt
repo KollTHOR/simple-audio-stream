@@ -1,9 +1,10 @@
 package com.example.audiostreamer.update
 
+import com.example.audiostreamer.AppLogger
+
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
-import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -149,7 +150,7 @@ class UpdateDownloader(private val context: Context) {
             val installedCurrentSigners =
                 signerFingerprints(installedSigningInfo?.apkContentsSigners, installedInfo.signatures)
 
-            Log.i(
+            AppLogger.i(
                 TAG,
                 "signer check: archive=${archiveCurrentSigners.joinToString()} " +
                     "installed=${installedCurrentSigners.joinToString()} " +
@@ -160,7 +161,7 @@ class UpdateDownloader(private val context: Context) {
                 // The archive's signers are unreadable on this OS (API < 34 archive quirk). Skip the
                 // app-level check rather than block a valid update: the system package installer still
                 // enforces that the APK is signed by the installed app's key and rejects it otherwise.
-                Log.w(
+                AppLogger.w(
                     TAG,
                     "archive signers unavailable on API ${Build.VERSION.SDK_INT}; " +
                         "deferring the signature check to the package installer"
@@ -205,7 +206,7 @@ class UpdateDownloader(private val context: Context) {
                 )
             )
         } catch (e: Exception) {
-            Log.e(TAG, "Download failed", e)
+            AppLogger.e(TAG, "Download failed", e)
             if (destinationFile.exists()) destinationFile.delete()
             Result.failure(e)
         }
@@ -226,7 +227,7 @@ class UpdateDownloader(private val context: Context) {
                 null
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed fetching checksum file: ${e.message}")
+            AppLogger.w(TAG, "Failed fetching checksum file: ${e.message}")
             null
         }
     }

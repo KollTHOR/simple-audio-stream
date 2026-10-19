@@ -1,8 +1,9 @@
 package com.example.audiostreamer.node
 
+import com.example.audiostreamer.AppLogger
+
 import com.example.audiostreamer.AudioCodec
 import com.example.audiostreamer.AudioFormatConfig
-import com.example.audiostreamer.AppLogger as Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -59,7 +60,7 @@ object HatMultiStreamManager {
             activeEncoderCodec = codec
             activeEncoderFormat = format
             activeGeneration = generation
-            Log.i(TAG, "Configured shared encoder: codec=${codec.name}, rate=${format.sampleRateHz}, gen=$generation")
+            AppLogger.i(TAG, "Configured shared encoder: codec=${codec.name}, rate=${format.sampleRateHz}, gen=$generation")
         }
     }
 
@@ -99,7 +100,7 @@ object HatMultiStreamManager {
                 existing.health = DestinationHealth.HEALTHY
                 existing.stats.lastSeenEpochMs = System.currentTimeMillis()
                 publishState()
-                Log.i(TAG, "Updated destination ${destNode.name} (${destNode.id}) on link ${link.id}")
+                AppLogger.i(TAG, "Updated destination ${destNode.name} (${destNode.id}) on link ${link.id}")
                 return existing
             }
 
@@ -115,7 +116,7 @@ object HatMultiStreamManager {
             )
             destinations[destNode.id] = newState
             publishState()
-            Log.i(TAG, "Registered new destination ${destNode.name} (${destNode.id}) via ${link.hatTransportType} on link ${link.id}. Total destinations: ${destinations.size}")
+            AppLogger.i(TAG, "Registered new destination ${destNode.name} (${destNode.id}) via ${link.hatTransportType} on link ${link.id}. Total destinations: ${destinations.size}")
             return newState
         }
     }
@@ -138,7 +139,7 @@ object HatMultiStreamManager {
                 // Terminate this destination's stream, but do NOT affect other destinations
                 HatSessionManager.stopStream(removed.stream.id)
                 publishState()
-                Log.i(TAG, "Removed destination ${removed.nodeName} ($nodeId), reason=$reason. Remaining destinations: ${destinations.size}")
+                AppLogger.i(TAG, "Removed destination ${removed.nodeName} ($nodeId), reason=$reason. Remaining destinations: ${destinations.size}")
             }
             return removed
         }
@@ -228,7 +229,7 @@ object HatMultiStreamManager {
             activeEncoderCodec = null
             activeEncoderFormat = null
             publishState()
-            Log.i(TAG, "Cleared all multi-stream destinations")
+            AppLogger.i(TAG, "Cleared all multi-stream destinations")
         }
     }
 

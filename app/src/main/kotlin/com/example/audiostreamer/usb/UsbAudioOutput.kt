@@ -1,10 +1,11 @@
 package com.example.audiostreamer.usb
 
+import com.example.audiostreamer.AppLogger
+
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.os.Build
-import android.util.Log
 
 import com.example.audiostreamer.DriftController
 
@@ -209,7 +210,7 @@ class UsbAudioOutput(
         stopPlayout()
         val t = track
         if (t != null) {
-            try { t.stop() } catch (e: Exception) { Log.d(TAG, "track.stop: ${e.message}") }
+            try { t.stop() } catch (e: Exception) { AppLogger.d(TAG, "track.stop: ${e.message}") }
             // Flush any residual queued playback so a STOP doesn't leak audio after teardown.
             try { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) t.pause() else Unit } catch (_: Exception) {}
         }

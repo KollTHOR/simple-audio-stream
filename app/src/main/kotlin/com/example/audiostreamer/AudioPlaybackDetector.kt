@@ -7,7 +7,6 @@ import android.media.AudioPlaybackConfiguration
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import com.example.audiostreamer.AppLogger as Log
 
 /**
  * Real-time detector for Android audio engine active playback sessions.
@@ -59,7 +58,7 @@ object AudioPlaybackDetector {
         val configs = try {
             audioManager.activePlaybackConfigurations
         } catch (e: Exception) {
-            Log.w(TAG, "Failed retrieving activePlaybackConfigurations: ${e.message}")
+            AppLogger.w(TAG, "Failed retrieving activePlaybackConfigurations: ${e.message}")
             emptyList<AudioPlaybackConfiguration>()
         }
 
@@ -182,9 +181,9 @@ object AudioPlaybackDetector {
                 audioManager.registerAudioPlaybackCallback(callback, Handler(Looper.getMainLooper()))
                 playbackCallback = callback
                 lastReportedFormat = getActiveMediaFormat(context)
-                Log.i(TAG, "Registered AudioPlaybackCallback. Initial state: ${lastReportedFormat?.description}")
+                AppLogger.i(TAG, "Registered AudioPlaybackCallback. Initial state: ${lastReportedFormat?.description}")
             } catch (e: Exception) {
-                Log.w(TAG, "Failed registering AudioPlaybackCallback: ${e.message}")
+                AppLogger.w(TAG, "Failed registering AudioPlaybackCallback: ${e.message}")
             }
         }
     }

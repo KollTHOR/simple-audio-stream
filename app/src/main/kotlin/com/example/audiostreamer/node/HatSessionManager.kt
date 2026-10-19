@@ -1,8 +1,9 @@
 package com.example.audiostreamer.node
 
+import com.example.audiostreamer.AppLogger
+
 import com.example.audiostreamer.AudioCodec
 import com.example.audiostreamer.AudioFormatConfig
-import com.example.audiostreamer.AppLogger as Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -88,7 +89,7 @@ object HatSessionManager {
 
             streams[stream.id] = stream
             publishState()
-            Log.i(TAG, "Stream requested: ${stream.describe()}")
+            AppLogger.i(TAG, "Stream requested: ${stream.describe()}")
             return Result.success(stream)
         }
     }
@@ -118,7 +119,7 @@ object HatSessionManager {
             )
             streams[streamId] = updated
             publishState()
-            Log.i(TAG, "Stream accepted: ${updated.describe()}")
+            AppLogger.i(TAG, "Stream accepted: ${updated.describe()}")
             return Result.success(updated)
         }
     }
@@ -147,7 +148,7 @@ object HatSessionManager {
             )
             streams[streamId] = updated
             publishState()
-            Log.i(TAG, "Stream rejected: ${updated.describe()} reason=$reason")
+            AppLogger.i(TAG, "Stream rejected: ${updated.describe()} reason=$reason")
             return Result.success(updated)
         }
     }
@@ -173,7 +174,7 @@ object HatSessionManager {
             )
             streams[streamId] = updated
             publishState()
-            Log.i(TAG, "Stream started: ${updated.describe()}")
+            AppLogger.i(TAG, "Stream started: ${updated.describe()}")
             return Result.success(updated)
         }
     }
@@ -199,7 +200,7 @@ object HatSessionManager {
             )
             streams[streamId] = updated
             publishState()
-            Log.i(TAG, "Stream paused: ${updated.describe()}")
+            AppLogger.i(TAG, "Stream paused: ${updated.describe()}")
             return Result.success(updated)
         }
     }
@@ -226,7 +227,7 @@ object HatSessionManager {
             )
             streams[streamId] = updated
             publishState()
-            Log.i(TAG, "Stream stopped: ${updated.describe()}")
+            AppLogger.i(TAG, "Stream stopped: ${updated.describe()}")
             return Result.success(updated)
         }
     }
@@ -281,7 +282,7 @@ object HatSessionManager {
             )
             streams[newStream.id] = newStream
             publishState()
-            Log.i(TAG, "Created and started stream: ${newStream.describe()}")
+            AppLogger.i(TAG, "Created and started stream: ${newStream.describe()}")
             return newStream
         }
     }
@@ -301,7 +302,7 @@ object HatSessionManager {
             val removed = streams.remove(streamId)
             if (removed != null) {
                 publishState()
-                Log.i(TAG, "Closed and removed stream $streamId")
+                AppLogger.i(TAG, "Closed and removed stream $streamId")
             }
         }
     }
@@ -314,7 +315,7 @@ object HatSessionManager {
             }
             if (toRemove.isNotEmpty()) {
                 publishState()
-                Log.i(TAG, "Closed ${toRemove.size} stream(s) for link $linkId")
+                AppLogger.i(TAG, "Closed ${toRemove.size} stream(s) for link $linkId")
             }
         }
     }
@@ -389,7 +390,7 @@ object HatSessionManager {
         synchronized(lock) {
             streams.clear()
             publishState()
-            Log.i(TAG, "Cleared all active streams and sessions")
+            AppLogger.i(TAG, "Cleared all active streams and sessions")
         }
     }
 

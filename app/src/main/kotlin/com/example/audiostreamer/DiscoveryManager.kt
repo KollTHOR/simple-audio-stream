@@ -6,7 +6,6 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.SystemClock
 import androidx.core.content.ContextCompat
-import com.example.audiostreamer.AppLogger as Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -163,7 +162,7 @@ object DiscoveryManager {
 
     fun startDiscovery(scope: CoroutineScope) {
         if (!NetworkUtils.isLanAvailable()) {
-            Log.d(TAG, "Cannot start LAN discovery: LAN unavailable (Offline)")
+            AppLogger.d(TAG, "Cannot start LAN discovery: LAN unavailable (Offline)")
             return
         }
         if (discoveryJob?.isActive == true) return
@@ -179,14 +178,14 @@ object DiscoveryManager {
                         bind(InetSocketAddress(AudioConfig.DISCOVERY_PORT))
                     }
                 } catch (e: Exception) {
-                    Log.w(TAG, "Port ${AudioConfig.DISCOVERY_PORT} busy, binding ephemeral port: ${e.message}")
+                    AppLogger.w(TAG, "Port ${AudioConfig.DISCOVERY_PORT} busy, binding ephemeral port: ${e.message}")
                     DatagramSocket().apply {
                         broadcast = true
                         soTimeout = 2000
                     }
                 }
                 activeSocket = socket
-                Log.i(TAG, "Transmitter discovery listening on port ${socket.localPort}")
+                AppLogger.i(TAG, "Transmitter discovery listening on port ${socket.localPort}")
 
                 // Send initial probe and transmitter announcement (burst for lossy Wi-Fi)
                 sendProbe(socket)
@@ -299,7 +298,7 @@ object DiscoveryManager {
                     }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Discovery loop exception: ${e.message}")
+                AppLogger.w(TAG, "Discovery loop exception: ${e.message}")
             } finally {
                 activeSocket = null
                 socket?.close()
@@ -318,7 +317,7 @@ object DiscoveryManager {
 
     fun triggerScan(scope: CoroutineScope) {
         if (!NetworkUtils.isLanAvailable()) {
-            Log.d(TAG, "Scan not triggered: LAN unavailable (Offline)")
+            AppLogger.d(TAG, "Scan not triggered: LAN unavailable (Offline)")
             return
         }
         _isScanning.value = true
@@ -351,7 +350,7 @@ object DiscoveryManager {
 
     fun startReceiverResponder(context: Context, scope: CoroutineScope) {
         if (!NetworkUtils.isLanAvailable(context)) {
-            Log.d(TAG, "Receiver responder not started: LAN unavailable (Offline)")
+            AppLogger.d(TAG, "Receiver responder not started: LAN unavailable (Offline)")
             return
         }
         if (receiverResponderJob?.isActive == true) return
@@ -375,7 +374,7 @@ object DiscoveryManager {
                     bind(InetSocketAddress(AudioConfig.DISCOVERY_PORT))
                 }
                 receiverResponderSocket = socket
-                Log.i(TAG, "Receiver responder listening on port ${AudioConfig.DISCOVERY_PORT}")
+                AppLogger.i(TAG, "Receiver responder listening on port ${AudioConfig.DISCOVERY_PORT}")
 
                 // Broadcast initial announcement across all active interfaces
                 sendAnnouncement(socket)
@@ -402,12 +401,12 @@ object DiscoveryManager {
                                         val replyPacket2 = DatagramPacket(announceBuf, announceBuf.size, packet.address, packet.port)
                                         try { socket.send(replyPacket2) } catch (ignored: Exception) {}
                                     }
-                                    Log.d(TAG, "Sent discovery announce reply to ${packet.address}")
+                                    AppLogger.d(TAG, "Sent discovery announce reply to ${packet.address}")
                                 }
 
                                 HatPacket.TYPE_STREAM_INVITE -> {
                                     // Transmitter explicitly invited this receiver to start playback
-                                    Log.i(TAG, "Received TYPE_STREAM_INVITE from ${packet.address}")
+                                    AppLogger.i(TAG, "Received TYPE_STREAM_INVITE from ${packet.address}")
                                     handleStreamInvite(appContext, packet, data, header, socket)
                                 }
 
@@ -423,9 +422,9 @@ object DiscoveryManager {
                                             val replyPacket2 = DatagramPacket(announceBuf, announceBuf.size, packet.address, packet.port)
                                             try { socket.send(replyPacket2) } catch (ignored: Exception) {}
                                         }
-                                        Log.d(TAG, "Sent fast-track discovery announce reply to transmitter at ${packet.address}")
+                                        AppLogger.d(TAG, "Sent fast-track discovery announce reply to transmitter at ${packet.address}")
                                     } catch (e: Exception) {
-                                        Log.w(TAG, "Failed sending fast-track announce reply: ${e.message}")
+                                        AppLogger.w(TAG, "Failed sending fast-track announce reply: ${e.message}")
                                     }
                                 }
                             }
@@ -443,7 +442,7 @@ object DiscoveryManager {
                     }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Receiver responder exception: ${e.message}")
+                AppLogger.w(TAG, "Receiver responder exception: ${e.message}")
             } finally {
                 receiverResponderSocket = null
                 socket?.close()
@@ -492,7 +491,7 @@ object DiscoveryManager {
 
         // Auto-start AudioSinkService if not already running
         if (!AudioSinkService.isRunning.get()) {
-            Log.i(TAG, "Auto-starting AudioSinkService following invite from $txName ($senderIp:$txPort)")
+            AppLogger.i(TAG, "Auto-starting AudioSinkService following invite from $txName ($senderIp:$txPort)")
             val serviceIntent = Intent(context, AudioSinkService::class.java).apply {
                 action = AudioSinkService.ACTION_START
                 putExtra(AudioSinkService.EXTRA_PORT, txPort)
@@ -500,7 +499,7 @@ object DiscoveryManager {
             try {
                 ContextCompat.startForegroundService(context, serviceIntent)
             } catch (e: Exception) {
-                Log.e(TAG, "Failed auto-starting AudioSinkService: ${e.message}")
+                AppLogger.e(TAG, "Failed auto-starting AudioSinkService: ${e.message}")
             }
         }
 
@@ -611,9 +610,9 @@ object DiscoveryManager {
                 val targetAddress = InetAddress.getByName(targetIp)
                 val packet = DatagramPacket(buffer, buffer.size, targetAddress, AudioConfig.DISCOVERY_PORT)
                 socket.send(packet)
-                Log.i(TAG, "Dispatched TYPE_STREAM_INVITE to $targetIp:${AudioConfig.DISCOVERY_PORT}")
+                AppLogger.i(TAG, "Dispatched TYPE_STREAM_INVITE to $targetIp:${AudioConfig.DISCOVERY_PORT}")
             } catch (e: Exception) {
-                Log.w(TAG, "Failed sending stream invite to $targetIp: ${e.message}")
+                AppLogger.w(TAG, "Failed sending stream invite to $targetIp: ${e.message}")
             } finally {
                 socket?.close()
             }
@@ -666,7 +665,7 @@ object DiscoveryManager {
 
     fun sendAnnouncement(socket: DatagramSocket) {
         if (!NetworkUtils.isLanAvailable()) {
-            Log.d(TAG, "Skipping announcement: LAN unavailable (Offline)")
+            AppLogger.d(TAG, "Skipping announcement: LAN unavailable (Offline)")
             return
         }
         try {
@@ -687,13 +686,13 @@ object DiscoveryManager {
                 } catch (ignored: Exception) {}
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed sending announcements: ${e.message}")
+            AppLogger.w(TAG, "Failed sending announcements: ${e.message}")
         }
     }
 
     fun sendTransmitterAnnouncement(socket: DatagramSocket, isStreaming: Boolean) {
         if (!NetworkUtils.isLanAvailable()) {
-            Log.d(TAG, "Skipping transmitter announcement: LAN unavailable (Offline)")
+            AppLogger.d(TAG, "Skipping transmitter announcement: LAN unavailable (Offline)")
             return
         }
         try {
@@ -731,13 +730,13 @@ object DiscoveryManager {
                 } catch (ignored: Exception) {}
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed sending transmitter announcement: ${e.message}")
+            AppLogger.w(TAG, "Failed sending transmitter announcement: ${e.message}")
         }
     }
 
     private fun sendProbe(socket: DatagramSocket) {
         if (!NetworkUtils.isLanAvailable()) {
-            Log.d(TAG, "Skipping probe: LAN unavailable (Offline)")
+            AppLogger.d(TAG, "Skipping probe: LAN unavailable (Offline)")
             return
         }
         val targets = mutableSetOf<String>()
@@ -760,9 +759,9 @@ object DiscoveryManager {
                 val address = InetAddress.getByName(targetIp)
                 val packet = DatagramPacket(buffer, buffer.size, address, AudioConfig.DISCOVERY_PORT)
                 socket.send(packet)
-                Log.d(TAG, "Sent discovery probe to $targetIp:${AudioConfig.DISCOVERY_PORT}")
+                AppLogger.d(TAG, "Sent discovery probe to $targetIp:${AudioConfig.DISCOVERY_PORT}")
             } catch (e: Exception) {
-                Log.w(TAG, "Failed sending probe to $targetIp: ${e.message}")
+                AppLogger.w(TAG, "Failed sending probe to $targetIp: ${e.message}")
             }
         }
 
@@ -828,7 +827,7 @@ object DiscoveryManager {
             current[existingIndex] = updated
         } else {
             current.add(device)
-            Log.i(TAG, "Discovered new receiver: ${device.name} at ${device.ip}")
+            AppLogger.i(TAG, "Discovered new receiver: ${device.name} at ${device.ip}")
         }
         rememberDeviceName(device.ip, device.name)
         _discoveredDevices.value = current
@@ -842,7 +841,7 @@ object DiscoveryManager {
             current[existingIndex] = device.copy(lastSeenMs = SystemClock.elapsedRealtime())
         } else {
             current.add(device)
-            Log.i(TAG, "Discovered new transmitter: ${device.name} at ${device.ip}")
+            AppLogger.i(TAG, "Discovered new transmitter: ${device.name} at ${device.ip}")
         }
         rememberDeviceName(device.ip, device.name)
         _discoveredTransmitters.value = current

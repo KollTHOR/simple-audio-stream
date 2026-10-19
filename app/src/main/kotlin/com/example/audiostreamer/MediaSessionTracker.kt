@@ -15,7 +15,6 @@ import android.view.KeyEvent
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
-import com.example.audiostreamer.AppLogger as Log
 
 /**
  * MediaSessionTracker — single source of truth for:
@@ -99,18 +98,18 @@ object MediaSessionTracker {
     private val controllerCallback = object : MediaController.Callback() {
         override fun onMetadataChanged(metadata: MediaMetadata?) {
             val ctrl = registeredController ?: return
-            Log.d(TAG, "MEDIA_STATE onMetadataChanged pkg=${ctrl.packageName}")
+            AppLogger.d(TAG, "MEDIA_STATE onMetadataChanged pkg=${ctrl.packageName}")
             mainHandler.post { publishState(ctrl) }
         }
 
         override fun onPlaybackStateChanged(state: PlaybackState?) {
             val ctrl = registeredController ?: return
-            Log.d(TAG, "MEDIA_STATE onPlaybackStateChanged pkg=${ctrl.packageName} state=${state?.state}")
+            AppLogger.d(TAG, "MEDIA_STATE onPlaybackStateChanged pkg=${ctrl.packageName} state=${state?.state}")
             mainHandler.post { publishState(ctrl) }
         }
 
         override fun onSessionDestroyed() {
-            Log.i(TAG, "MEDIA_SESSION_DESTROYED pkg=${registeredController?.packageName}")
+            AppLogger.i(TAG, "MEDIA_SESSION_DESTROYED pkg=${registeredController?.packageName}")
             mainHandler.post { reevaluate() }
         }
     }
@@ -124,7 +123,7 @@ object MediaSessionTracker {
             context = ctx.applicationContext
             val sm = ctx.getSystemService(Context.MEDIA_SESSION_SERVICE) as? MediaSessionManager
                 ?: run {
-                    Log.w(TAG, "MediaSessionManager unavailable — tracking disabled")
+                    AppLogger.w(TAG, "MediaSessionManager unavailable — tracking disabled")
                     return@post
                 }
             sessionManager = sm
@@ -137,18 +136,18 @@ object MediaSessionTracker {
                         listenerExecutor,
                         mediaKeySessionChangedListener
                     )
-                    Log.i(TAG, "Registered OnMediaKeyEventSessionChangedListener (API 34+)")
+                    AppLogger.i(TAG, "Registered OnMediaKeyEventSessionChangedListener (API 34+)")
                 } catch (e: Exception) {
-                    Log.w(TAG, "Failed registering OnMediaKeyEventSessionChangedListener: ${e.message}")
+                    AppLogger.w(TAG, "Failed registering OnMediaKeyEventSessionChangedListener: ${e.message}")
                 }
             }
 
             // Always register the active-sessions fallback listener
             try {
                 sm.addOnActiveSessionsChangedListener(activeSessionsChangedListener, componentName)
-                Log.i(TAG, "Registered OnActiveSessionsChangedListener")
+                AppLogger.i(TAG, "Registered OnActiveSessionsChangedListener")
             } catch (e: Exception) {
-                Log.w(TAG, "Failed registering OnActiveSessionsChangedListener: ${e.message}")
+                AppLogger.w(TAG, "Failed registering OnActiveSessionsChangedListener: ${e.message}")
             }
 
             reevaluate()
@@ -171,7 +170,7 @@ object MediaSessionTracker {
             sessionManager = null
             listenerComponentName = null
             context = null
-            Log.i(TAG, "MEDIA_SESSION_CLEARED (tracker stopped)")
+            AppLogger.i(TAG, "MEDIA_SESSION_CLEARED (tracker stopped)")
             notifyListener(null)
         }
     }
@@ -183,7 +182,7 @@ object MediaSessionTracker {
     fun dispatchCommand(command: Byte): Boolean {
         val ctrl = registeredController
         if (ctrl == null) {
-            Log.w(TAG, "MEDIA_COMMAND command=$command — no active controller")
+            AppLogger.w(TAG, "MEDIA_COMMAND command=$command — no active controller")
             return false
         }
         return try {
@@ -236,10 +235,10 @@ object MediaSessionTracker {
                 }
                 else -> return false
             }
-            Log.i(TAG, "MEDIA_COMMAND command=$command targetPackage=$pkg")
+            AppLogger.i(TAG, "MEDIA_COMMAND command=$command targetPackage=$pkg")
             true
         } catch (e: Exception) {
-            Log.w(TAG, "MEDIA_COMMAND failed: ${e.message}")
+            AppLogger.w(TAG, "MEDIA_COMMAND failed: ${e.message}")
             false
         }
     }
@@ -258,7 +257,7 @@ object MediaSessionTracker {
         MediaSessionManager.OnMediaKeyEventSessionChangedListener { pkg, token ->
             // Called on listenerExecutor; re-evaluate on main thread
             mainHandler.post {
-                Log.i(TAG,
+                AppLogger.i(TAG,
                     "MEDIA_SESSION_CHANGED reason=MEDIA_KEY_SESSION_CHANGED " +
                     "oldPackage=${registeredController?.packageName} " +
                     "newPackage=$pkg")
@@ -279,7 +278,7 @@ object MediaSessionTracker {
     private val activeSessionsChangedListener =
         MediaSessionManager.OnActiveSessionsChangedListener { controllers ->
             mainHandler.post {
-                Log.d(TAG, "OnActiveSessionsChangedListener: ${controllers?.size ?: 0} sessions")
+                AppLogger.d(TAG, "OnActiveSessionsChangedListener: ${controllers?.size ?: 0} sessions")
                 reevaluate(controllers)
             }
         }
@@ -321,7 +320,7 @@ object MediaSessionTracker {
             }
         } else {
             if (registeredController != null) {
-                Log.i(TAG, "MEDIA_SESSION_CLEARED — no active sessions remain")
+                AppLogger.i(TAG, "MEDIA_SESSION_CLEARED — no active sessions remain")
                 detachCurrentController()
                 currentState = null
                 notifyListener(null)
@@ -369,7 +368,7 @@ object MediaSessionTracker {
     private fun switchToController(newController: MediaController, reason: String) {
         val oldPkg = registeredController?.packageName
         val newPkg = newController.packageName
-        Log.i(TAG,
+        AppLogger.i(TAG,
             "MEDIA_SESSION_CHANGED " +
             "oldPackage=$oldPkg " +
             "newPackage=$newPkg " +
@@ -380,7 +379,7 @@ object MediaSessionTracker {
         try {
             newController.registerCallback(controllerCallback, mainHandler)
         } catch (e: Exception) {
-            Log.w(TAG, "Failed registering controller callback for $newPkg: ${e.message}")
+            AppLogger.w(TAG, "Failed registering controller callback for $newPkg: ${e.message}")
         }
         // Immediately publish — do NOT wait for a callback
         publishState(newController)
@@ -395,7 +394,7 @@ object MediaSessionTracker {
     private fun tokenToController(token: MediaSession.Token): MediaController? {
         val ctx = context ?: return null
         return try { MediaController(ctx, token) } catch (e: Exception) {
-            Log.w(TAG, "Failed creating MediaController from token: ${e.message}")
+            AppLogger.w(TAG, "Failed creating MediaController from token: ${e.message}")
             null
         }
     }
@@ -460,7 +459,7 @@ object MediaSessionTracker {
         )
         currentState = state
 
-        Log.i(TAG,
+        AppLogger.i(TAG,
             "MEDIA_STATE package=${ctrl.packageName} " +
             "state=${if (isPlaying) "PLAYING" else "PAUSED/STOPPED"} " +
             "title=\"$title\" artist=\"$artist\" album=\"$album\" seq=$seq artLen=${artBytes?.size ?: 0}")

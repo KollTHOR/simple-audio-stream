@@ -1,5 +1,7 @@
 package com.example.audiostreamer.node.discovery
 
+import com.example.audiostreamer.AppLogger
+
 import com.example.audiostreamer.HatDiagnostics
 import com.example.audiostreamer.node.DevicePlatformInfo
 import com.example.audiostreamer.node.HatLinkManager
@@ -11,7 +13,6 @@ import com.example.audiostreamer.node.NodeInfo
 import com.example.audiostreamer.node.NodeState
 import com.example.audiostreamer.node.NodeTransportType
 import com.example.audiostreamer.node.StreamRole
-import com.example.audiostreamer.AppLogger as Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -157,7 +158,7 @@ object HatDiscoveryRegistry {
                 }
             }
             recomputeRegistry()
-            Log.i(TAG, "Started monitoring all discovery providers and link updates")
+            AppLogger.i(TAG, "Started monitoring all discovery providers and link updates")
         }
     }
 
@@ -177,7 +178,7 @@ object HatDiscoveryRegistry {
         synchronized(lock) {
             manualEntries.clear()
             _discoveredNodes.value = emptyList()
-            Log.i(TAG, "Cleared HatDiscoveryRegistry")
+            AppLogger.i(TAG, "Cleared HatDiscoveryRegistry")
         }
     }
 

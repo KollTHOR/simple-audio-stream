@@ -1,6 +1,5 @@
 package com.example.audiostreamer
 
-import android.util.Log
 
 /**
  * Clean, typed representations decoupling:
@@ -764,7 +763,7 @@ class StreamProfileTransactionManager(
             val currentRate = previousConfig?.sampleRateHz ?: preferredSampleRateHz
             val currentBits = previousConfig?.bitDepthBits ?: (if (preferred24Bit) 24 else 16)
             val currentChannels = previousConfig?.channels ?: 2
-            Log.i(
+            AppLogger.i(
                 "AudioCaptureService",
                 "PROFILE_CHANGE_BEGIN: targetProfile=${targetProfile.name}, generation=$currentGen, profile=$currentProfileName, codec=$currentCodecName, sampleRate=$currentRate, bitDepth=$currentBits, channels=$currentChannels"
             )
@@ -799,7 +798,7 @@ class StreamProfileTransactionManager(
                 onStopTransmission?.invoke()
                 null
             } catch (t: Throwable) {
-                Log.e("AudioCaptureService", "PROFILE_CHANGE_STOP_FAILED: previous producer teardown failed", t)
+                AppLogger.e("AudioCaptureService", "PROFILE_CHANGE_STOP_FAILED: previous producer teardown failed", t)
                 t
             }
             stopDurationNs = System.nanoTime() - stopStartNs
@@ -847,7 +846,7 @@ class StreamProfileTransactionManager(
                 )
             } catch (t: Throwable) {
                 // Nothing has been allocated, committed or announced yet: abort with the previous state intact.
-                Log.e("AudioCaptureService", "PROFILE_CHANGE_NEGOTIATION_FAILED: targetProfile=${targetProfile.name}", t)
+                AppLogger.e("AudioCaptureService", "PROFILE_CHANGE_NEGOTIATION_FAILED: targetProfile=${targetProfile.name}", t)
                 HatDiagnostics.error(
                     "CONFIG_FAILURE",
                     linkedMapOf(
@@ -866,7 +865,7 @@ class StreamProfileTransactionManager(
             }
 
             // Requirement 8: GENERATION_CREATED (provisional, NOT yet authoritative)
-            Log.i(
+            AppLogger.i(
                 "AudioCaptureService",
                 "GENERATION_CREATED: ${newConfig.toSummaryString()}"
             )
@@ -881,7 +880,7 @@ class StreamProfileTransactionManager(
                 onReconfigureCapture?.invoke(newConfig) ?: true
             } catch (t: Throwable) {
                 initFailure = t
-                Log.e(
+                AppLogger.e(
                     "AudioCaptureService",
                     "CAPTURE_PIPELINE_INIT_FAILED: ${newConfig.toSummaryString()}",
                     t
@@ -894,7 +893,7 @@ class StreamProfileTransactionManager(
                 // Rollback: the previous configuration/generation stay authoritative, nothing is announced,
                 // no producer is started and transmission stays inactive (clean stopped state).
                 isTransmissionActive = false
-                Log.e(
+                AppLogger.e(
                     "AudioCaptureService",
                     "PROFILE_CHANGE_ABORTED: ${newConfig.toSummaryString()} was never committed or announced; " +
                         "previousGeneration=$currentGen remains authoritative"
@@ -925,7 +924,7 @@ class StreamProfileTransactionManager(
             activeTransmitterConfig = newConfig
 
             // Requirement 8: CONFIG_APPLIED
-            Log.i(
+            AppLogger.i(
                 "AudioCaptureService",
                 "CONFIG_APPLIED: ${newConfig.toSummaryString()}"
             )
@@ -947,7 +946,7 @@ class StreamProfileTransactionManager(
                 onPublishAnnouncement?.invoke(newConfig)
                 null
             } catch (t: Throwable) {
-                Log.e("AudioCaptureService", "PROFILE_CHANGE_ANNOUNCE_FAILED: ${newConfig.toSummaryString()}", t)
+                AppLogger.e("AudioCaptureService", "PROFILE_CHANGE_ANNOUNCE_FAILED: ${newConfig.toSummaryString()}", t)
                 t
             }
 
@@ -958,7 +957,7 @@ class StreamProfileTransactionManager(
                 activeTransmitterConfig = previousConfig
                 isTransmissionActive = false
                 releaseInitializedPipeline(onStopTransmission, provisionalGen)
-                Log.e(
+                AppLogger.e(
                     "AudioCaptureService",
                     "PROFILE_CHANGE_ABORTED_AFTER_COMMIT: generation=$provisionalGen stays consumed, " +
                         "authoritative config rolled back, pipeline released, transmitter stopped"
@@ -993,7 +992,7 @@ class StreamProfileTransactionManager(
             val producerStarted = try {
                 onResumeTransmission?.invoke(newConfig) ?: true
             } catch (t: Throwable) {
-                Log.e("AudioCaptureService", "PRODUCER_START_FAILED: ${newConfig.toSummaryString()}", t)
+                AppLogger.e("AudioCaptureService", "PRODUCER_START_FAILED: ${newConfig.toSummaryString()}", t)
                 HatDiagnostics.error(
                     "CONFIG_FAILURE",
                     linkedMapOf(
@@ -1012,7 +1011,7 @@ class StreamProfileTransactionManager(
                 // The committed generation was announced, so it stays authoritative, but nothing may keep
                 // allocated capture resources without a producer: release the pipeline and stay stopped.
                 isTransmissionActive = false
-                Log.e(
+                AppLogger.e(
                     "AudioCaptureService",
                     "PROFILE_CHANGE_PRODUCER_START_FAILED: releasing pipeline and leaving transmitter stopped for ${newConfig.toSummaryString()}"
                 )
@@ -1031,7 +1030,7 @@ class StreamProfileTransactionManager(
             }
 
             // Requirement 8: PROFILE_CHANGE_COMPLETE
-            Log.i(
+            AppLogger.i(
                 "AudioCaptureService",
                 "PROFILE_CHANGE_COMPLETE: ${newConfig.toSummaryString()}, producerStarted=$producerStarted"
             )
@@ -1055,7 +1054,7 @@ class StreamProfileTransactionManager(
         try {
             onStopTransmission?.invoke()
         } catch (t: Throwable) {
-            Log.e("AudioCaptureService", "PIPELINE_RELEASE_FAILED: generation=$generation release callback threw", t)
+            AppLogger.e("AudioCaptureService", "PIPELINE_RELEASE_FAILED: generation=$generation release callback threw", t)
         }
     }
 

@@ -1,8 +1,9 @@
 package com.example.audiostreamer.node.transport
 
+import com.example.audiostreamer.AppLogger
+
 import com.example.audiostreamer.AudioConfig
 import com.example.audiostreamer.NetworkUtils
-import com.example.audiostreamer.AppLogger as Log
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -52,7 +53,7 @@ class LanTransport(
         if (!NetworkUtils.isLanAvailable()) {
             _state = TransportState.FAILED
             val err = IllegalStateException("LAN transport unavailable: no active Wi-Fi or Ethernet network")
-            Log.e(TAG, err.message ?: "")
+            AppLogger.e(TAG, err.message ?: "")
             return Result.failure(err)
         }
         try {
@@ -77,7 +78,7 @@ class LanTransport(
                         }
                     }
                 } catch (e: Exception) {
-                    Log.w(TAG, "Failed binding socket to interface IP $matchingLocalIp, fallback to unbound: ${e.message}")
+                    AppLogger.w(TAG, "Failed binding socket to interface IP $matchingLocalIp, fallback to unbound: ${e.message}")
                     DatagramSocket().apply {
                         sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
                         broadcast = true
@@ -90,11 +91,11 @@ class LanTransport(
             val localIp = NetworkUtils.getLocalIpAddress() ?: "0.0.0.0"
             _localAddress = TransportAddress(localIp, sock.localPort)
             _state = TransportState.CONNECTED
-            Log.i(TAG, "LAN transport connected: local=$_localAddress, remote=$_remoteAddress")
+            AppLogger.i(TAG, "LAN transport connected: local=$_localAddress, remote=$_remoteAddress")
             Result.success(Unit)
         } catch (e: Exception) {
             _state = TransportState.FAILED
-            Log.e(TAG, "Failed connecting LAN transport: ${e.message}", e)
+            AppLogger.e(TAG, "Failed connecting LAN transport: ${e.message}", e)
             Result.failure(e)
         }
     }
@@ -103,7 +104,7 @@ class LanTransport(
         if (!NetworkUtils.isLanAvailable()) {
             _state = TransportState.FAILED
             val err = IllegalStateException("LAN transport unavailable: no active Wi-Fi or Ethernet network")
-            Log.e(TAG, err.message ?: "")
+            AppLogger.e(TAG, err.message ?: "")
             return Result.failure(err)
         }
         try {
@@ -122,11 +123,11 @@ class LanTransport(
             val localIp = NetworkUtils.getLocalIpAddress() ?: "0.0.0.0"
             _localAddress = TransportAddress(localIp, port)
             _state = TransportState.LISTENING
-            Log.i(TAG, "LAN transport listening on $_localAddress")
+            AppLogger.i(TAG, "LAN transport listening on $_localAddress")
             Result.success(Unit)
         } catch (e: Exception) {
             _state = TransportState.FAILED
-            Log.e(TAG, "Failed listening on LAN transport: ${e.message}", e)
+            AppLogger.e(TAG, "Failed listening on LAN transport: ${e.message}", e)
             Result.failure(e)
         }
     }
@@ -147,7 +148,7 @@ class LanTransport(
 
     override fun broadcast(packet: DatagramPacket) {
         if (!NetworkUtils.isLanAvailable()) {
-            Log.w(TAG, "Cannot broadcast on LAN: LAN unavailable")
+            AppLogger.w(TAG, "Cannot broadcast on LAN: LAN unavailable")
             return
         }
         val s = _socket ?: throw IllegalStateException("LAN transport socket not active")
@@ -155,7 +156,7 @@ class LanTransport(
         try {
             val bcastIp = NetworkUtils.getSuggestedBroadcastIp()
             if (bcastIp.isEmpty()) {
-                Log.w(TAG, "No LAN broadcast IP available")
+                AppLogger.w(TAG, "No LAN broadcast IP available")
                 return
             }
             packet.address = InetAddress.getByName(bcastIp)
@@ -173,7 +174,7 @@ class LanTransport(
         } catch (ignored: Exception) {}
         _socket = null
         _state = TransportState.CLOSED
-        Log.i(TAG, "LAN transport closed")
+        AppLogger.i(TAG, "LAN transport closed")
     }
 
     override fun getDiagnostics(): Map<String, Any?> = linkedMapOf(

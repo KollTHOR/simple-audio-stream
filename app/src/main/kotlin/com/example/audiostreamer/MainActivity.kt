@@ -21,7 +21,6 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.util.Log
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
@@ -1165,7 +1164,7 @@ class MainActivity : AppCompatActivity() {
             )
         )
         if (alert.severity == AlertSeverity.ERROR) {
-            bar.setAction("View logs") { AppLogger.showLogViewerDialog(this) }
+            bar.setAction("View logs") { startActivity(android.content.Intent(this, LogsActivity::class.java)) }
             bar.setActionTextColor(ContextCompat.getColor(this, R.color.white))
         }
         bar.addCallback(object : Snackbar.Callback() {
@@ -1274,7 +1273,7 @@ class MainActivity : AppCompatActivity() {
 
         for (regNode in registryNodes) {
             if (regNode.id in seenNodeIds) {
-                Log.d("HatDiscovery", "UI_DEDUP nodeId=${regNode.id} source=REGISTRY endpoint=${regNode.getLanEndpoint()?.address ?: "none"}")
+                AppLogger.d("HatDiscovery", "UI_DEDUP nodeId=${regNode.id} source=REGISTRY endpoint=${regNode.getLanEndpoint()?.address ?: "none"}")
                 continue
             }
             seenNodeIds.add(regNode.id)
@@ -1370,11 +1369,11 @@ class MainActivity : AppCompatActivity() {
         for (udp in legacyUdpDevices) {
             if (udp.ip in localIps || (udp.p2pGoIp != null && udp.p2pGoIp in localIps)) continue
             if (!udp.nodeId.isNullOrBlank() && udp.nodeId in seenNodeIds) {
-                Log.d("HatDiscovery", "UI_DEDUP nodeId=${udp.nodeId} source=UDP endpoint=${udp.ip}")
+                AppLogger.d("HatDiscovery", "UI_DEDUP nodeId=${udp.nodeId} source=UDP endpoint=${udp.ip}")
                 continue
             }
             if (udp.ip in seenEndpoints || (udp.p2pGoIp != null && udp.p2pGoIp in seenEndpoints)) {
-                Log.d("HatDiscovery", "UI_DEDUP nodeId=${udp.nodeId ?: "legacy"} source=UDP endpoint=${udp.ip}")
+                AppLogger.d("HatDiscovery", "UI_DEDUP nodeId=${udp.nodeId ?: "legacy"} source=UDP endpoint=${udp.ip}")
                 continue
             }
 
@@ -2811,6 +2810,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateModeAndButtonUi() {
+        AppStatus.currentMode = when (currentMode) {
+            Mode.TRANSMITTER -> "Broadcast"
+            Mode.RECEIVER -> "Receive"
+            Mode.USB -> "USB input"
+        }
         val isSenderActive = AudioCaptureService.isRunning.get()
         val isSinkActive = AudioSinkService.isRunning.get()
         val isAnyActive = isSenderActive || isSinkActive || isStarting || isStopping

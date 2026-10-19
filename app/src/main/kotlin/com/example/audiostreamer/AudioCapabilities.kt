@@ -5,7 +5,6 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.os.Build
-import android.util.Log
 
 object AudioCapabilities {
     private const val TAG = "AudioCapabilities"
@@ -77,7 +76,7 @@ object AudioCapabilities {
             track.release()
             isInit
         } catch (e: Exception) {
-            Log.d(TAG, "isPlaybackSupported($sampleRate, 24b=$is24Bit) exception: ${e.message}")
+            AppLogger.d(TAG, "isPlaybackSupported($sampleRate, 24b=$is24Bit) exception: ${e.message}")
             false
         }
     }
@@ -96,7 +95,7 @@ object AudioCapabilities {
             )
             minBuf > 0
         } catch (e: Exception) {
-            Log.d(TAG, "isCaptureSupported($sampleRate, 24b=$is24Bit) exception: ${e.message}")
+            AppLogger.d(TAG, "isCaptureSupported($sampleRate, 24b=$is24Bit) exception: ${e.message}")
             false
         }
     }
@@ -114,7 +113,7 @@ object AudioCapabilities {
             mask = CAP_FLAG_48000
         }
         cachedPlaybackMask = mask
-        Log.i(TAG, "Local playback capabilities mask: 0x${Integer.toHexString(mask)} (${describeCapabilitiesMask(mask)})")
+        AppLogger.i(TAG, "Local playback capabilities mask: 0x${Integer.toHexString(mask)} (${describeCapabilitiesMask(mask)})")
         return mask
     }
 
@@ -131,7 +130,7 @@ object AudioCapabilities {
             mask = CAP_FLAG_48000
         }
         cachedCaptureMask = mask
-        Log.i(TAG, "Local capture capabilities mask: 0x${Integer.toHexString(mask)} (${describeCapabilitiesMask(mask)})")
+        AppLogger.i(TAG, "Local capture capabilities mask: 0x${Integer.toHexString(mask)} (${describeCapabilitiesMask(mask)})")
         return mask
     }
 

@@ -1,12 +1,13 @@
 package com.example.audiostreamer.node.discovery
 
+import com.example.audiostreamer.AppLogger
+
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.net.wifi.WifiManager
-import com.example.audiostreamer.AppLogger as Log
 import com.example.audiostreamer.BleDiscoveryManager
 import com.example.audiostreamer.ConnectionRoutePolicy
 import com.example.audiostreamer.DiscoveryManager
@@ -137,7 +138,7 @@ object DiscoveryScanCoordinator {
                 scanSummary = null
             )
 
-            Log.i(TAG, "DISCOVERY_SCAN_START: Initiating sequential scan")
+            AppLogger.i(TAG, "DISCOVERY_SCAN_START: Initiating sequential scan")
             HatDiagnostics.event(
                 HatDiagnostics.Severity.INFO,
                 "DISCOVERY_SCAN_START",
@@ -148,7 +149,7 @@ object DiscoveryScanCoordinator {
                 try {
                     executeSequentialScan(context, scope)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Scan job interrupted or failed", e)
+                    AppLogger.e(TAG, "Scan job interrupted or failed", e)
                 } finally {
                     finishScan(context)
                 }
@@ -159,7 +160,7 @@ object DiscoveryScanCoordinator {
     fun stopScan(context: Context) {
         synchronized(lock) {
             if (!isScanActive.get() && scanJob == null) return
-            Log.i(TAG, "stopScan requested by caller")
+            AppLogger.i(TAG, "stopScan requested by caller")
             stopScanInternal(context, notifyComplete = true)
         }
     }
@@ -216,7 +217,7 @@ object DiscoveryScanCoordinator {
             }
         )
         if (lanFound) {
-            Log.i(TAG, "Local Wi-Fi discovery found a device; skipping fallback scans")
+            AppLogger.i(TAG, "Local Wi-Fi discovery found a device; skipping fallback scans")
             return
         }
 
@@ -238,7 +239,7 @@ object DiscoveryScanCoordinator {
             }
         )
         if (directFound) {
-            Log.i(TAG, "Wi-Fi Direct discovery found a device; skipping BLE fallback scan")
+            AppLogger.i(TAG, "Wi-Fi Direct discovery found a device; skipping BLE fallback scan")
             return
         }
 
@@ -261,7 +262,7 @@ object DiscoveryScanCoordinator {
                 }
             }
         )
-        Log.i(TAG, "BLE phase complete (found=$bleCompleted); all discovery phases executed")
+        AppLogger.i(TAG, "BLE phase complete (found=$bleCompleted); all discovery phases executed")
     }
 
     private suspend fun runPhase(
@@ -278,7 +279,7 @@ object DiscoveryScanCoordinator {
         val phaseStartMs = System.currentTimeMillis()
 
         if (!available) {
-            Log.i(TAG, "DISCOVERY_PHASE_SKIPPED: phase=$phase reason=$skipReason")
+            AppLogger.i(TAG, "DISCOVERY_PHASE_SKIPPED: phase=$phase reason=$skipReason")
             HatDiagnostics.event(
                 HatDiagnostics.Severity.WARN,
                 "DISCOVERY_PHASE_SKIPPED",
@@ -288,7 +289,7 @@ object DiscoveryScanCoordinator {
             return false
         }
 
-        Log.i(TAG, "DISCOVERY_PHASE_START: phase=$phase timeoutMs=$timeoutMs")
+        AppLogger.i(TAG, "DISCOVERY_PHASE_START: phase=$phase timeoutMs=$timeoutMs")
         HatDiagnostics.event(
             HatDiagnostics.Severity.INFO,
             "DISCOVERY_PHASE_START",
@@ -301,7 +302,7 @@ object DiscoveryScanCoordinator {
             startProvider()
         } catch (e: Exception) {
             val errorMsg = e.message ?: "Failed starting provider"
-            Log.e(TAG, "DISCOVERY_PHASE_FAILED: phase=$phase error=$errorMsg", e)
+            AppLogger.e(TAG, "DISCOVERY_PHASE_FAILED: phase=$phase error=$errorMsg", e)
             HatDiagnostics.event(
                 HatDiagnostics.Severity.ERROR,
                 "DISCOVERY_PHASE_FAILED",
@@ -339,14 +340,14 @@ object DiscoveryScanCoordinator {
         try {
             stopProvider()
         } catch (e: Exception) {
-            Log.w(TAG, "Error stopping provider for phase $phase: ${e.message}")
+            AppLogger.w(TAG, "Error stopping provider for phase $phase: ${e.message}")
         }
 
         val totalDurationMs = System.currentTimeMillis() - phaseStartMs
         val finalCount = countDiscovered()
 
         if (finalCount > 0) {
-            Log.i(TAG, "DISCOVERY_PHASE_FOUND: phase=$phase durationMs=$totalDurationMs count=$finalCount")
+            AppLogger.i(TAG, "DISCOVERY_PHASE_FOUND: phase=$phase durationMs=$totalDurationMs count=$finalCount")
             HatDiagnostics.event(
                 HatDiagnostics.Severity.INFO,
                 "DISCOVERY_PHASE_FOUND",
@@ -355,7 +356,7 @@ object DiscoveryScanCoordinator {
             updatePhaseReport(phase, PhaseStatus.FOUND, totalDurationMs, finalCount, null)
             return true
         } else {
-            Log.i(TAG, "DISCOVERY_PHASE_TIMEOUT: phase=$phase durationMs=$totalDurationMs count=0")
+            AppLogger.i(TAG, "DISCOVERY_PHASE_TIMEOUT: phase=$phase durationMs=$totalDurationMs count=0")
             HatDiagnostics.event(
                 HatDiagnostics.Severity.INFO,
                 "DISCOVERY_PHASE_TIMEOUT",
@@ -383,7 +384,7 @@ object DiscoveryScanCoordinator {
                 "No nearby HAT devices found"
             }
 
-            Log.i(TAG, "DISCOVERY_SCAN_COMPLETE: totalCount=$totalCount durationMs=$totalDurationMs summary=$summary")
+            AppLogger.i(TAG, "DISCOVERY_SCAN_COMPLETE: totalCount=$totalCount durationMs=$totalDurationMs summary=$summary")
             HatDiagnostics.event(
                 HatDiagnostics.Severity.INFO,
                 "DISCOVERY_SCAN_COMPLETE",
@@ -551,7 +552,7 @@ object DiscoveryScanCoordinator {
         if (dropped > 0) {
             val names = all.filterNot(ConnectionRoutePolicy::isConnectable)
                 .joinToString(", ") { "${it.name} [${it.transportCandidates.joinToString("+")}]" }
-            Log.i(TAG, "DISCOVERY_FILTERED: $dropped discovered node(s) had no usable audio route: $names")
+            AppLogger.i(TAG, "DISCOVERY_FILTERED: $dropped discovered node(s) had no usable audio route: $names")
         }
         return connectable
     }

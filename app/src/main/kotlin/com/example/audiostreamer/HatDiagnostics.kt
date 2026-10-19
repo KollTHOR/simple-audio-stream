@@ -640,7 +640,7 @@ object HatDiagnostics {
         }
         try {
             when (ev.severity) {
-                Severity.ERROR -> AppLogger.e(TAG, ev.render(), ev.throwable)
+                Severity.ERROR -> AppLogger.report(TAG, ev.render(), ev.throwable)
                 Severity.WARN -> AppLogger.w(TAG, ev.render(), ev.throwable)
                 Severity.INFO -> AppLogger.i(TAG, ev.render())
                 Severity.DEBUG -> AppLogger.d(TAG, ev.render())

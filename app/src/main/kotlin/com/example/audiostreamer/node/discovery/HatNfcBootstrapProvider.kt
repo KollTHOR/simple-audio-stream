@@ -1,5 +1,7 @@
 package com.example.audiostreamer.node.discovery
 
+import com.example.audiostreamer.AppLogger
+
 import android.app.Activity
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
@@ -25,7 +27,6 @@ import com.example.audiostreamer.node.NodeInfo
 import com.example.audiostreamer.node.NodeState
 import com.example.audiostreamer.node.NodeTransportType
 import com.example.audiostreamer.node.StreamRole
-import com.example.audiostreamer.AppLogger as Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -330,7 +331,7 @@ object HatNfcBootstrapProvider {
             if (intent.action == NfcAdapter.ACTION_ADAPTER_STATE_CHANGED) {
                 val adapter = nfcAdapter ?: return
                 val enabled = adapter.isEnabled
-                Log.i(TAG, "NFC adapter state changed: isEnabled=$enabled")
+                AppLogger.i(TAG, "NFC adapter state changed: isEnabled=$enabled")
                 HatDiagnostics.info("NFC_ADAPTER_STATE_CHANGED", mapOf("isEnabled" to enabled))
                 if (enabled) {
                     _state.value = NfcBootstrapState.READY
@@ -359,7 +360,7 @@ object HatNfcBootstrapProvider {
         featurePresent = hasFeature
         if (!hasFeature) {
             val reason = "NFC hardware is not available on this device"
-            Log.i(TAG, reason)
+            AppLogger.i(TAG, reason)
             HatDiagnostics.info("NFC_UNSUPPORTED", mapOf("reason" to reason))
             _state.value = NfcBootstrapState.UNSUPPORTED
             _statusMessage.value = reason
@@ -369,14 +370,14 @@ object HatNfcBootstrapProvider {
         val adapter = try {
             NfcAdapter.getDefaultAdapter(appCtx)
         } catch (e: Exception) {
-            Log.e(TAG, "Exception getting default NfcAdapter: ${e.message}")
+            AppLogger.e(TAG, "Exception getting default NfcAdapter: ${e.message}")
             null
         }
 
         nfcAdapter = adapter
         if (adapter == null) {
             val reason = "NfcAdapter is null — device does not support NFC"
-            Log.i(TAG, reason)
+            AppLogger.i(TAG, reason)
             HatDiagnostics.info("NFC_ADAPTER_NULL", mapOf("reason" to reason))
             _state.value = NfcBootstrapState.UNSUPPORTED
             _statusMessage.value = reason
@@ -485,7 +486,7 @@ object HatNfcBootstrapProvider {
         if (payload.protocolVersion != HatPacket.PROTOCOL_VERSION.toInt()) {
             metricValidationFailures.incrementAndGet()
             val reason = "Incompatible protocol version: expected ${HatPacket.PROTOCOL_VERSION}, got ${payload.protocolVersion}"
-            Log.w(TAG, reason)
+            AppLogger.w(TAG, reason)
             HatDiagnostics.warn("NFC_PROTOCOL_MISMATCH", mapOf("remotePv" to payload.protocolVersion))
             val result = HatNfcBootstrapResult(success = false, details = reason)
             _lastResult.value = result
@@ -498,7 +499,7 @@ object HatNfcBootstrapProvider {
         val localNode = LocalNodeManager.getLocalNode()
         if (payload.nodeId == localNode.id) {
             val reason = "Ignoring bootstrap payload from self (nodeId=${payload.nodeId})"
-            Log.i(TAG, reason)
+            AppLogger.i(TAG, reason)
             HatDiagnostics.info("NFC_SELF_BOOTSTRAP_IGNORED", mapOf("nodeId" to payload.nodeId))
             val result = HatNfcBootstrapResult(success = false, details = reason)
             _lastResult.value = result
@@ -512,7 +513,7 @@ object HatNfcBootstrapProvider {
         } catch (e: IllegalArgumentException) {
             metricValidationFailures.incrementAndGet()
             val reason = "Invalid remote NodeIdentity in bootstrap payload: ${e.message}"
-            Log.e(TAG, reason)
+            AppLogger.e(TAG, reason)
             HatDiagnostics.error("NFC_INVALID_IDENTITY", mapOf("error" to (e.message ?: "")))
             val result = HatNfcBootstrapResult(success = false, details = reason)
             _lastResult.value = result
@@ -538,7 +539,7 @@ object HatNfcBootstrapProvider {
         if (selectedTransport == null) {
             metricUnsupportedTransportFailures.incrementAndGet()
             val reason = "No compatible high-bandwidth transport found in remote hints: ${payload.transportHints}"
-            Log.w(TAG, reason)
+            AppLogger.w(TAG, reason)
             HatDiagnostics.warn("NFC_NO_COMMON_TRANSPORT", mapOf("hints" to payload.transportHints.map { it.name }))
             val result = HatNfcBootstrapResult(
                 success = false,
@@ -575,7 +576,7 @@ object HatNfcBootstrapProvider {
         metricSuccessfulHandoffs.incrementAndGet()
         val durationMs = System.currentTimeMillis() - t0
         val successMsg = "Successfully bootstrapped node '${remoteNode.name}' (${remoteNode.id}) -> preferred transport: $selectedTransport"
-        Log.i(TAG, successMsg)
+        AppLogger.i(TAG, successMsg)
         HatDiagnostics.info(
             "NFC_BOOTSTRAP_SUCCESS",
             mapOf(
@@ -616,7 +617,7 @@ object HatNfcBootstrapProvider {
         }
 
         metricTapsProcessed.incrementAndGet()
-        Log.i(TAG, "Processing NFC intent with action: $action")
+        AppLogger.i(TAG, "Processing NFC intent with action: $action")
         HatDiagnostics.info("NFC_INTENT_RECEIVED", mapOf("action" to action))
 
         val rawMessages = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -633,7 +634,7 @@ object HatNfcBootstrapProvider {
                         val payload = HatNfcBootstrapPayload.fromNdefMessage(raw)
                         return handleReceivedBootstrapPayload(payload, context)
                     } catch (e: Exception) {
-                        Log.w(TAG, "Failed to parse NdefMessage from intent: ${e.message}")
+                        AppLogger.w(TAG, "Failed to parse NdefMessage from intent: ${e.message}")
                     }
                 }
             }
@@ -655,7 +656,7 @@ object HatNfcBootstrapProvider {
         }
 
         val reason = "No valid HAT bootstrap NDEF payload found in NFC intent"
-        Log.w(TAG, reason)
+        AppLogger.w(TAG, reason)
         HatDiagnostics.warn("NFC_NO_PAYLOAD", mapOf("action" to action))
         return HatNfcBootstrapResult(success = false, details = reason)
     }
@@ -672,7 +673,7 @@ object HatNfcBootstrapProvider {
                 ndef.close()
                 msg?.let { HatNfcBootstrapPayload.fromNdefMessage(it) }
             } catch (e: Exception) {
-                Log.e(TAG, "Exception reading NDEF tag: ${e.message}")
+                AppLogger.e(TAG, "Exception reading NDEF tag: ${e.message}")
                 HatDiagnostics.error("NFC_TAG_READ_ERROR", mapOf("error" to (e.message ?: "")))
                 null
             }
@@ -690,22 +691,22 @@ object HatNfcBootstrapProvider {
             return try {
                 ndef.connect()
                 if (!ndef.isWritable) {
-                    Log.w(TAG, "NDEF tag is not writable")
+                    AppLogger.w(TAG, "NDEF tag is not writable")
                     ndef.close()
                     return false
                 }
                 if (ndef.maxSize < ndefMessage.toByteArray().size) {
-                    Log.w(TAG, "NDEF tag capacity too small")
+                    AppLogger.w(TAG, "NDEF tag capacity too small")
                     ndef.close()
                     return false
                 }
                 ndef.writeNdefMessage(ndefMessage)
                 ndef.close()
-                Log.i(TAG, "Successfully wrote HAT bootstrap payload to NDEF tag")
+                AppLogger.i(TAG, "Successfully wrote HAT bootstrap payload to NDEF tag")
                 HatDiagnostics.info("NFC_TAG_WRITE_SUCCESS", mapOf("bytes" to ndefMessage.toByteArray().size))
                 true
             } catch (e: Exception) {
-                Log.e(TAG, "Exception writing NDEF tag: ${e.message}")
+                AppLogger.e(TAG, "Exception writing NDEF tag: ${e.message}")
                 HatDiagnostics.error("NFC_TAG_WRITE_ERROR", mapOf("error" to (e.message ?: "")))
                 false
             }
@@ -717,11 +718,11 @@ object HatNfcBootstrapProvider {
                 formatable.connect()
                 formatable.format(ndefMessage)
                 formatable.close()
-                Log.i(TAG, "Successfully formatted and wrote HAT bootstrap payload to tag")
+                AppLogger.i(TAG, "Successfully formatted and wrote HAT bootstrap payload to tag")
                 HatDiagnostics.info("NFC_TAG_FORMAT_SUCCESS", mapOf("bytes" to ndefMessage.toByteArray().size))
                 true
             } catch (e: Exception) {
-                Log.e(TAG, "Exception formatting NDEF tag: ${e.message}")
+                AppLogger.e(TAG, "Exception formatting NDEF tag: ${e.message}")
                 HatDiagnostics.error("NFC_TAG_FORMAT_ERROR", mapOf("error" to (e.message ?: "")))
                 false
             }
@@ -752,9 +753,9 @@ object HatNfcBootstrapProvider {
                     }
                 }
             }, flags, null)
-            Log.d(TAG, "Enabled NFC reader mode for ${activity.localClassName}")
+            AppLogger.d(TAG, "Enabled NFC reader mode for ${activity.localClassName}")
         } catch (e: Exception) {
-            Log.w(TAG, "enableReaderMode failed, falling back to foreground dispatch: ${e.message}")
+            AppLogger.w(TAG, "enableReaderMode failed, falling back to foreground dispatch: ${e.message}")
             try {
                 val intent = Intent(activity, activity.javaClass).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 val pendingIntent = PendingIntent.getActivity(
@@ -766,7 +767,7 @@ object HatNfcBootstrapProvider {
                 }
                 adapter.enableForegroundDispatch(activity, pendingIntent, arrayOf(filter), null)
             } catch (fallbackEx: Exception) {
-                Log.e(TAG, "enableForegroundDispatch also failed: ${fallbackEx.message}")
+                AppLogger.e(TAG, "enableForegroundDispatch also failed: ${fallbackEx.message}")
             }
         }
     }
@@ -791,12 +792,12 @@ object HatNfcBootstrapProvider {
     }
 
     fun stopAll() {
-        Log.i(TAG, "stopAll() called")
+        AppLogger.i(TAG, "stopAll() called")
         if (isReceiverRegistered) {
             try {
                 applicationContext?.unregisterReceiver(nfcStateReceiver)
             } catch (e: Exception) {
-                Log.w(TAG, "Error unregistering nfcStateReceiver: ${e.message}")
+                AppLogger.w(TAG, "Error unregistering nfcStateReceiver: ${e.message}")
             }
             isReceiverRegistered = false
         }

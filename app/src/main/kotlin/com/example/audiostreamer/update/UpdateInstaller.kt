@@ -1,5 +1,7 @@
 package com.example.audiostreamer.update
 
+import com.example.audiostreamer.AppLogger
+
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
@@ -7,7 +9,6 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
-import android.util.Log
 import androidx.core.content.FileProvider
 import java.io.File
 
@@ -102,7 +103,7 @@ class UpdateInstaller(private val context: Context) {
             context.startActivity(installIntent)
             Result.success(Unit)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed launching install intent", e)
+            AppLogger.e(TAG, "Failed launching install intent", e)
             Result.failure(e)
         }
     }

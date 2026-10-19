@@ -25,7 +25,6 @@ import android.os.PowerManager
 import android.os.Process
 import android.os.SystemClock
 import android.provider.Settings
-import com.example.audiostreamer.AppLogger as Log
 import com.example.audiostreamer.node.HatLinkManager
 import com.example.audiostreamer.node.LinkAdapters
 import com.example.audiostreamer.node.LocalNodeManager
@@ -204,7 +203,7 @@ class AudioSinkService : Service() {
             diagNacksSent.incrementAndGet()
             HatDiagnostics.increment("rx_retx_requests")
         } catch (e: Exception) {
-            Log.d(TAG, "Failed to send retransmit request: ${e.message}")
+            AppLogger.d(TAG, "Failed to send retransmit request: ${e.message}")
         }
     }
 
@@ -287,7 +286,7 @@ class AudioSinkService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                Log.d(TAG, "Received ACTION_STOP")
+                AppLogger.d(TAG, "Received ACTION_STOP")
                 stopSink()
                 stopSelf()
                 return START_NOT_STICKY
@@ -337,7 +336,7 @@ class AudioSinkService : Service() {
             }
             val clampedFrames = track.setBufferSizeInFrames(targetFrames)
             val clampedMs = (clampedFrames * 1000L) / sampleRate
-            Log.i(TAG, "AudioTrack setBufferSizeInFrames for profile $normProfile: requested=$targetFrames, actual=$clampedFrames (~${clampedMs}ms), capacity=${track.bufferCapacityInFrames} frames")
+            AppLogger.i(TAG, "AudioTrack setBufferSizeInFrames for profile $normProfile: requested=$targetFrames, actual=$clampedFrames (~${clampedMs}ms), capacity=${track.bufferCapacityInFrames} frames")
         }
     }
 
@@ -413,7 +412,7 @@ class AudioSinkService : Service() {
         val track = if (requestedTrack.state == AudioTrack.STATE_INITIALIZED) {
             requestedTrack
         } else {
-            Log.w(
+            AppLogger.w(
                 TAG,
                 "AudioTrack creation failed (state=${requestedTrack.state}, " +
                     "sampleRate=$sampleRate, encoding=$encoding, bufferSizeBytes=$bufferSize)"
@@ -434,7 +433,7 @@ class AudioSinkService : Service() {
         }
 
         if (track.state != AudioTrack.STATE_INITIALIZED && encoding != AudioConfig.ENCODING) {
-            Log.w(TAG, "AudioTrack failed to initialize with encoding $encoding at $sampleRate Hz, falling back to 16-bit PCM")
+            AppLogger.w(TAG, "AudioTrack failed to initialize with encoding $encoding at $sampleRate Hz, falling back to 16-bit PCM")
             try { track.release() } catch (ignored: Exception) {}
             return configureAudioTrack(sampleRate, AudioConfig.ENCODING, normProfile, currentVolume)
         }
@@ -448,7 +447,7 @@ class AudioSinkService : Service() {
         try {
             track.play()
         } catch (e: Exception) {
-            Log.w(TAG, "AudioTrack play failed: ${e.message}")
+            AppLogger.w(TAG, "AudioTrack play failed: ${e.message}")
         }
 
         // Initialize fresh playback accounting for this new AudioTrack instance
@@ -465,7 +464,7 @@ class AudioSinkService : Service() {
         val primeWritten = try {
             track.write(primeBuf, 0, primeBytes, AudioTrack.WRITE_NON_BLOCKING)
         } catch (e: Exception) {
-            Log.w(TAG, "AudioTrack non-blocking prime failed: ${e.message}")
+            AppLogger.w(TAG, "AudioTrack non-blocking prime failed: ${e.message}")
             0
         }
         if (primeWritten > 0) {
@@ -492,7 +491,7 @@ class AudioSinkService : Service() {
                     }
                     oldTrack.release()
                 } catch (e: Exception) {
-                    Log.w(TAG, "Error releasing previous AudioTrack: ${e.message}")
+                    AppLogger.w(TAG, "Error releasing previous AudioTrack: ${e.message}")
                 }
             }, "OldTrackReleaser").apply {
                 isDaemon = true
@@ -502,7 +501,7 @@ class AudioSinkService : Service() {
 
         val activeFrames = try { track.bufferSizeInFrames } catch (e: Exception) { 0 }
         val capacityFrames = try { track.bufferCapacityInFrames } catch (e: Exception) { 0 }
-        Log.i(
+        AppLogger.i(
             TAG,
             "Configured AudioTrack: requestedPerformanceMode=$perfMode, actualPerformanceMode=$actualPerfMode, " +
                 "sampleRate=$sampleRate, channels=${AudioConfig.CHANNELS}, encoding=$encoding, " +
@@ -540,7 +539,7 @@ class AudioSinkService : Service() {
             )
         )
         if (previousGen != null && previousGen != config.generation) {
-            Log.i(TAG, "Stream generation transition from $previousGen to ${config.generation}: resetting jitter buffer and re-anchoring timeline")
+            AppLogger.i(TAG, "Stream generation transition from $previousGen to ${config.generation}: resetting jitter buffer and re-anchoring timeline")
             jitterBuffer.reset()
             nackTracker.clear()
             lastNackSendMs = 0L
@@ -617,7 +616,7 @@ class AudioSinkService : Service() {
 
     private fun startSink(port: Int) {
         if (isRunning.getAndSet(true)) {
-            Log.w(TAG, "AudioSinkService is already active")
+            AppLogger.w(TAG, "AudioSinkService is already active")
             return
         }
 
@@ -662,7 +661,7 @@ class AudioSinkService : Service() {
             try {
                 socket.soTimeout = ReceiverLivenessPolicy.RX_POLL_TIMEOUT_MS.toInt()
             } catch (e: Exception) {
-                Log.w(TAG, "Unable to set UDP receive timeout (${e.message}); liveness relies on inbound packets only")
+                AppLogger.w(TAG, "Unable to set UDP receive timeout (${e.message}); liveness relies on inbound packets only")
             }
             datagramSocket = socket
             activeTransport = transport
@@ -752,14 +751,14 @@ class AudioSinkService : Service() {
                                     if (newConfig != null) {
                                         val result = configAuthority.applyUpdate(newConfig)
                                         if (result is ConfigTransitionResult.Applied) {
-                                            Log.i(TAG, "CONFIG_APPLIED (in-band fec): ${newConfig.toSummaryString()}")
+                                            AppLogger.i(TAG, "CONFIG_APPLIED (in-band fec): ${newConfig.toSummaryString()}")
                                             applyStreamConfiguration(newConfig)
                                         }
                                         activeConfig = configAuthority.currentConfig
                                     }
                                 }
                                 if (activeConfig != null && !HatPacket.isGenerationValid(header.generation, activeConfig.generation)) {
-                                    Log.w(TAG, "Dropping stale-generation FEC parity packet: packet gen=${header.generation}, active gen=${activeConfig.generation}")
+                                    AppLogger.w(TAG, "Dropping stale-generation FEC parity packet: packet gen=${header.generation}, active gen=${activeConfig.generation}")
                                     noteGenerationMismatch(header.generation, activeConfig.generation, "fec_parity")
                                     continue
                                 }
@@ -789,7 +788,7 @@ class AudioSinkService : Service() {
 
                             // Check for Disconnect signal from transmitter
                             if (header.packetType == HatPacket.TYPE_DISCONNECT) {
-                                Log.i(TAG, "Received disconnect signal from transmitter: $lastSenderHost - stopping sink")
+                                AppLogger.i(TAG, "Received disconnect signal from transmitter: $lastSenderHost - stopping sink")
                                 UserAlertCenter.info("Transmitter disconnected")
                                 StreamState.update {
                                     it.copy(
@@ -807,7 +806,7 @@ class AudioSinkService : Service() {
                             if (header.packetType == HatPacket.TYPE_MEDIA_METADATA) {
                                 val meta = HatPacket.parseMediaMetadata(data, offset + HatPacket.HEADER_SIZE, header.payloadLength)
                                 if (meta != null) {
-                                    Log.i(TAG, "Received TYPE_MEDIA_METADATA: title='${meta.title}', artist='${meta.artist}', playing=${meta.isPlaying}")
+                                    AppLogger.i(TAG, "Received TYPE_MEDIA_METADATA: title='${meta.title}', artist='${meta.artist}', playing=${meta.isPlaying}")
                                     updateMediaMetadata(meta)
                                 }
                                 continue
@@ -855,14 +854,14 @@ class AudioSinkService : Service() {
                                 if (announcedConfig != null && incomingGen > 0L) {
                                     when (val result = configAuthority.applyUpdate(announcedConfig)) {
                                         is ConfigTransitionResult.RejectedStale -> {
-                                            Log.w(TAG, "Rejected stale stream configuration generation ${result.incomingGeneration} (current: ${result.currentGeneration})")
+                                            AppLogger.w(TAG, "Rejected stale stream configuration generation ${result.incomingGeneration} (current: ${result.currentGeneration})")
                                             noteGenerationMismatch(result.incomingGeneration, result.currentGeneration, "control_announcement")
                                         }
                                         is ConfigTransitionResult.IdempotentIgnored -> {
                                             // Repeated announcement of identical generation: idempotent no-op
                                         }
                                         is ConfigTransitionResult.Applied -> {
-                                            Log.i(TAG, "CONFIG_APPLIED: ${announcedConfig.toSummaryString()}")
+                                            AppLogger.i(TAG, "CONFIG_APPLIED: ${announcedConfig.toSummaryString()}")
                                             applyStreamConfiguration(announcedConfig)
                                         }
                                     }
@@ -881,19 +880,19 @@ class AudioSinkService : Service() {
                             if (isSilence) {
                                 var activeConfig = configAuthority.currentConfig
                                 if (activeConfig != null && header.generation > activeConfig.generation) {
-                                    Log.i(TAG, "In-band generation advance detected: silence gen=${header.generation} > active gen=${activeConfig.generation}")
+                                    AppLogger.i(TAG, "In-band generation advance detected: silence gen=${header.generation} > active gen=${activeConfig.generation}")
                                     val newConfig = NegotiatedStreamConfig.fromHeader(header, fecEnabled = true, generation = header.generation)
                                     if (newConfig != null) {
                                         val result = configAuthority.applyUpdate(newConfig)
                                         if (result is ConfigTransitionResult.Applied) {
-                                            Log.i(TAG, "CONFIG_APPLIED (in-band silence): ${newConfig.toSummaryString()}")
+                                            AppLogger.i(TAG, "CONFIG_APPLIED (in-band silence): ${newConfig.toSummaryString()}")
                                             applyStreamConfiguration(newConfig)
                                         }
                                         activeConfig = configAuthority.currentConfig
                                     }
                                 }
                                 if (activeConfig != null && !HatPacket.isGenerationValid(header.generation, activeConfig.generation)) {
-                                    Log.w(TAG, "Dropping stale-generation silence heartbeat: packet gen=${header.generation}, active gen=${activeConfig.generation}")
+                                    AppLogger.w(TAG, "Dropping stale-generation silence heartbeat: packet gen=${header.generation}, active gen=${activeConfig.generation}")
                                     noteGenerationMismatch(header.generation, activeConfig.generation, "silence_heartbeat")
                                     continue
                                 }
@@ -922,23 +921,23 @@ class AudioSinkService : Service() {
                                     if (initialConfig != null) {
                                         val result = configAuthority.applyUpdate(initialConfig)
                                         if (result is ConfigTransitionResult.Applied) {
-                                            Log.i(TAG, "CONFIG_APPLIED (initial audio): ${initialConfig.toSummaryString()}")
+                                            AppLogger.i(TAG, "CONFIG_APPLIED (initial audio): ${initialConfig.toSummaryString()}")
                                             applyStreamConfiguration(initialConfig)
                                         }
                                         activeConfig = configAuthority.currentConfig
                                     } else {
-                                        Log.w(TAG, "Rejected audio packet with invalid configuration: codec=${header.codec}, rate=${header.sampleRateHz}, bitDepth=${header.bitDepth}")
+                                        AppLogger.w(TAG, "Rejected audio packet with invalid configuration: codec=${header.codec}, rate=${header.sampleRateHz}, bitDepth=${header.bitDepth}")
                                         HatDiagnostics.increment("rx_invalid_config")
                                         continue
                                     }
                                 } else if (header.generation > activeConfig.generation) {
                                     // In-band stream configuration update: transmitter changed generation but announcement was delayed/dropped
-                                    Log.i(TAG, "In-band generation advance detected: packet gen=${header.generation} > active gen=${activeConfig.generation}")
+                                    AppLogger.i(TAG, "In-band generation advance detected: packet gen=${header.generation} > active gen=${activeConfig.generation}")
                                     val newConfig = NegotiatedStreamConfig.fromHeader(header, fecEnabled = true, generation = header.generation)
                                     if (newConfig != null) {
                                         val result = configAuthority.applyUpdate(newConfig)
                                         if (result is ConfigTransitionResult.Applied) {
-                                            Log.i(TAG, "CONFIG_APPLIED (in-band audio): ${newConfig.toSummaryString()}")
+                                            AppLogger.i(TAG, "CONFIG_APPLIED (in-band audio): ${newConfig.toSummaryString()}")
                                             applyStreamConfiguration(newConfig)
                                         }
                                         activeConfig = configAuthority.currentConfig
@@ -949,7 +948,7 @@ class AudioSinkService : Service() {
 
                                 // Generation enforcement: drop audio packets from obsolete stream generations!
                                 if (!HatPacket.isGenerationValid(header.generation, currentActiveConfig.generation)) {
-                                    Log.w(TAG, "Dropping stale-generation audio packet: packet gen=${header.generation}, active gen=${currentActiveConfig.generation}")
+                                    AppLogger.w(TAG, "Dropping stale-generation audio packet: packet gen=${header.generation}, active gen=${currentActiveConfig.generation}")
                                     noteGenerationMismatch(header.generation, currentActiveConfig.generation, "audio")
                                     continue
                                 }
@@ -957,7 +956,7 @@ class AudioSinkService : Service() {
                                 // Once generation N starts, receivers MUST keep using that configuration.
                                 val agreement = currentActiveConfig.validatePacketAgreement(header)
                                 if (agreement !is AgreementResult.Agreed) {
-                                    Log.w(TAG, "Dropping packet incompatible with active configuration: ${(agreement as AgreementResult.Disagreement).reason}")
+                                    AppLogger.w(TAG, "Dropping packet incompatible with active configuration: ${(agreement as AgreementResult.Disagreement).reason}")
                                     HatDiagnostics.increment("rx_codec_mismatch")
                                     continue
                                 }
@@ -1191,7 +1190,7 @@ class AudioSinkService : Service() {
                                             val step = (currentSampleRate * 10) / 1000 // +10ms step
                                             val newFrames = minOf(curFrames + step, maxFrames)
                                             val res = track.setBufferSizeInFrames(newFrames)
-                                            Log.w(TAG, "AudioTrack underrun detected (+$delta). Dynamically expanded buffer to $res frames (~${(res * 1000L) / currentSampleRate}ms)")
+                                            AppLogger.w(TAG, "AudioTrack underrun detected (+$delta). Dynamically expanded buffer to $res frames (~${(res * 1000L) / currentSampleRate}ms)")
                                         }
                                     }
                                 } else if (underruns < lastTrackUnderrunCount) {
@@ -1222,20 +1221,20 @@ class AudioSinkService : Service() {
                                 )
                             }
                             lastActivityElapsedMs = SystemClock.elapsedRealtime()
-                            Log.w(TAG, "Receiver liveness: lost transmitter ${lastTx.ip} after ${idle}ms of silence")
+                            AppLogger.w(TAG, "Receiver liveness: lost transmitter ${lastTx.ip} after ${idle}ms of silence")
                             UserAlertCenter.warn("No response from ${lastTx.name} — still listening for it to return")
                             HatDiagnostics.warn("TX_STALE", mapOf("sender" to lastTx.ip, "idleMs" to idle))
                         }
                     } catch (e: SocketException) {
-                        Log.d(TAG, "UDP socket closed")
+                        AppLogger.d(TAG, "UDP socket closed")
                         break
                     } catch (e: Exception) {
-                        Log.e(TAG, "Error in receiver loop", e)
+                        AppLogger.e(TAG, "Error in receiver loop", e)
                         HatDiagnostics.increment("rx_loop_errors")
                         HatDiagnostics.error("THREAD_FAILURE", mapOf("thread" to "UdpReceiverThread"), e)
                     }
                 }
-                Log.i(TAG, "UDP receiver thread finished")
+                AppLogger.i(TAG, "UDP receiver thread finished")
             }, "UdpReceiverThread").apply {
                 isDaemon = true
                 start()
@@ -1463,12 +1462,12 @@ class AudioSinkService : Service() {
                             }
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Error in playback loop", e)
+                        AppLogger.e(TAG, "Error in playback loop", e)
                         HatDiagnostics.increment("playback_write_errors")
                         HatDiagnostics.error("PLAYBACK_ERROR", mapOf("thread" to "AudioPlaybackThread"), e)
                     }
                 }
-                Log.i(TAG, "Audio playback thread finished")
+                AppLogger.i(TAG, "Audio playback thread finished")
             }, "AudioPlaybackThread").apply {
                 isDaemon = true
                 start()
@@ -1505,17 +1504,17 @@ class AudioSinkService : Service() {
                     } catch (e: InterruptedException) {
                         break
                     } catch (e: Exception) {
-                        Log.w(TAG, "Error in receiver keep-alive heartbeat: ${e.message}")
+                        AppLogger.w(TAG, "Error in receiver keep-alive heartbeat: ${e.message}")
                     }
                 }
-                Log.d(TAG, "Receiver heartbeat thread finished")
+                AppLogger.d(TAG, "Receiver heartbeat thread finished")
             }, "AudioSinkHeartbeat").apply {
                 isDaemon = true
                 start()
             }
 
         } catch (e: Exception) {
-            Log.e(TAG, "Failed initializing AudioSinkService", e)
+            AppLogger.e(TAG, "Failed initializing AudioSinkService", e)
             HatDiagnostics.error("THREAD_FAILURE", mapOf("thread" to "AudioSinkService", "stage" to "init"), e)
             StreamState.update { it.copy(statusDetail = "Error: ${e.message}") }
             stopSink()
@@ -1881,7 +1880,7 @@ class AudioSinkService : Service() {
                 acquire()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error acquiring system locks", e)
+            AppLogger.e(TAG, "Error acquiring system locks", e)
         }
     }
 
@@ -1891,7 +1890,7 @@ class AudioSinkService : Service() {
                 if (it.isHeld) it.release()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error releasing WakeLock", e)
+            AppLogger.e(TAG, "Error releasing WakeLock", e)
         }
         wakeLock = null
 
@@ -1900,7 +1899,7 @@ class AudioSinkService : Service() {
                 if (it.isHeld) it.release()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error releasing WifiLock", e)
+            AppLogger.e(TAG, "Error releasing WifiLock", e)
         }
         wifiLock = null
 
@@ -1909,7 +1908,7 @@ class AudioSinkService : Service() {
                 if (it.isHeld) it.release()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error releasing MulticastLock", e)
+            AppLogger.e(TAG, "Error releasing MulticastLock", e)
         }
         multicastLock = null
     }
@@ -1999,7 +1998,7 @@ class AudioSinkService : Service() {
 
         val notification = builder.build()
 
-        Log.i(TAG, "HAT_MEDIA_NOTIFICATION_CREATED: channelId=$CHANNEL_ID, importance=LOW, category=CATEGORY_TRANSPORT, style=MediaStyle, hasMediaSession=${sessionToken != null}, track=\"$currentTrackTitle\", hasArtwork=${currentTrackArtwork != null}")
+        AppLogger.i(TAG, "HAT_MEDIA_NOTIFICATION_CREATED: channelId=$CHANNEL_ID, importance=LOW, category=CATEGORY_TRANSPORT, style=MediaStyle, hasMediaSession=${sessionToken != null}, track=\"$currentTrackTitle\", hasArtwork=${currentTrackArtwork != null}")
 
         return notification
     }
@@ -2057,7 +2056,7 @@ class AudioSinkService : Service() {
                 isActive = true
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed setting up MediaSession: ${e.message}")
+            AppLogger.w(TAG, "Failed setting up MediaSession: ${e.message}")
         }
     }
 
@@ -2067,7 +2066,7 @@ class AudioSinkService : Service() {
         // Reject stale packets — protects against out-of-order or delayed network delivery
         // when the transmitter has already switched to a new app.
         if (incomingSeq > 0 && incomingSeq <= lastReceivedMediaSequence) {
-            Log.d(TAG, "MEDIA_METADATA_RX seq=$incomingSeq STALE (last=${lastReceivedMediaSequence}) — dropped")
+            AppLogger.d(TAG, "MEDIA_METADATA_RX seq=$incomingSeq STALE (last=${lastReceivedMediaSequence}) — dropped")
             return
         }
         lastReceivedMediaSequence = incomingSeq
@@ -2076,7 +2075,7 @@ class AudioSinkService : Service() {
         val isClearPacket = metadata.title.isEmpty() && metadata.artist.isEmpty() && metadata.album.isEmpty()
 
         if (isClearPacket) {
-            Log.i(TAG, "MEDIA_SESSION_CLEARED seq=$incomingSeq — resetting to fallback state")
+            AppLogger.i(TAG, "MEDIA_SESSION_CLEARED seq=$incomingSeq — resetting to fallback state")
             currentTrackTitle  = "Streaming Audio"
             currentTrackArtist = "Transmitter"
             currentTrackAlbum  = "HAT Audio Transport"
@@ -2094,7 +2093,7 @@ class AudioSinkService : Service() {
                     null
                 }
             }
-            Log.i(TAG,
+            AppLogger.i(TAG,
                 "MEDIA_METADATA_RX seq=$incomingSeq package=${metadata.packageName} " +
                 "state=${if (isTrackPlaying) "PLAYING" else "PAUSED"} " +
                 "title=\"$currentTrackTitle\" artist=\"$currentTrackArtist\" album=\"$currentTrackAlbum\" artLen=${metadata.artworkBytes?.size ?: 0}")
@@ -2135,7 +2134,7 @@ class AudioSinkService : Service() {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             nm?.notify(NOTIFICATION_ID, buildNotification())
         } catch (e: Exception) {
-            Log.w(TAG, "Error updating MediaSession metadata: ${e.message}")
+            AppLogger.w(TAG, "Error updating MediaSession metadata: ${e.message}")
         }
 
         try {
@@ -2164,13 +2163,13 @@ class AudioSinkService : Service() {
             Thread({
                 try {
                     sock.send(packet)
-                    Log.i(TAG, "Sent TYPE_MEDIA_CONTROL ($command) to $targetAddr:$targetPort")
+                    AppLogger.i(TAG, "Sent TYPE_MEDIA_CONTROL ($command) to $targetAddr:$targetPort")
                 } catch (e: Exception) {
-                    Log.w(TAG, "Failed sending media control packet: ${e.message}")
+                    AppLogger.w(TAG, "Failed sending media control packet: ${e.message}")
                 }
             }, "AudioSinkMediaControl").start()
         } catch (e: Exception) {
-            Log.w(TAG, "Failed constructing media control packet: ${e.message}")
+            AppLogger.w(TAG, "Failed constructing media control packet: ${e.message}")
         }
     }
 
@@ -2187,7 +2186,7 @@ class AudioSinkService : Service() {
             }
             val manager = getSystemService(NotificationManager::class.java)
             manager?.createNotificationChannel(channel)
-            Log.i(TAG, "AudioSinkChannel configured: id=$CHANNEL_ID, importance=IMPORTANCE_LOW")
+            AppLogger.i(TAG, "AudioSinkChannel configured: id=$CHANNEL_ID, importance=IMPORTANCE_LOW")
         }
     }
 
@@ -2195,7 +2194,7 @@ class AudioSinkService : Service() {
         if (!isRunning.getAndSet(false)) {
             return
         }
-        Log.i(TAG, "Stopping audio sink")
+        AppLogger.i(TAG, "Stopping audio sink")
         HatDiagnostics.lifecycle(
             "GENERATION_STOPPED",
             configAuthority.currentGeneration,
@@ -2241,10 +2240,10 @@ class AudioSinkService : Service() {
                 repeat(3) {
                     datagramSocket?.send(packet)
                 }
-                Log.i(TAG, "Sent disconnect notification burst (3x) to transmitter $addr:$targetPort")
+                AppLogger.i(TAG, "Sent disconnect notification burst (3x) to transmitter $addr:$targetPort")
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Could not send disconnect notification: ${e.message}")
+            AppLogger.w(TAG, "Could not send disconnect notification: ${e.message}")
         }
 
         try {
@@ -2264,7 +2263,7 @@ class AudioSinkService : Service() {
             activeTransport?.close()
             datagramSocket?.close()
         } catch (e: Exception) {
-            Log.e(TAG, "Error closing UDP socket", e)
+            AppLogger.e(TAG, "Error closing UDP socket", e)
         }
         datagramSocket = null
         activeTransport = null
@@ -2284,7 +2283,7 @@ class AudioSinkService : Service() {
                     it.release()
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error stopping AudioTrack", e)
+                AppLogger.e(TAG, "Error stopping AudioTrack", e)
             }
             audioTrack = null
             trackPlaybackTracker?.reset()
@@ -2354,7 +2353,7 @@ class AudioSinkService : Service() {
         lastSenderPort = null
         lastSentLocalVolume = -1
         super.onDestroy()
-        Log.d(TAG, "AudioSinkService destroyed")
+        AppLogger.d(TAG, "AudioSinkService destroyed")
     }
 
     private fun applyIncomingVolume(headerVolumeByte: Byte, audioManager: AudioManager) {
@@ -2391,10 +2390,10 @@ class AudioSinkService : Service() {
                         audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetStep, 0)
                     }
                 } catch (e: Exception) {
-                    Log.w(TAG, "Failed syncing receiver hardware volume: ${e.message}")
+                    AppLogger.w(TAG, "Failed syncing receiver hardware volume: ${e.message}")
                 }
             }
-            Log.d(TAG, "Applied remote volume: $volume% (syncEnabled=$syncEnabled)")
+            AppLogger.d(TAG, "Applied remote volume: $volume% (syncEnabled=$syncEnabled)")
         }
     }
 
@@ -2423,9 +2422,9 @@ class AudioSinkService : Service() {
             }
             contentResolver.registerContentObserver(Settings.System.CONTENT_URI, true, observer)
             localVolumeObserver = observer
-            Log.d(TAG, "Receiver local volume ContentObserver registered (initial volume: $lastSentLocalVolume%)")
+            AppLogger.d(TAG, "Receiver local volume ContentObserver registered (initial volume: $lastSentLocalVolume%)")
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to register receiver local volume ContentObserver: ${e.message}")
+            AppLogger.w(TAG, "Failed to register receiver local volume ContentObserver: ${e.message}")
         }
     }
 
@@ -2433,9 +2432,9 @@ class AudioSinkService : Service() {
         localVolumeObserver?.let {
             try {
                 contentResolver.unregisterContentObserver(it)
-                Log.d(TAG, "Receiver local volume ContentObserver unregistered")
+                AppLogger.d(TAG, "Receiver local volume ContentObserver unregistered")
             } catch (e: Exception) {
-                Log.w(TAG, "Error unregistering receiver local volume ContentObserver: ${e.message}")
+                AppLogger.w(TAG, "Error unregistering receiver local volume ContentObserver: ${e.message}")
             }
         }
         localVolumeObserver = null
@@ -2461,7 +2460,7 @@ class AudioSinkService : Service() {
             }
 
             if (percent != currentRemoteVolume && percent != lastSentLocalVolume) {
-                Log.i(TAG, "Local receiver hardware volume changed to $curVol ($percent%), syncing to transmitter")
+                AppLogger.i(TAG, "Local receiver hardware volume changed to $curVol ($percent%), syncing to transmitter")
                 lastSentLocalVolume = percent
                 currentRemoteVolume = percent
                 val floatVol = (percent / 100.0f).coerceIn(0.0f, 1.0f)
@@ -2469,7 +2468,7 @@ class AudioSinkService : Service() {
                 sendVolumeSyncDatagram(percent)
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Error checking receiver local volume: ${e.message}")
+            AppLogger.w(TAG, "Error checking receiver local volume: ${e.message}")
         }
     }
 
@@ -2495,16 +2494,16 @@ class AudioSinkService : Service() {
             Thread({
                 try {
                     sock.send(packet)
-                    Log.d(TAG, "Sent reverse volume sync to transmitter $addr:$port: $volume%")
+                    AppLogger.d(TAG, "Sent reverse volume sync to transmitter $addr:$port: $volume%")
                 } catch (e: Exception) {
-                    Log.w(TAG, "Failed sending reverse volume sync: ${e.message}")
+                    AppLogger.w(TAG, "Failed sending reverse volume sync: ${e.message}")
                 }
             }, "VolumeSyncThread").apply {
                 isDaemon = true
                 start()
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Error preparing reverse volume sync packet: ${e.message}")
+            AppLogger.w(TAG, "Error preparing reverse volume sync packet: ${e.message}")
         }
     }
 
@@ -2535,9 +2534,9 @@ class AudioSinkService : Service() {
                 decoder.configure(format, null, null, 0)
                 decoder.start()
                 codec = decoder
-                Log.i(TAG, "Initialized AAC MediaCodec decoder: rate=$sampleRate, channels=$channelCount")
+                AppLogger.i(TAG, "Initialized AAC MediaCodec decoder: rate=$sampleRate, channels=$channelCount")
             } catch (e: Exception) {
-                Log.e(TAG, "Failed initializing AAC decoder", e)
+                AppLogger.e(TAG, "Failed initializing AAC decoder", e)
             }
         }
 
@@ -2560,7 +2559,7 @@ class AudioSinkService : Service() {
                 var outIndex = decoder.dequeueOutputBuffer(bufferInfo, 2000L)
                 while (outIndex >= 0 || outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        Log.i(TAG, "AAC decoder output format changed: ${decoder.outputFormat}")
+                        AppLogger.i(TAG, "AAC decoder output format changed: ${decoder.outputFormat}")
                     } else {
                         val outBuf = decoder.getOutputBuffer(outIndex)
                         val outSize = bufferInfo.size
@@ -2575,7 +2574,7 @@ class AudioSinkService : Service() {
                     outIndex = decoder.dequeueOutputBuffer(bufferInfo, 0L)
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "AAC decode error: ${e.message}, re-initializing")
+                AppLogger.w(TAG, "AAC decode error: ${e.message}, re-initializing")
                 try {
                     decoder.stop()
                     decoder.release()
@@ -2608,9 +2607,9 @@ class AudioSinkService : Service() {
         private fun initDecoder() {
             try {
                 decoder = io.github.jaredmdobson.concentus.OpusDecoder(sampleRate, channelCount)
-                Log.i(TAG, "Initialized Concentus Opus decoder: rate=$sampleRate, channels=$channelCount")
+                AppLogger.i(TAG, "Initialized Concentus Opus decoder: rate=$sampleRate, channels=$channelCount")
             } catch (e: Exception) {
-                Log.e(TAG, "Failed initializing Opus decoder", e)
+                AppLogger.e(TAG, "Failed initializing Opus decoder", e)
                 decoder = null
             }
         }
@@ -2630,7 +2629,7 @@ class AudioSinkService : Service() {
                     emptyList()
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Opus decode error: ${e.message}")
+                AppLogger.w(TAG, "Opus decode error: ${e.message}")
                 HatDiagnostics.increment("rx_opus_decode_errors")
                 emptyList()
             }
@@ -2658,7 +2657,7 @@ class AudioSinkService : Service() {
                     null
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Opus PLC decode error: ${e.message}")
+                AppLogger.w(TAG, "Opus PLC decode error: ${e.message}")
                 HatDiagnostics.increment("rx_opus_decode_errors")
                 null
             }

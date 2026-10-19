@@ -42,7 +42,7 @@ class UsbAccessoryReceiver : BroadcastReceiver() {
             // ForegroundServiceStartNotAllowedException surfaces here if the OEM treats this
             // broadcast as a background start; the user can still open the app (MainActivity's
             // ACCESSORY_ATTACHED filter + manual enable path remain).
-            AppLogger.e(TAG, "USB: could not auto-start service (${e.message})")
+            AppLogger.report(TAG, "USB: could not auto-start service (${e.message})")
         }
     }
 

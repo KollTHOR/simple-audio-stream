@@ -1,8 +1,9 @@
 package com.example.audiostreamer.update
 
+import com.example.audiostreamer.AppLogger
+
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -129,7 +130,7 @@ class UpdateRepository(private val context: Context) {
                     )
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Failed reading releases cache", e)
+                AppLogger.w(TAG, "Failed reading releases cache", e)
             }
         }
 
@@ -173,7 +174,7 @@ class UpdateRepository(private val context: Context) {
                 serveCacheOrError(cachedJson, errorMsg, page)
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Network failure fetching releases: ${e.message}")
+            AppLogger.w(TAG, "Network failure fetching releases: ${e.message}")
             val errorMsg = "Network error: ${e.localizedMessage ?: "Unable to connect to GitHub"}"
             serveCacheOrError(cachedJson, errorMsg, page)
         }

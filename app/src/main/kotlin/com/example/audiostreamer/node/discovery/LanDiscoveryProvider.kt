@@ -1,5 +1,7 @@
 package com.example.audiostreamer.node.discovery
 
+import com.example.audiostreamer.AppLogger
+
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
@@ -14,7 +16,6 @@ import com.example.audiostreamer.node.NodeIdentity
 import com.example.audiostreamer.node.NodeInfo
 import com.example.audiostreamer.node.NodeState
 import com.example.audiostreamer.node.StreamRole
-import com.example.audiostreamer.AppLogger as Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -125,11 +126,11 @@ object LanDiscoveryProvider {
             if (!NetworkUtils.isLanAvailable(context)) {
                 _state.value = LanDiscoveryState.STOPPED
                 _statusMessage.value = "LAN unavailable (Offline)"
-                Log.d(TAG, "Cannot start LAN discovery: LAN unavailable")
+                AppLogger.d(TAG, "Cannot start LAN discovery: LAN unavailable")
                 return
             }
             if (_isScanning.value || isDiscoveryRegistered.get()) {
-                Log.d(TAG, "Discovery already active or registered")
+                AppLogger.d(TAG, "Discovery already active or registered")
                 return
             }
 
@@ -158,7 +159,7 @@ object LanDiscoveryProvider {
                     _isScanning.value = true
                     _state.value = LanDiscoveryState.DISCOVERING
                     _statusMessage.value = "Scanning for $regType"
-                    Log.i(TAG, "LAN discovery started for $regType")
+                    AppLogger.i(TAG, "LAN discovery started for $regType")
                     HatDiagnostics.info("LAN_DISCOVERY_STARTED", mapOf(
                         "serviceType" to regType,
                         "timestamp" to System.currentTimeMillis()
@@ -168,7 +169,7 @@ object LanDiscoveryProvider {
                 override fun onServiceFound(serviceInfo: NsdServiceInfo) {
                     val foundName = serviceInfo.serviceName
                     val foundType = serviceInfo.serviceType
-                    Log.i(TAG, "LAN service found: $foundName (type=$foundType)")
+                    AppLogger.i(TAG, "LAN service found: $foundName (type=$foundType)")
                     HatDiagnostics.info("LAN_SERVICE_FOUND", mapOf(
                         "serviceName" to foundName,
                         "serviceType" to foundType
@@ -178,7 +179,7 @@ object LanDiscoveryProvider {
                     val myRegistered = registeredServiceName
                     val localNode = LocalNodeManager.getLocalNode()
                     if (foundName == myRegistered || (foundName.contains(localNode.id.takeLast(6)) && localNode.id.length >= 6)) {
-                        Log.d(TAG, "Ignoring self service announcement: $foundName")
+                        AppLogger.d(TAG, "Ignoring self service announcement: $foundName")
                         return
                     }
 
@@ -188,7 +189,7 @@ object LanDiscoveryProvider {
 
                 override fun onServiceLost(serviceInfo: NsdServiceInfo) {
                     val lostName = serviceInfo.serviceName
-                    Log.i(TAG, "LAN service lost: $lostName")
+                    AppLogger.i(TAG, "LAN service lost: $lostName")
                     val removed = removeNodeByServiceName(lostName)
                     HatDiagnostics.info("LAN_SERVICE_LOST", mapOf(
                         "serviceName" to lostName,
@@ -201,7 +202,7 @@ object LanDiscoveryProvider {
                     _state.value = LanDiscoveryState.STOPPED
                     _statusMessage.value = "Discovery stopped"
                     isDiscoveryRegistered.set(false)
-                    Log.i(TAG, "LAN discovery stopped for $serviceType")
+                    AppLogger.i(TAG, "LAN discovery stopped for $serviceType")
                     HatDiagnostics.info("LAN_DISCOVERY_STOPPED", mapOf("serviceType" to serviceType))
                 }
 
@@ -211,7 +212,7 @@ object LanDiscoveryProvider {
                     isDiscoveryRegistered.set(false)
                     val errorDesc = describeErrorCode(errorCode)
                     _statusMessage.value = "Start discovery failed: $errorDesc"
-                    Log.e(TAG, "Start discovery failed ($errorCode): $errorDesc")
+                    AppLogger.e(TAG, "Start discovery failed ($errorCode): $errorDesc")
                     HatDiagnostics.error("LAN_DISCOVERY_ERROR", mapOf(
                         "stage" to "start_discovery",
                         "errorCode" to errorCode,
@@ -223,7 +224,7 @@ object LanDiscoveryProvider {
                     _state.value = LanDiscoveryState.ERROR
                     val errorDesc = describeErrorCode(errorCode)
                     _statusMessage.value = "Stop discovery failed: $errorDesc"
-                    Log.e(TAG, "Stop discovery failed ($errorCode): $errorDesc")
+                    AppLogger.e(TAG, "Stop discovery failed ($errorCode): $errorDesc")
                     HatDiagnostics.error("LAN_DISCOVERY_ERROR", mapOf(
                         "stage" to "stop_discovery",
                         "errorCode" to errorCode,
@@ -241,13 +242,13 @@ object LanDiscoveryProvider {
                 _state.value = LanDiscoveryState.ERROR
                 val permMsg = "Local-network access permission denied (Android 16): ${e.message}"
                 _statusMessage.value = permMsg
-                Log.e(TAG, permMsg, e)
+                AppLogger.e(TAG, permMsg, e)
                 HatDiagnostics.error("LAN_DISCOVERY_ERROR", mapOf("stage" to "discoverServices", "reason" to "SecurityException", "message" to (e.message ?: "")))
             } catch (e: Exception) {
                 _state.value = LanDiscoveryState.ERROR
                 val errMsg = "Failed starting discovery: ${e.message}"
                 _statusMessage.value = errMsg
-                Log.e(TAG, errMsg, e)
+                AppLogger.e(TAG, errMsg, e)
                 HatDiagnostics.error("LAN_DISCOVERY_ERROR", mapOf("stage" to "discoverServices", "message" to errMsg), e)
             }
         }
@@ -263,11 +264,11 @@ object LanDiscoveryProvider {
     ) {
         synchronized(lock) {
             if (!NetworkUtils.isLanAvailable(context)) {
-                Log.d(TAG, "Skipping DNS-SD node advertisement: LAN unavailable")
+                AppLogger.d(TAG, "Skipping DNS-SD node advertisement: LAN unavailable")
                 return
             }
             if (_isAdvertising.value || isRegistrationActive.get()) {
-                Log.d(TAG, "Advertisement already active, skipping re-registration")
+                AppLogger.d(TAG, "Advertisement already active, skipping re-registration")
                 return
             }
 
@@ -276,7 +277,7 @@ object LanDiscoveryProvider {
                 nsdManager = it
             }
             if (mgr == null) {
-                Log.w(TAG, "NsdManager not available for service advertisement")
+                AppLogger.w(TAG, "NsdManager not available for service advertisement")
                 return
             }
 
@@ -301,7 +302,7 @@ object LanDiscoveryProvider {
                     registeredServiceName = regInfo.serviceName
                     _isAdvertising.value = true
                     isRegistrationActive.set(true)
-                    Log.i(TAG, "Local node advertised via DNS-SD: ${regInfo.serviceName} on port ${regInfo.port}")
+                    AppLogger.i(TAG, "Local node advertised via DNS-SD: ${regInfo.serviceName} on port ${regInfo.port}")
                     HatDiagnostics.info("LAN_ADVERTISE_REGISTERED", mapOf(
                         "serviceName" to regInfo.serviceName,
                         "nodeId" to node.id,
@@ -313,7 +314,7 @@ object LanDiscoveryProvider {
                     _isAdvertising.value = false
                     isRegistrationActive.set(false)
                     val errorDesc = describeErrorCode(errorCode)
-                    Log.e(TAG, "Service registration failed ($errorCode): $errorDesc")
+                    AppLogger.e(TAG, "Service registration failed ($errorCode): $errorDesc")
                     HatDiagnostics.error("LAN_DISCOVERY_ERROR", mapOf(
                         "stage" to "registerService",
                         "errorCode" to errorCode,
@@ -325,7 +326,7 @@ object LanDiscoveryProvider {
                     _isAdvertising.value = false
                     isRegistrationActive.set(false)
                     registeredServiceName = null
-                    Log.i(TAG, "Local node service unregistered: ${serviceInfo.serviceName}")
+                    AppLogger.i(TAG, "Local node service unregistered: ${serviceInfo.serviceName}")
                     HatDiagnostics.info("LAN_ADVERTISE_UNREGISTERED", mapOf(
                         "serviceName" to serviceInfo.serviceName
                     ))
@@ -333,7 +334,7 @@ object LanDiscoveryProvider {
 
                 override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
                     val errorDesc = describeErrorCode(errorCode)
-                    Log.e(TAG, "Service unregistration failed ($errorCode): $errorDesc")
+                    AppLogger.e(TAG, "Service unregistration failed ($errorCode): $errorDesc")
                     HatDiagnostics.error("LAN_DISCOVERY_ERROR", mapOf(
                         "stage" to "unregisterService",
                         "errorCode" to errorCode,
@@ -348,10 +349,10 @@ object LanDiscoveryProvider {
                 mgr.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, regListener)
             } catch (e: SecurityException) {
                 val permMsg = "Local network access denied during service advertisement (Android 16): ${e.message}"
-                Log.e(TAG, permMsg, e)
+                AppLogger.e(TAG, permMsg, e)
                 HatDiagnostics.error("LAN_DISCOVERY_ERROR", mapOf("stage" to "registerService", "reason" to "SecurityException", "message" to (e.message ?: "")))
             } catch (e: Exception) {
-                Log.e(TAG, "Failed advertising service: ${e.message}", e)
+                AppLogger.e(TAG, "Failed advertising service: ${e.message}", e)
                 HatDiagnostics.error("LAN_DISCOVERY_ERROR", mapOf("stage" to "registerService", "message" to (e.message ?: "")), e)
             }
         }
@@ -368,7 +369,7 @@ object LanDiscoveryProvider {
                 try {
                     mgr.unregisterService(listener)
                 } catch (e: Exception) {
-                    Log.w(TAG, "Error unregistering service: ${e.message}")
+                    AppLogger.w(TAG, "Error unregistering service: ${e.message}")
                 }
             }
             registrationListener = null
@@ -389,7 +390,7 @@ object LanDiscoveryProvider {
                 try {
                     mgr.stopServiceDiscovery(listener)
                 } catch (e: Exception) {
-                    Log.w(TAG, "Error stopping service discovery: ${e.message}")
+                    AppLogger.w(TAG, "Error stopping service discovery: ${e.message}")
                 }
             }
             discoveryListener = null
@@ -449,7 +450,7 @@ object LanDiscoveryProvider {
         val resolveListener = object : NsdManager.ResolveListener {
             override fun onResolveFailed(failedInfo: NsdServiceInfo, errorCode: Int) {
                 val errorDesc = describeErrorCode(errorCode)
-                Log.w(TAG, "Resolve failed for ${failedInfo.serviceName} ($errorCode): $errorDesc")
+                AppLogger.w(TAG, "Resolve failed for ${failedInfo.serviceName} ($errorCode): $errorDesc")
                 HatDiagnostics.error("LAN_DISCOVERY_ERROR", mapOf(
                     "stage" to "resolveService",
                     "serviceName" to failedInfo.serviceName,
@@ -463,7 +464,7 @@ object LanDiscoveryProvider {
                 try {
                     handleServiceResolved(resolvedInfo)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error processing resolved service ${resolvedInfo.serviceName}: ${e.message}", e)
+                    AppLogger.e(TAG, "Error processing resolved service ${resolvedInfo.serviceName}: ${e.message}", e)
                 }
                 lockResolve.complete(true)
             }
@@ -472,7 +473,7 @@ object LanDiscoveryProvider {
         try {
             mgr.resolveService(serviceInfo, resolveListener)
         } catch (e: Exception) {
-            Log.e(TAG, "Exception initiating resolveService for ${serviceInfo.serviceName}: ${e.message}", e)
+            AppLogger.e(TAG, "Exception initiating resolveService for ${serviceInfo.serviceName}: ${e.message}", e)
             lockResolve.complete(false)
         }
 
@@ -500,7 +501,7 @@ object LanDiscoveryProvider {
 
         // Filter out self-discovery
         if (nodeId == localNode.id || (hostAddress in localIps && nodeId.startsWith(localNode.id))) {
-            Log.d(TAG, "Ignoring self node resolution: $nodeId ($hostAddress)")
+            AppLogger.d(TAG, "Ignoring self node resolution: $nodeId ($hostAddress)")
             return
         }
 
@@ -552,7 +553,7 @@ object LanDiscoveryProvider {
         serviceNameToNodeId[resolvedInfo.serviceName] = nodeId
         publishDiscoveredNodes()
 
-        Log.i(TAG, "LAN Node resolved: $nodeName ($nodeId) at $hostAddress:$port [state=${state.name}]")
+        AppLogger.i(TAG, "LAN Node resolved: $nodeName ($nodeId) at $hostAddress:$port [state=${state.name}]")
         HatDiagnostics.info("LAN_NODE_RESOLVED", mapOf(
             "serviceName" to resolvedInfo.serviceName,
             "nodeId" to nodeId,
@@ -594,9 +595,9 @@ object LanDiscoveryProvider {
                 setReferenceCounted(false)
                 acquire()
             }
-            Log.d(TAG, "Acquired Wi-Fi MulticastLock for DNS-SD discovery")
+            AppLogger.d(TAG, "Acquired Wi-Fi MulticastLock for DNS-SD discovery")
         } catch (e: Exception) {
-            Log.w(TAG, "Failed acquiring MulticastLock: ${e.message}")
+            AppLogger.w(TAG, "Failed acquiring MulticastLock: ${e.message}")
         }
     }
 
@@ -606,7 +607,7 @@ object LanDiscoveryProvider {
                 if (it.isHeld) it.release()
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed releasing MulticastLock: ${e.message}")
+            AppLogger.w(TAG, "Failed releasing MulticastLock: ${e.message}")
         }
         multicastLock = null
     }

@@ -1,8 +1,9 @@
 package com.example.audiostreamer.usb
 
+import com.example.audiostreamer.AppLogger
+
 import android.media.AudioFormat
 import android.media.AudioTrack
-import android.util.Log
 
 /**
  * Bridges PCM formats to what this device's AudioFlinger/AudioTrack can actually render, and narrows
@@ -32,7 +33,7 @@ object UsbPcmProber {
         return try {
             AudioTrack.getMinBufferSize(format.sampleRate, channelMask, encoding)
         } catch (e: Exception) {
-            Log.d(TAG, "getMinBufferSize failed for ${format.displayLabel()}: ${e.message}")
+            AppLogger.d(TAG, "getMinBufferSize failed for ${format.displayLabel()}: ${e.message}")
             -1
         } catch (e: Error) {
             -1

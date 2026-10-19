@@ -82,6 +82,12 @@
             android:exported="false"
             android:parentActivityName=".MainActivity" />
 
+        <!-- In-app log viewer (reads the in-memory log ring; no logcat). -->
+        <activity
+            android:name=".LogsActivity"
+            android:exported="false"
+            android:parentActivityName=".MainActivity" />
+
         <!-- FileProvider for APK In-App Updates -->
         <provider
             android:name="androidx.core.content.FileProvider"

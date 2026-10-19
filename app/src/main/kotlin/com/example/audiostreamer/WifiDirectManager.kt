@@ -15,7 +15,6 @@ import android.net.wifi.p2p.WifiP2pInfo
 import android.net.wifi.p2p.WifiP2pManager
 import android.net.wifi.WpsInfo
 import android.os.Build
-import com.example.audiostreamer.AppLogger as Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -69,7 +68,7 @@ object WifiDirectManager {
      */
     private fun abortJoin(message: String, onFailed: ((String) -> Unit)?) {
         _statusMessage.value = message
-        Log.w(TAG, message)
+        AppLogger.w(TAG, message)
         UserAlertCenter.warn(message)
         onFailed?.invoke(message)
     }
@@ -129,17 +128,17 @@ object WifiDirectManager {
         if (wifiP2pManager != null) return
         val mgr = context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
         if (mgr == null) {
-            Log.w(TAG, "Wi-Fi Direct (P2P) hardware not supported on this device")
+            AppLogger.w(TAG, "Wi-Fi Direct (P2P) hardware not supported on this device")
             _isP2pSupported.value = false
             _statusMessage.value = "Wi-Fi Direct not supported"
             return
         }
         wifiP2pManager = mgr
         channel = mgr.initialize(context.applicationContext, context.mainLooper) {
-            Log.w(TAG, "Wi-Fi Direct channel disconnected, reinitializing...")
+            AppLogger.w(TAG, "Wi-Fi Direct channel disconnected, reinitializing...")
             channel = wifiP2pManager?.initialize(context.applicationContext, context.mainLooper, null)
         }
-        Log.i(TAG, "Wi-Fi Direct initialized successfully")
+        AppLogger.i(TAG, "Wi-Fi Direct initialized successfully")
         registerReceiver(context)
     }
 
@@ -161,11 +160,11 @@ object WifiDirectManager {
                         val enabled = state == WifiP2pManager.WIFI_P2P_STATE_ENABLED
                         _isP2pEnabled.value = enabled
                         _statusMessage.value = if (enabled) "Wi-Fi Direct Ready" else "Wi-Fi Direct Disabled"
-                        Log.i(TAG, "WIFI_P2P_STATE_CHANGED: enabled=$enabled")
+                        AppLogger.i(TAG, "WIFI_P2P_STATE_CHANGED: enabled=$enabled")
                     }
                     WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> {
                         if (!hasPermissions(ctx)) {
-                            Log.w(TAG, "PEERS_CHANGED broadcast received but permissions not granted")
+                            AppLogger.w(TAG, "PEERS_CHANGED broadcast received but permissions not granted")
                             return
                         }
                         wifiP2pManager?.requestPeers(channel) { peerList ->
@@ -180,9 +179,9 @@ object WifiDirectManager {
                                 .joinToString("|")
                             if (signature != lastPeerSignature) {
                                 lastPeerSignature = signature
-                                Log.i(TAG, "Discovered ${peers.size} Wi-Fi Direct peer(s)")
+                                AppLogger.i(TAG, "Discovered ${peers.size} Wi-Fi Direct peer(s)")
                                 for (p in peers) {
-                                    Log.i(TAG, " -> Peer: '${p.deviceName}' (${p.deviceAddress}), status=${p.status}")
+                                    AppLogger.i(TAG, " -> Peer: '${p.deviceName}' (${p.deviceAddress}), status=${p.status}")
                                 }
                             }
                         }
@@ -192,7 +191,7 @@ object WifiDirectManager {
                         val networkInfo = intent.getParcelableExtra<NetworkInfo>(WifiP2pManager.EXTRA_NETWORK_INFO)
                         val connected = networkInfo?.isConnected == true
                         _isConnected.value = connected
-                        Log.i(TAG, "WIFI_P2P_CONNECTION_CHANGED: connected=$connected")
+                        AppLogger.i(TAG, "WIFI_P2P_CONNECTION_CHANGED: connected=$connected")
 
                         if (connected) {
                             wifiP2pManager?.requestConnectionInfo(channel) { info ->
@@ -200,7 +199,7 @@ object WifiDirectManager {
                                     val goIp = info.groupOwnerAddress?.hostAddress ?: DEFAULT_GO_IP
                                     _groupOwnerIp.value = goIp
                                     _statusMessage.value = "Connected via Wi-Fi Direct ($goIp)"
-                                    Log.i(TAG, "P2P Link established! GO IP: $goIp, isGroupOwner=${info.isGroupOwner}")
+                                    AppLogger.i(TAG, "P2P Link established! GO IP: $goIp, isGroupOwner=${info.isGroupOwner}")
                                     cancelJoinWatchdog()
                                     onConnectedCallback?.invoke(goIp)
                                 }
@@ -209,9 +208,9 @@ object WifiDirectManager {
                                 if (group != null) {
                                     _networkSsid.value = group.networkName
                                     _networkPassphrase.value = group.passphrase
-                                    Log.i(TAG, "P2P Group Info: SSID=${group.networkName}, Passphrase=******, Clients=${group.clientList.size}")
+                                    AppLogger.i(TAG, "P2P Group Info: SSID=${group.networkName}, Passphrase=******, Clients=${group.clientList.size}")
                                     for (c in group.clientList) {
-                                        Log.i(TAG, " -> P2P Client: '${c.deviceName}' (${c.deviceAddress})")
+                                        AppLogger.i(TAG, " -> P2P Client: '${c.deviceName}' (${c.deviceAddress})")
                                     }
                                 }
                             }
@@ -219,7 +218,7 @@ object WifiDirectManager {
                             if (!_isGroupCreated.value) {
                                 _groupOwnerIp.value = null
                                 _statusMessage.value = "Disconnected"
-                                Log.i(TAG, "P2P Disconnected")
+                                AppLogger.i(TAG, "P2P Disconnected")
                             }
                         }
                     }
@@ -229,7 +228,7 @@ object WifiDirectManager {
                         if (dev != null) {
                             thisDeviceAddress = dev.deviceAddress
                             thisDeviceName = dev.deviceName
-                            Log.i(TAG, "Local P2P Device: '${dev.deviceName}' (${dev.deviceAddress}), status=${dev.status}")
+                            AppLogger.i(TAG, "Local P2P Device: '${dev.deviceName}' (${dev.deviceAddress}), status=${dev.status}")
                         }
                     }
                 }
@@ -248,30 +247,30 @@ object WifiDirectManager {
                 context.applicationContext.registerReceiver(receiver!!, intentFilter)
             }
             isReceiverRegistered = true
-            Log.i(TAG, "Wi-Fi Direct broadcast receiver registered (RECEIVER_EXPORTED)")
+            AppLogger.i(TAG, "Wi-Fi Direct broadcast receiver registered (RECEIVER_EXPORTED)")
         } catch (e: Exception) {
-            Log.w(TAG, "Failed registering Wi-Fi Direct receiver: ${e.message}")
+            AppLogger.w(TAG, "Failed registering Wi-Fi Direct receiver: ${e.message}")
         }
     }
 
     @SuppressLint("MissingPermission")
     fun createAutonomousGroup(context: Context, onResult: (success: Boolean, ssid: String?, goIp: String?) -> Unit) {
         init(context)
-        Log.i(TAG, "createAutonomousGroup requested")
+        AppLogger.i(TAG, "createAutonomousGroup requested")
         if (!hasPermissions(context)) {
             _statusMessage.value = "Permissions required for Wi-Fi Direct"
-            Log.w(TAG, "createAutonomousGroup aborted: missing permissions")
+            AppLogger.w(TAG, "createAutonomousGroup aborted: missing permissions")
             onResult(false, null, null)
             return
         }
 
         val mgr = wifiP2pManager ?: run {
-            Log.w(TAG, "createAutonomousGroup aborted: wifiP2pManager is null")
+            AppLogger.w(TAG, "createAutonomousGroup aborted: wifiP2pManager is null")
             onResult(false, null, null)
             return
         }
         val ch = channel ?: run {
-            Log.w(TAG, "createAutonomousGroup aborted: channel is null")
+            AppLogger.w(TAG, "createAutonomousGroup aborted: channel is null")
             onResult(false, null, null)
             return
         }
@@ -285,7 +284,7 @@ object WifiDirectManager {
                 _networkSsid.value = existingGroup.networkName
                 _networkPassphrase.value = existingGroup.passphrase ?: P2P_DEFAULT_PASSPHRASE
                 _statusMessage.value = "Group Active: ${existingGroup.networkName} (IP: $goIp)"
-                Log.i(TAG, "Reusing existing autonomous group: SSID=${existingGroup.networkName}, Pass=******")
+                AppLogger.i(TAG, "Reusing existing autonomous group: SSID=${existingGroup.networkName}, Pass=******")
                 onResult(true, existingGroup.networkName, goIp)
             } else {
                 // Use Android's standard group creation path. It negotiates device-specific
@@ -302,7 +301,7 @@ object WifiDirectManager {
         ch: WifiP2pManager.Channel,
         onResult: (success: Boolean, ssid: String?, goIp: String?) -> Unit
     ) {
-        Log.i(TAG, "Creating standard autonomous Wi-Fi Direct group...")
+        AppLogger.i(TAG, "Creating standard autonomous Wi-Fi Direct group...")
         mgr.createGroup(ch, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
                 _isGroupCreated.value = true
@@ -314,14 +313,14 @@ object WifiDirectManager {
                     _networkSsid.value = ssid
                     _networkPassphrase.value = passphrase
                     _statusMessage.value = "Group Active: $ssid (IP: $goIp)"
-                    Log.i(TAG, "Autonomous group created. SSID: $ssid, Passphrase=******, IP: $goIp")
+                    AppLogger.i(TAG, "Autonomous group created. SSID: $ssid, Passphrase=******, IP: $goIp")
                     onResult(true, ssid, goIp)
                 }
             }
 
             override fun onFailure(reason: Int) {
                 if (reason == WifiP2pManager.BUSY) {
-                    Log.w(TAG, "createGroup returned BUSY (2). Removing existing group before retry...")
+                    AppLogger.w(TAG, "createGroup returned BUSY (2). Removing existing group before retry...")
                     mgr.removeGroup(ch, object : WifiP2pManager.ActionListener {
                         override fun onSuccess() {
                             retryCreateStandardGroup(mgr, ch, onResult)
@@ -334,7 +333,7 @@ object WifiDirectManager {
                     _isGroupCreated.value = false
                     val reasonStr = parseReason(reason)
                     _statusMessage.value = "Failed creating group ($reasonStr)"
-                    Log.w(TAG, "Failed creating autonomous group: $reasonStr")
+                    AppLogger.w(TAG, "Failed creating autonomous group: $reasonStr")
                     onResult(false, null, null)
                 }
             }
@@ -347,7 +346,7 @@ object WifiDirectManager {
         ch: WifiP2pManager.Channel,
         onResult: (success: Boolean, ssid: String?, goIp: String?) -> Unit
     ) {
-        Log.i(TAG, "Retrying createGroup after clean removal...")
+        AppLogger.i(TAG, "Retrying createGroup after clean removal...")
         mgr.createGroup(ch, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
                 _isGroupCreated.value = true
@@ -359,7 +358,7 @@ object WifiDirectManager {
                     _networkSsid.value = ssid
                     _networkPassphrase.value = passphrase
                     _statusMessage.value = "Group Active: $ssid (IP: $goIp)"
-                    Log.i(TAG, "Autonomous group created on retry. SSID: $ssid, Passphrase=******")
+                    AppLogger.i(TAG, "Autonomous group created on retry. SSID: $ssid, Passphrase=******")
                     onResult(true, ssid, goIp)
                 }
             }
@@ -368,7 +367,7 @@ object WifiDirectManager {
                 _isGroupCreated.value = false
                 val reasonStr = parseReason(reason)
                 _statusMessage.value = "Failed creating group ($reasonStr)"
-                Log.w(TAG, "Retry create group failed: $reasonStr")
+                AppLogger.w(TAG, "Retry create group failed: $reasonStr")
                 onResult(false, null, null)
             }
         })
@@ -378,7 +377,7 @@ object WifiDirectManager {
         cancelJoinWatchdog()
         val mgr = wifiP2pManager ?: return
         val ch = channel ?: return
-        Log.i(TAG, "Removing autonomous Wi-Fi Direct group...")
+        AppLogger.i(TAG, "Removing autonomous Wi-Fi Direct group...")
         mgr.removeGroup(ch, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
                 _isGroupCreated.value = false
@@ -386,10 +385,10 @@ object WifiDirectManager {
                 _networkPassphrase.value = null
                 _groupOwnerIp.value = null
                 _statusMessage.value = "Group removed"
-                Log.i(TAG, "Wi-Fi Direct group removed successfully")
+                AppLogger.i(TAG, "Wi-Fi Direct group removed successfully")
             }
             override fun onFailure(reason: Int) {
-                Log.w(TAG, "Failed removing group: ${parseReason(reason)}")
+                AppLogger.w(TAG, "Failed removing group: ${parseReason(reason)}")
             }
         })
     }
@@ -397,18 +396,18 @@ object WifiDirectManager {
     @SuppressLint("MissingPermission")
     fun discoverPeers(context: Context) {
         init(context)
-        Log.i(TAG, "discoverPeers requested")
+        AppLogger.i(TAG, "discoverPeers requested")
         if (!hasPermissions(context)) {
             _statusMessage.value = "Permissions required for Wi-Fi Direct"
-            Log.w(TAG, "discoverPeers aborted: missing permissions")
+            AppLogger.w(TAG, "discoverPeers aborted: missing permissions")
             return
         }
         val mgr = wifiP2pManager ?: run {
-            Log.w(TAG, "discoverPeers aborted: wifiP2pManager is null")
+            AppLogger.w(TAG, "discoverPeers aborted: wifiP2pManager is null")
             return
         }
         val ch = channel ?: run {
-            Log.w(TAG, "discoverPeers aborted: channel is null")
+            AppLogger.w(TAG, "discoverPeers aborted: channel is null")
             return
         }
 
@@ -416,17 +415,17 @@ object WifiDirectManager {
         lastPeerSignature = ""
         _isScanningPeers.value = true
         _statusMessage.value = "Scanning Wi-Fi Direct peers..."
-        Log.i(TAG, "Initiating WifiP2pManager.discoverPeers()...")
+        AppLogger.i(TAG, "Initiating WifiP2pManager.discoverPeers()...")
 
         mgr.discoverPeers(ch, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
-                Log.i(TAG, "WifiP2pManager.discoverPeers() succeeded. Scanning radio channels for peers...")
+                AppLogger.i(TAG, "WifiP2pManager.discoverPeers() succeeded. Scanning radio channels for peers...")
             }
             override fun onFailure(reason: Int) {
                 _isScanningPeers.value = false
                 val reasonStr = parseReason(reason)
                 _statusMessage.value = "Peer scan failed ($reasonStr)"
-                Log.w(TAG, "WifiP2pManager.discoverPeers() failed: $reasonStr. (Ensure Wi-Fi & Location are ON)")
+                AppLogger.w(TAG, "WifiP2pManager.discoverPeers() failed: $reasonStr. (Ensure Wi-Fi & Location are ON)")
             }
         })
     }
@@ -445,16 +444,16 @@ object WifiDirectManager {
             mgr.stopPeerDiscovery(ch, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {
                     _isScanningPeers.value = false
-                    Log.i(TAG, "WifiP2pManager.stopPeerDiscovery() succeeded")
+                    AppLogger.i(TAG, "WifiP2pManager.stopPeerDiscovery() succeeded")
                 }
                 override fun onFailure(reason: Int) {
                     _isScanningPeers.value = false
-                    Log.w(TAG, "WifiP2pManager.stopPeerDiscovery() failed: ${parseReason(reason)}")
+                    AppLogger.w(TAG, "WifiP2pManager.stopPeerDiscovery() failed: ${parseReason(reason)}")
                 }
             })
         } catch (e: Exception) {
             _isScanningPeers.value = false
-            Log.w(TAG, "Exception calling stopPeerDiscovery: ${e.message}")
+            AppLogger.w(TAG, "Exception calling stopPeerDiscovery: ${e.message}")
         }
     }
 
@@ -473,13 +472,13 @@ object WifiDirectManager {
 
                 override fun onFailure(reason: Int) {
                     _isScanningPeers.value = false
-                    Log.w(TAG, "stopPeerDiscovery before connect returned ${parseReason(reason)}; continuing connection")
+                    AppLogger.w(TAG, "stopPeerDiscovery before connect returned ${parseReason(reason)}; continuing connection")
                     connect()
                 }
             })
         } catch (e: Exception) {
             _isScanningPeers.value = false
-            Log.w(TAG, "Unable to stop peer scan before connect: ${e.message}; continuing connection")
+            AppLogger.w(TAG, "Unable to stop peer scan before connect: ${e.message}; continuing connection")
             connect()
         }
     }
@@ -495,10 +494,10 @@ object WifiDirectManager {
     ) {
         init(context)
         val pass = passphrase ?: P2P_DEFAULT_PASSPHRASE
-        Log.i(TAG, "connectWithCredentials: SSID='$ssid', Pass=******")
+        AppLogger.i(TAG, "connectWithCredentials: SSID='$ssid', Pass=******")
         if (!hasPermissions(context)) {
             abortJoin("Permissions required for Wi-Fi Direct", onFailed)
-            Log.w(TAG, "connectWithCredentials aborted: missing permissions")
+            AppLogger.w(TAG, "connectWithCredentials aborted: missing permissions")
             return
         }
         val mgr = wifiP2pManager ?: run {
@@ -520,12 +519,12 @@ object WifiDirectManager {
                 .build()
 
             _statusMessage.value = "Connecting to $ssid..."
-            Log.i(TAG, "Calling WifiP2pManager.connect() with WPA2 passphrase config...")
+            AppLogger.i(TAG, "Calling WifiP2pManager.connect() with WPA2 passphrase config...")
             stopPeerDiscoveryBeforeConnect(mgr, ch) {
                 mgr.connect(ch, config, object : WifiP2pManager.ActionListener {
                     override fun onSuccess() {
                         _statusMessage.value = "Connecting to $ssid..."
-                        Log.i(TAG, "WifiP2pManager.connect() accepted! Waiting for connection event...")
+                        AppLogger.i(TAG, "WifiP2pManager.connect() accepted! Waiting for connection event...")
                     }
 
                     override fun onFailure(reason: Int) {
@@ -535,7 +534,7 @@ object WifiDirectManager {
             }
         } else {
             cancelJoinWatchdog()
-            Log.i(TAG, "Pre-Android 10: falling back to peer discovery")
+            AppLogger.i(TAG, "Pre-Android 10: falling back to peer discovery")
             discoverPeers(context)
         }
     }
@@ -548,10 +547,10 @@ object WifiDirectManager {
         onConnected: (goIp: String) -> Unit
     ) {
         init(context)
-        Log.i(TAG, "connectToPeer: '${device.deviceName}' (${device.deviceAddress})")
+        AppLogger.i(TAG, "connectToPeer: '${device.deviceName}' (${device.deviceAddress})")
         if (!hasPermissions(context)) {
             abortJoin("Permissions required for Wi-Fi Direct", onFailed)
-            Log.w(TAG, "connectToPeer aborted: missing permissions")
+            AppLogger.w(TAG, "connectToPeer aborted: missing permissions")
             return
         }
         val mgr = wifiP2pManager ?: run {
@@ -573,11 +572,11 @@ object WifiDirectManager {
         }
 
         _statusMessage.value = "Connecting to ${device.deviceName}..."
-        Log.i(TAG, "Initiating WPS-PBC connect to ${device.deviceName}...")
+        AppLogger.i(TAG, "Initiating WPS-PBC connect to ${device.deviceName}...")
         stopPeerDiscoveryBeforeConnect(mgr, ch) {
             mgr.connect(ch, config, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {
-                    Log.i(TAG, "WPS connection handshake initiated to ${device.deviceName}")
+                    AppLogger.i(TAG, "WPS connection handshake initiated to ${device.deviceName}")
                     _statusMessage.value = "Connecting to ${device.deviceName}..."
                 }
 
@@ -592,7 +591,7 @@ object WifiDirectManager {
         cancelJoinWatchdog()
         val mgr = wifiP2pManager ?: return
         val ch = channel ?: return
-        Log.i(TAG, "Disconnecting P2P link...")
+        AppLogger.i(TAG, "Disconnecting P2P link...")
         mgr.cancelConnect(ch, null)
         mgr.removeGroup(ch, null)
         _isConnected.value = false
@@ -607,7 +606,7 @@ object WifiDirectManager {
             } catch (ignored: Exception) {}
             isReceiverRegistered = false
             receiver = null
-            Log.i(TAG, "Wi-Fi Direct cleaned up")
+            AppLogger.i(TAG, "Wi-Fi Direct cleaned up")
         }
     }
 

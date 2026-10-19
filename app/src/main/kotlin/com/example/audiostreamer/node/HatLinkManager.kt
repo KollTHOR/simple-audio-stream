@@ -1,9 +1,10 @@
 package com.example.audiostreamer.node
 
+import com.example.audiostreamer.AppLogger
+
 import com.example.audiostreamer.AudioCodec
 import com.example.audiostreamer.AudioConfig
 import com.example.audiostreamer.AudioFormatConfig
-import com.example.audiostreamer.AppLogger as Log
 import com.example.audiostreamer.node.discovery.DiscoveredNodeEntry
 import com.example.audiostreamer.node.transport.HatTransportRegistry
 import com.example.audiostreamer.node.transport.HatTransportType
@@ -78,7 +79,7 @@ object HatLinkManager {
             context.lastStateChangeEpochMs = System.currentTimeMillis()
             _trackedNodeContexts.value = nodeContexts.values.toList()
         }
-        Log.i(TAG, "Set ${candidates.size} candidate transport(s) for node ${remoteNode.id}")
+        AppLogger.i(TAG, "Set ${candidates.size} candidate transport(s) for node ${remoteNode.id}")
     }
 
     /**
@@ -235,7 +236,7 @@ object HatLinkManager {
             links[newLink.id] = newLink
             updateNodeContextActiveLink(remoteNode.id, newLink)
             publishState()
-            Log.i(TAG, "Created bidirectional link: ${newLink.describe()}")
+            AppLogger.i(TAG, "Created bidirectional link: ${newLink.describe()}")
             return newLink
         }
     }
@@ -371,7 +372,7 @@ object HatLinkManager {
             val link = links[linkId] ?: return
             links[linkId] = link.copy(negotiatedCapabilities = capabilities)
             publishState()
-            Log.i(TAG, "Recorded negotiated capabilities for link $linkId: ${capabilities.summary()}")
+            AppLogger.i(TAG, "Recorded negotiated capabilities for link $linkId: ${capabilities.summary()}")
         }
     }
 
@@ -388,7 +389,7 @@ object HatLinkManager {
             }
             if (matching.isNotEmpty()) {
                 publishState()
-                Log.i(TAG, "Recorded negotiated capabilities for remote $remoteNodeIdOrAddress on ${matching.size} link(s)")
+                AppLogger.i(TAG, "Recorded negotiated capabilities for remote $remoteNodeIdOrAddress on ${matching.size} link(s)")
             }
         }
     }
@@ -416,7 +417,7 @@ object HatLinkManager {
                     context.lastStateChangeEpochMs = System.currentTimeMillis()
                 }
                 publishState()
-                Log.i(TAG, "Terminated link $linkId and closed associated stream(s)")
+                AppLogger.i(TAG, "Terminated link $linkId and closed associated stream(s)")
             }
         }
     }
@@ -479,7 +480,7 @@ object HatLinkManager {
             )
             bootstrappedPeers[remoteNode.id] = peer
             _bootstrappedNodes.value = bootstrappedPeers.values.toList()
-            Log.i(TAG, "Recorded bootstrapped peer: ${remoteNode.id} (${remoteNode.name}) transport=$preferredTransport")
+            AppLogger.i(TAG, "Recorded bootstrapped peer: ${remoteNode.id} (${remoteNode.name}) transport=$preferredTransport")
             return peer
         }
     }
@@ -498,7 +499,7 @@ object HatLinkManager {
             _bootstrappedNodes.value = emptyList()
             _trackedNodeContexts.value = emptyList()
             publishState()
-            Log.i(TAG, "Cleared all active links, streams, bootstrapped peers, and node contexts")
+            AppLogger.i(TAG, "Cleared all active links, streams, bootstrapped peers, and node contexts")
         }
     }
 

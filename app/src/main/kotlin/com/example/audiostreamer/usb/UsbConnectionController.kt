@@ -85,7 +85,7 @@ object UsbConnectionController {
                 Intent(activity, UsbPcmService::class.java).setAction(UsbPcmService.ACTION_START)
             )
         } catch (e: Exception) {
-            AppLogger.e(TAG, "could not start USB input service: ${e.message}")
+            AppLogger.report(TAG, "could not start USB input service: ${e.message}")
         }
     }
 
@@ -99,7 +99,7 @@ object UsbConnectionController {
                     Intent(activity, UsbPcmService::class.java).setAction(UsbPcmService.ACTION_STOP)
                 )
             } catch (e: Exception) {
-                AppLogger.e(TAG, "could not stop USB input service: ${e.message}")
+                AppLogger.report(TAG, "could not stop USB input service: ${e.message}")
             }
         }
     }

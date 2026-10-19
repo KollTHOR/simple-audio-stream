@@ -5,7 +5,6 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
-import com.example.audiostreamer.AppLogger as Log
 import java.util.concurrent.atomic.AtomicBoolean
 
 class VolumeKeyInterceptorService : AccessibilityService() {
@@ -18,7 +17,7 @@ class VolumeKeyInterceptorService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         isRunning.set(true)
-        Log.i(TAG, "VolumeKeyInterceptorService connected")
+        AppLogger.i(TAG, "VolumeKeyInterceptorService connected")
         val info = serviceInfo ?: AccessibilityServiceInfo()
         info.eventTypes = 0 // Zero UI/notification event interception; hardware keys only
         info.flags = AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
@@ -28,7 +27,7 @@ class VolumeKeyInterceptorService : AccessibilityService() {
 
     override fun onUnbind(intent: Intent?): Boolean {
         isRunning.set(false)
-        Log.i(TAG, "VolumeKeyInterceptorService unbound")
+        AppLogger.i(TAG, "VolumeKeyInterceptorService unbound")
         return super.onUnbind(intent)
     }
 

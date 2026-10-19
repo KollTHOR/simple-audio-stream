@@ -1,7 +1,6 @@
 package com.example.audiostreamer
 
 import android.content.Context
-import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -70,7 +69,7 @@ object ConnectionProfileManager {
         val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         prefs.edit().putString(KEY_ACTIVE_PROFILE_ID, profile?.id).apply()
         _activeProfileFlow.value = profile
-        Log.i(TAG, "Active profile set to: ${profile?.name} (${profile?.targetIp})")
+        AppLogger.i(TAG, "Active profile set to: ${profile?.name} (${profile?.targetIp})")
     }
 
     fun findMatchingProfile(context: Context, targetIp: String): ConnectionProfile? {
@@ -145,7 +144,7 @@ object ConnectionProfileManager {
             }
             list.sortedByDescending { it.lastConnectedTimeMs }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed parsing saved connection profiles: ${e.message}")
+            AppLogger.w(TAG, "Failed parsing saved connection profiles: ${e.message}")
             emptyList()
         }
     }

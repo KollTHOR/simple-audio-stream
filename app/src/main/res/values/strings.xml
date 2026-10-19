@@ -22,4 +22,25 @@
     <string name="usb_connected">Connected</string>
     <string name="usb_disconnected">Disconnected</string>
     <string name="usb_status_idle">Idle</string>
+
+    <!-- Logs & diagnostics -->
+    <string name="logs_title">Logs</string>
+    <string name="logs_subtitle">What the app is doing, as it happens</string>
+    <string name="logs_menu">More options</string>
+    <string name="logs_level_all">All</string>
+    <string name="logs_level_info">Info</string>
+    <string name="logs_level_warn">Warnings</string>
+    <string name="logs_level_error">Errors</string>
+    <string name="logs_search_hint">Search tag or message</string>
+    <string name="logs_empty">Nothing logged yet</string>
+    <string name="logs_no_matches">No entries match your filter</string>
+    <string name="logs_follow">Follow</string>
+    <string name="logs_following">Following</string>
+    <string name="logs_copy_entry">Copy this entry</string>
+    <string name="logs_menu_copy">Copy diagnostic report</string>
+    <string name="logs_menu_share">Share diagnostic report</string>
+    <string name="logs_menu_report">Report a problem</string>
+    <string name="logs_menu_clear">Clear logs</string>
+    <string name="logs_copied_entry">Entry copied</string>
+    <string name="logs_cleared">Logs cleared</string>
 </resources>

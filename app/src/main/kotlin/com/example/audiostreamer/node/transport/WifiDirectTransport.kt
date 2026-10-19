@@ -1,9 +1,10 @@
 package com.example.audiostreamer.node.transport
 
+import com.example.audiostreamer.AppLogger
+
 import com.example.audiostreamer.AudioConfig
 import com.example.audiostreamer.NetworkUtils
 import com.example.audiostreamer.WifiDirectManager
-import com.example.audiostreamer.AppLogger as Log
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -73,7 +74,7 @@ class WifiDirectTransport(
                         }
                     }
                 } catch (e: Exception) {
-                    Log.w(TAG, "Failed binding Wi-Fi Direct socket to interface $matchingLocalIp, fallback: ${e.message}")
+                    AppLogger.w(TAG, "Failed binding Wi-Fi Direct socket to interface $matchingLocalIp, fallback: ${e.message}")
                     DatagramSocket().apply {
                         sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
                         broadcast = true
@@ -86,11 +87,11 @@ class WifiDirectTransport(
             val localIp = NetworkUtils.findMatchingLocalIp("192.168.49.1") ?: NetworkUtils.getLocalIpAddress() ?: WifiDirectManager.DEFAULT_GO_IP
             _localAddress = TransportAddress(localIp, sock.localPort)
             _state = TransportState.CONNECTED
-            Log.i(TAG, "Wi-Fi Direct transport connected: local=$_localAddress, remote=$_remoteAddress")
+            AppLogger.i(TAG, "Wi-Fi Direct transport connected: local=$_localAddress, remote=$_remoteAddress")
             Result.success(Unit)
         } catch (e: Exception) {
             _state = TransportState.FAILED
-            Log.e(TAG, "Failed connecting Wi-Fi Direct transport: ${e.message}", e)
+            AppLogger.e(TAG, "Failed connecting Wi-Fi Direct transport: ${e.message}", e)
             Result.failure(e)
         }
     }
@@ -112,11 +113,11 @@ class WifiDirectTransport(
             val localIp = WifiDirectManager.groupOwnerIp.value ?: NetworkUtils.findMatchingLocalIp("192.168.49.1") ?: WifiDirectManager.DEFAULT_GO_IP
             _localAddress = TransportAddress(localIp, port)
             _state = TransportState.LISTENING
-            Log.i(TAG, "Wi-Fi Direct transport listening on $_localAddress")
+            AppLogger.i(TAG, "Wi-Fi Direct transport listening on $_localAddress")
             Result.success(Unit)
         } catch (e: Exception) {
             _state = TransportState.FAILED
-            Log.e(TAG, "Failed listening on Wi-Fi Direct transport: ${e.message}", e)
+            AppLogger.e(TAG, "Failed listening on Wi-Fi Direct transport: ${e.message}", e)
             Result.failure(e)
         }
     }
@@ -154,7 +155,7 @@ class WifiDirectTransport(
         } catch (ignored: Exception) {}
         _socket = null
         _state = TransportState.CLOSED
-        Log.i(TAG, "Wi-Fi Direct transport closed")
+        AppLogger.i(TAG, "Wi-Fi Direct transport closed")
     }
 
     override fun getDiagnostics(): Map<String, Any?> = linkedMapOf(

@@ -3,7 +3,6 @@ package com.example.audiostreamer
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import android.util.Log
 import java.io.File
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -106,7 +105,7 @@ object NetworkUtils {
                     // Wi-Fi Direct creates its own Wi-Fi transport. Keep it out of LAN
                     // availability so offline receivers still enter the Direct-group path.
                     if (isP2pInterfaceName(ifName)) {
-                        Log.d(TAG, "Kept Wi-Fi Direct interface separate from LAN: $ifName ($ipStrings)")
+                        AppLogger.d(TAG, "Kept Wi-Fi Direct interface separate from LAN: $ifName ($ipStrings)")
                         continue
                     }
 
@@ -115,7 +114,7 @@ object NetworkUtils {
                             cellularInterfaceNames.add(ifName)
                         }
                         cellularAddresses.addAll(ipStrings)
-                        Log.d(TAG, "Ignored cellular network: interface=$ifName, transport=TRANSPORT_CELLULAR, ips=$ipStrings")
+                        AppLogger.d(TAG, "Ignored cellular network: interface=$ifName, transport=TRANSPORT_CELLULAR, ips=$ipStrings")
                     } else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
                                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) {
                         val transportName = if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) "WIFI" else "ETHERNET"
@@ -133,14 +132,14 @@ object NetworkUtils {
                                     broadcastAddresses = bcasts.distinct()
                                 )
                             )
-                            Log.i(TAG, "Selected LAN interface: $ifName (transport: $transportName, ips: $ipStrings)")
+                            AppLogger.i(TAG, "Selected LAN interface: $ifName (transport: $transportName, ips: $ipStrings)")
                         }
                     } else {
-                        Log.d(TAG, "Ignored non-LAN network: interface=$ifName, ips=$ipStrings")
+                        AppLogger.d(TAG, "Ignored non-LAN network: interface=$ifName, ips=$ipStrings")
                     }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Error querying ConnectivityManager: ${e.message}", e)
+                AppLogger.w(TAG, "Error querying ConnectivityManager: ${e.message}", e)
             }
         }
 
@@ -157,7 +156,7 @@ object NetworkUtils {
                     // Exclude known cellular interfaces or patterns
                     if (ifName in cellularInterfaceNames || isCellularInterfaceName(ifName)) {
                         if (ifName !in cellularInterfaceNames) {
-                            Log.d(TAG, "Ignored cellular interface by name pattern: $ifName")
+                            AppLogger.d(TAG, "Ignored cellular interface by name pattern: $ifName")
                         }
                         continue
                     }
@@ -201,7 +200,7 @@ object NetworkUtils {
                         if (isSoftApOrEth) {
                             val bcasts = computeBroadcastsForInterface(intf)
                             val ipStrings = addrs.mapNotNull { it.hostAddress }
-                            Log.i(TAG, "Selected LAN interface (Hotspot/Local): $ifName (transport: HOTSPOT_WIFI, ips: $ipStrings)")
+                            AppLogger.i(TAG, "Selected LAN interface (Hotspot/Local): $ifName (transport: HOTSPOT_WIFI, ips: $ipStrings)")
                             lanInterfaces.add(
                                 LanInterfaceInfo(
                                     name = ifName,
@@ -227,7 +226,7 @@ object NetworkUtils {
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Error enumerating system interfaces: ${e.message}", e)
+            AppLogger.w(TAG, "Error enumerating system interfaces: ${e.message}", e)
         }
 
         return lanInterfaces
@@ -271,7 +270,7 @@ object NetworkUtils {
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed getting P2P IP addresses: ${e.message}")
+            AppLogger.w(TAG, "Failed getting P2P IP addresses: ${e.message}")
         }
         return p2pIps.distinct()
     }
@@ -368,7 +367,7 @@ object NetworkUtils {
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed getting interface broadcast addresses for ${intf.name}: ${e.message}")
+            AppLogger.w(TAG, "Failed getting interface broadcast addresses for ${intf.name}: ${e.message}")
         }
         return broadcasts.toList()
     }
@@ -412,7 +411,7 @@ object NetworkUtils {
                 }
             }
         } catch (e: Exception) {
-            Log.d(TAG, "Could not read /proc/net/arp: ${e.message}")
+            AppLogger.d(TAG, "Could not read /proc/net/arp: ${e.message}")
         }
         return ips
     }

@@ -15,7 +15,6 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.app.NotificationManagerCompat
-import android.util.Log
 import android.view.View
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -881,7 +880,7 @@ class SettingsActivity : AppCompatActivity() {
                 action = AudioConfig.ACTION_RESTART_CAPTURE
             }
             startService(restartIntent)
-            Log.i(TAG, "Sent ACTION_RESTART_CAPTURE to apply setting change live")
+            AppLogger.i(TAG, "Sent ACTION_RESTART_CAPTURE to apply setting change live")
         }
     }
 
@@ -889,16 +888,14 @@ class SettingsActivity : AppCompatActivity() {
     // DIAGNOSTICS & RECEIVER LATENCY (TASK 3 & 4)
     // =========================================================================
     private fun setupDiagnosticsCategory() {
-        btnViewLogs.setOnClickListener {
-            AppLogger.showLogViewerDialog(this)
-        }
+        btnViewLogs.setOnClickListener { openLogs() }
 
         btnCopyLogs.setOnClickListener {
-            copyDiagnosticsToClipboard()
+            AppLogger.copyReportToClipboard(this)
         }
 
         btnShareLogs.setOnClickListener {
-            AppLogger.shareLogs(this)
+            AppLogger.shareReport(this)
         }
 
         btnDiagScan.setOnClickListener {
@@ -909,9 +906,11 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
 
-        btnDiagDiscoveryLogs.setOnClickListener {
-            AppLogger.showLogViewerDialog(this)
-        }
+        btnDiagDiscoveryLogs.setOnClickListener { openLogs() }
+    }
+
+    private fun openLogs() {
+        startActivity(Intent(this, LogsActivity::class.java))
     }
 
     private fun observeDiagnostics() {
@@ -1191,11 +1190,7 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun copyDiagnosticsToClipboard() {
-        val snapshot = diagnosticsViewModel.getDiagnosticSnapshotText()
-        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val clip = ClipData.newPlainText("HAT Runtime Diagnostics", snapshot)
-        clipboard.setPrimaryClip(clip)
-        Toast.makeText(this, "Diagnostics copied to clipboard", Toast.LENGTH_SHORT).show()
+        AppLogger.copyReportToClipboard(this)
     }
 
     // =========================================================================

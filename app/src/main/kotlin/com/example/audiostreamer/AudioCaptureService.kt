@@ -32,7 +32,6 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.os.Process
 import android.os.SystemClock
-import com.example.audiostreamer.AppLogger as Log
 import android.view.KeyEvent
 import androidx.core.app.NotificationCompat
 import java.net.DatagramPacket
@@ -241,7 +240,7 @@ class AudioCaptureService : Service() {
             if (isRunning.get()) {
                 UserAlertCenter.error("Screen capture was revoked — transmission stopped")
             }
-            Log.w(TAG, "MediaProjection revoked or stopped by system")
+            AppLogger.w(TAG, "MediaProjection revoked or stopped by system")
             stopStreaming()
             stopSelf()
         }
@@ -258,7 +257,7 @@ class AudioCaptureService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                Log.d(TAG, "Received ACTION_STOP")
+                AppLogger.d(TAG, "Received ACTION_STOP")
                 stopStreaming()
                 stopSelf()
                 return START_NOT_STICKY
@@ -278,7 +277,7 @@ class AudioCaptureService : Service() {
                     StreamState.update { it.copy(remoteVolumePercent = newVol) }
                 }
                 setReceiverVolume(ip, nodeId, newVol)
-                Log.d(TAG, "Set receiver volume: ip=$ip, nodeId=$nodeId, vol=$newVol%")
+                AppLogger.d(TAG, "Set receiver volume: ip=$ip, nodeId=$nodeId, vol=$newVol%")
                 publishConnectedReceivers()
                 if (!ip.isNullOrBlank()) {
                     val targetEp = clientRegistry.keys.firstOrNull { it.address.hostAddress == ip }
@@ -306,7 +305,7 @@ class AudioCaptureService : Service() {
                 val targetPort = intent.getIntExtra(EXTRA_TARGET_PORT, AudioConfig.DEFAULT_PORT)
 
                 if (resultCode == 0 || resultData == null) {
-                    Log.e(TAG, "Missing valid MediaProjection credentials")
+                    AppLogger.e(TAG, "Missing valid MediaProjection credentials")
                     stopSelf()
                     return START_NOT_STICKY
                 }
@@ -320,7 +319,7 @@ class AudioCaptureService : Service() {
                 startStreaming(resultCode, resultData, targetIp, targetPort)
             }
             AudioConfig.ACTION_RESTART_CAPTURE -> {
-                Log.i(TAG, "Received ACTION_RESTART_CAPTURE. Live reinitializing capture pipeline.")
+                AppLogger.i(TAG, "Received ACTION_RESTART_CAPTURE. Live reinitializing capture pipeline.")
                 restartStreaming()
             }
             ACTION_ADD_CLIENT -> {
@@ -353,7 +352,7 @@ class AudioCaptureService : Service() {
                 if (knownCaps != 0) {
                     clientCapabilities[ep] = knownCaps
                 }
-                Log.i(TAG, "Dynamically added multi-unicast client: $ep")
+                AppLogger.i(TAG, "Dynamically added multi-unicast client: $ep")
                 val currentConfig = activeNegotiatedConfig
                 if (currentConfig != null) {
                     val targetVol = getReceiverVolume(ip)
@@ -361,7 +360,7 @@ class AudioCaptureService : Service() {
                 }
                 publishConnectedReceivers()
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to dynamically add client $ip:$port - ${e.message}")
+                AppLogger.w(TAG, "Failed to dynamically add client $ip:$port - ${e.message}")
             }
         }
     }
@@ -394,14 +393,14 @@ class AudioCaptureService : Service() {
                     val destId = removedNode?.id ?: "${com.example.audiostreamer.node.NodeIdentity.ID_PREFIX}ep-${(ep.address.hostAddress ?: "").replace(".", "-")}"
                     com.example.audiostreamer.node.HatMultiStreamManager.removeDestination(destId, "dynamic_removal")
                     com.example.audiostreamer.node.HatLinkManager.closeLinkByRemoteAddress(ep.address.hostAddress ?: "")
-                    Log.i(TAG, "Dynamically removed client: $ep (nodeId=$nodeId)")
+                    AppLogger.i(TAG, "Dynamically removed client: $ep (nodeId=$nodeId)")
                 }
                 publishConnectedReceivers()
                 if (clientRegistry.isEmpty()) {
                     pauseSystemMediaPlayback()
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to remove client $ip ($nodeId) - ${e.message}")
+                AppLogger.w(TAG, "Failed to remove client $ip ($nodeId) - ${e.message}")
             }
         }
     }
@@ -475,7 +474,7 @@ class AudioCaptureService : Service() {
 
         StreamState.update { it.copy(remoteVolumePercent = clamped) }
         publishConnectedReceivers()
-        Log.d(TAG, "Remote volume updated: $clamped% (delta=$delta, receiverCount=${receiverVolumes.size})")
+        AppLogger.d(TAG, "Remote volume updated: $clamped% (delta=$delta, receiverCount=${receiverVolumes.size})")
 
         // If streaming is actively running, streamThread transmits destVol in the next 5ms audio packet,
         // and we also notify all receivers immediately via control packets.
@@ -500,7 +499,7 @@ class AudioCaptureService : Service() {
                 try {
                     InetAddress.getByName(ip)
                 } catch (e: Exception) {
-                    Log.w(TAG, "Failed resolving target IP $ip: ${e.message}")
+                    AppLogger.w(TAG, "Failed resolving target IP $ip: ${e.message}")
                     null
                 }
             }
@@ -523,7 +522,7 @@ class AudioCaptureService : Service() {
             while (iter.hasNext()) {
                 val entry = iter.next()
                 if (now - entry.value > 10_000L) {
-                    Log.i(TAG, "Receiver removed: ${entry.key} (reason: stale_timeout, idleMs=${now - entry.value})")
+                    AppLogger.i(TAG, "Receiver removed: ${entry.key} (reason: stale_timeout, idleMs=${now - entry.value})")
                     HatDiagnostics.info("RECEIVER_STALE", mapOf("receiver" to entry.key.toString(), "idleMs" to (now - entry.value)))
                     clientDiag.remove(entry.key)
                     val nodeInfo = clientNodeInfo.remove(entry.key)
@@ -605,7 +604,7 @@ class AudioCaptureService : Service() {
                                 )
                             )
                         }
-                        Log.w(TAG, "Failed sending datagram to $client: ${e.message}")
+                        AppLogger.w(TAG, "Failed sending datagram to $client: ${e.message}")
                     }
                 }
             }
@@ -654,7 +653,7 @@ class AudioCaptureService : Service() {
                     broadcastDatagram(socket, packet)
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error sending volume control packet", e)
+                AppLogger.e(TAG, "Error sending volume control packet", e)
             }
         }, "AudioCaptureControlSender").apply {
             isDaemon = true
@@ -686,14 +685,14 @@ class AudioCaptureService : Service() {
                     try {
                         socket.send(packet)
                     } catch (e: Exception) {
-                        Log.w(TAG, "Failed sending announcement to $targetEndpoint: ${e.message}")
+                        AppLogger.w(TAG, "Failed sending announcement to $targetEndpoint: ${e.message}")
                     }
                 }
             } else {
                 broadcastDatagram(socket, packet)
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed sending stream announcement: ${e.message}")
+            AppLogger.w(TAG, "Failed sending stream announcement: ${e.message}")
         }
     }
 
@@ -737,7 +736,7 @@ class AudioCaptureService : Service() {
 
         val notification = builder.build()
 
-        Log.i(TAG, "HAT_FOREGROUND_NOTIFICATION_CREATED: channelId=$CHANNEL_ID, importance=LOW, category=CATEGORY_SERVICE, priority=PRIORITY_LOW, ongoing=true, silent=true, onlyAlertOnce=true, fgsBehavior=IMMEDIATE")
+        AppLogger.i(TAG, "HAT_FOREGROUND_NOTIFICATION_CREATED: channelId=$CHANNEL_ID, importance=LOW, category=CATEGORY_SERVICE, priority=PRIORITY_LOW, ongoing=true, silent=true, onlyAlertOnce=true, fgsBehavior=IMMEDIATE")
 
         return notification
     }
@@ -755,7 +754,7 @@ class AudioCaptureService : Service() {
             }
             val manager = getSystemService(NotificationManager::class.java)
             manager?.createNotificationChannel(channel)
-            Log.i(TAG, "AudioCaptureChannel configured: id=$CHANNEL_ID, importance=IMPORTANCE_LOW")
+            AppLogger.i(TAG, "AudioCaptureChannel configured: id=$CHANNEL_ID, importance=IMPORTANCE_LOW")
         }
     }
 
@@ -767,7 +766,7 @@ class AudioCaptureService : Service() {
         targetPort: Int
     ) {
         if (isRunning.getAndSet(true)) {
-            Log.w(TAG, "Streaming session already running")
+            AppLogger.w(TAG, "Streaming session already running")
             return
         }
 
@@ -778,7 +777,7 @@ class AudioCaptureService : Service() {
         val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val projection = projectionManager.getMediaProjection(resultCode, resultData)
         if (projection == null) {
-            Log.e(TAG, "Unable to obtain MediaProjection")
+            AppLogger.e(TAG, "Unable to obtain MediaProjection")
             isRunning.set(false)
             releaseLocks()
             stopSelf()
@@ -821,7 +820,7 @@ class AudioCaptureService : Service() {
                     packageName = state.packageName,
                     artworkBytes = state.artworkBytes
                 )
-                Log.i(TAG, "MEDIA_METADATA_TX seq=${state.sequence} package=${state.packageName} title=\"${state.title}\" artLen=${state.artworkBytes?.size ?: 0}")
+                AppLogger.i(TAG, "MEDIA_METADATA_TX seq=${state.sequence} package=${state.packageName} title=\"${state.title}\" artLen=${state.artworkBytes?.size ?: 0}")
             } else {
                 // No active session — transmit an explicit clear packet so receivers reset
                 val clearSeq = MediaSessionTracker.currentState?.sequence?.plus(1) ?: 0L
@@ -834,7 +833,7 @@ class AudioCaptureService : Service() {
                     packageName = "",
                     artworkBytes = null
                 )
-                Log.i(TAG, "MEDIA_METADATA_TX seq=$clearSeq [CLEAR — no active session]")
+                AppLogger.i(TAG, "MEDIA_METADATA_TX seq=$clearSeq [CLEAR — no active session]")
             }
             sendMediaMetadata()
         }
@@ -845,7 +844,7 @@ class AudioCaptureService : Service() {
         val rawBitPref = prefs.getString(AudioConfig.PREF_KEY_BIT_DEPTH, AudioConfig.BIT_DEPTH_AUTO) ?: AudioConfig.BIT_DEPTH_AUTO
         if (profileStr == AudioConfig.PROFILE_AUTO || (profileStr == AudioConfig.PROFILE_MUSIC && (rawRatePref == AudioConfig.SAMPLE_RATE_AUTO || rawBitPref == AudioConfig.BIT_DEPTH_AUTO))) {
             AudioPlaybackDetector.startMonitoring(this) { newFormat ->
-                Log.d(TAG, "AudioPlaybackDetector active media format: ${newFormat.description}")
+                AppLogger.d(TAG, "AudioPlaybackDetector active media format: ${newFormat.description}")
                 if (!MediaNotificationListenerService.isServiceConnected) {
                     val appTitle = if (newFormat.appName != "None") newFormat.appName else "Simple Audio Stream"
                     currentTrackMetadata = HatPacket.MediaMetadataPayload(
@@ -863,7 +862,7 @@ class AudioCaptureService : Service() {
     private fun restartStreaming() {
         val proj = mediaProjection
         if (proj == null) {
-            Log.w(TAG, "Cannot restart streaming: mediaProjection is null")
+            AppLogger.w(TAG, "Cannot restart streaming: mediaProjection is null")
             return
         }
 
@@ -877,7 +876,7 @@ class AudioCaptureService : Service() {
     fun performProfileChange(requestedTarget: LatencyTarget): ProfileChangeResult {
         val proj = mediaProjection
         if (proj == null) {
-            Log.w(TAG, "Cannot perform profile change: mediaProjection is null")
+            AppLogger.w(TAG, "Cannot perform profile change: mediaProjection is null")
             return ProfileChangeResult.IgnoredSameProfile(
                 activeProfile = requestedTarget,
                 generation = currentStreamGeneration.get()
@@ -976,7 +975,7 @@ class AudioCaptureService : Service() {
             is ProfileChangeResult.InitializationFailed -> {
                 // Nothing was committed or announced. The old producer has been stopped and no new producer
                 // exists: the service is in a clean stopped state, so the UI must not claim an active stream.
-                Log.e(
+                AppLogger.e(
                     TAG,
                     "Profile change to ${requestedTarget.name} aborted: capture pipeline initialization failed. " +
                         "Previous generation ${result.previousConfig?.generation ?: 0L} remains authoritative; nothing announced."
@@ -993,7 +992,7 @@ class AudioCaptureService : Service() {
             is ProfileChangeResult.AnnouncementFailed -> {
                 // The generation was consumed but never became usable: the pipeline has been released and the
                 // transmitter stopped, so the UI must not claim an active stream either.
-                Log.e(
+                AppLogger.e(
                     TAG,
                     "Profile change to ${requestedTarget.name} aborted after commit: generation " +
                         "${result.abandonedGeneration} stays consumed and is not transmitting."
@@ -1052,19 +1051,19 @@ class AudioCaptureService : Service() {
                 record.release()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error releasing AudioRecord", e)
+            AppLogger.e(TAG, "Error releasing AudioRecord", e)
         }
 
         try {
             opus?.release()
         } catch (e: Exception) {
-            Log.w(TAG, "Error releasing Opus encoder: ${e.message}")
+            AppLogger.w(TAG, "Error releasing Opus encoder: ${e.message}")
         }
 
         try {
             aac?.release()
         } catch (e: Exception) {
-            Log.w(TAG, "Error releasing AAC encoder: ${e.message}")
+            AppLogger.w(TAG, "Error releasing AAC encoder: ${e.message}")
         }
     }
 
@@ -1111,7 +1110,7 @@ class AudioCaptureService : Service() {
                     }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Failed binding socket to interface IP $matchingLocalIp, falling back to unbound socket: ${e.message}")
+                AppLogger.w(TAG, "Failed binding socket to interface IP $matchingLocalIp, falling back to unbound socket: ${e.message}")
                 DatagramSocket().apply {
                     sendBufferSize = AudioConfig.SOCKET_SEND_BUFFER_BYTES
                     broadcast = true
@@ -1135,7 +1134,7 @@ class AudioCaptureService : Service() {
                     val endpoint = ClientEndpoint(recvPacket.address, recvPacket.port)
 
                     if (recvPacket.length < HatPacket.HEADER_SIZE) {
-                        Log.d(TAG, "Rejected packet from $endpoint: too short (${recvPacket.length} bytes < ${HatPacket.HEADER_SIZE})")
+                        AppLogger.d(TAG, "Rejected packet from $endpoint: too short (${recvPacket.length} bytes < ${HatPacket.HEADER_SIZE})")
                         continue
                     }
 
@@ -1149,14 +1148,14 @@ class AudioCaptureService : Service() {
                                 "Incompatible receiver ${endpoint.address.hostAddress}: protocol v$peerVersion, this app is v${HatPacket.PROTOCOL_VERSION}. Update the other device."
                             )
                         } ?: run {
-                            Log.d(TAG, "Rejected packet from $endpoint: invalid HAT header or magic mismatch")
+                            AppLogger.d(TAG, "Rejected packet from $endpoint: invalid HAT header or magic mismatch")
                         }
                         continue
                     }
 
                     val typeName = HatPacket.describePacketType(header.packetType)
                     if (header.packetType != HatPacket.TYPE_RECEIVER_HEARTBEAT) {
-                        Log.d(TAG, "Received control packet type $typeName (${header.packetType}) from $endpoint")
+                        AppLogger.d(TAG, "Received control packet type $typeName (${header.packetType}) from $endpoint")
                     }
 
                     val byteVal = header.volumeOrCaps.toInt() and 0xFF
@@ -1194,7 +1193,7 @@ class AudioCaptureService : Service() {
                                 val isIncompatible = !negotiated.isCompatible && isLegacyIncompatible
                                 if (isIncompatible) {
                                     val capsDesc = AudioCapabilities.describeCapabilitiesMask(byteVal)
-                                    Log.w(TAG, "Rejected receiver $endpoint: incompatible ($capsDesc / ${negotiated.details})")
+                                    AppLogger.w(TAG, "Rejected receiver $endpoint: incompatible ($capsDesc / ${negotiated.details})")
                                     try {
                                         val declineHeader = currentConfig.createHeader(
                                             packetType = HatPacket.TYPE_DISCONNECT,
@@ -1207,7 +1206,7 @@ class AudioCaptureService : Service() {
                                         val declinePkt = DatagramPacket(declineBuf, AudioConfig.HEADER_SIZE, endpoint.address, endpoint.port)
                                         listenerSocket.send(declinePkt)
                                     } catch (e: Exception) {
-                                        Log.w(TAG, "Failed to send disconnect to incompatible receiver $endpoint: ${e.message}")
+                                        AppLogger.w(TAG, "Failed to send disconnect to incompatible receiver $endpoint: ${e.message}")
                                     }
                                 } else {
                                     if (byteVal != 0) {
@@ -1217,7 +1216,7 @@ class AudioCaptureService : Service() {
                                     }
                                     clientRegistry[endpoint] = SystemClock.elapsedRealtime()
                                     val capsDesc = if (byteVal != 0) AudioCapabilities.describeCapabilitiesMask(byteVal) else "default"
-                                    Log.i(TAG, "Receiver registered: $endpoint (reason: valid TYPE_RECEIVER_HEARTBEAT, caps: $capsDesc, summary: ${negotiated.summary()})")
+                                    AppLogger.i(TAG, "Receiver registered: $endpoint (reason: valid TYPE_RECEIVER_HEARTBEAT, caps: $capsDesc, summary: ${negotiated.summary()})")
                                     HatDiagnostics.info(
                                         "RECEIVER_JOIN",
                                         mapOf(
@@ -1242,7 +1241,7 @@ class AudioCaptureService : Service() {
                                     prefs.edit().putInt(AudioConfig.PREF_KEY_RECEIVER_CAPS, byteVal).apply()
                                 }
                                 clientRegistry[endpoint] = SystemClock.elapsedRealtime()
-                                Log.d(TAG, "Receiver heartbeat refreshed: $endpoint")
+                                AppLogger.d(TAG, "Receiver heartbeat refreshed: $endpoint")
                                 com.example.audiostreamer.node.HatLinkManager.recordLinkActivity(
                                     endpoint.address.hostAddress ?: "",
                                     endpoint.port,
@@ -1252,7 +1251,7 @@ class AudioCaptureService : Service() {
                                 )
                                 if (isNew) {
                                     val capsDesc = if (byteVal != 0) AudioCapabilities.describeCapabilitiesMask(byteVal) else "default"
-                                    Log.i(TAG, "Receiver registered: $endpoint (pre-config, caps: $capsDesc)")
+                                    AppLogger.i(TAG, "Receiver registered: $endpoint (pre-config, caps: $capsDesc)")
                                     publishConnectedReceivers()
                                 }
                                 sendMediaMetadata(endpoint)
@@ -1269,18 +1268,18 @@ class AudioCaptureService : Service() {
                                 StreamState.update { it.copy(remoteVolumePercent = effectiveVol) }
                             }
                             setReceiverVolume(clientIp, knownNode?.id, effectiveVol)
-                            Log.i(TAG, "Received reverse volume sync from $endpoint: raw=$incomingVol%, effective=$effectiveVol%")
+                            AppLogger.i(TAG, "Received reverse volume sync from $endpoint: raw=$incomingVol%, effective=$effectiveVol%")
                             publishConnectedReceivers()
                             if (clientRegistry.containsKey(endpoint)) {
                                 clientRegistry[endpoint] = SystemClock.elapsedRealtime()
-                                Log.d(TAG, "Receiver heartbeat refreshed: $endpoint (via volume sync)")
+                                AppLogger.d(TAG, "Receiver heartbeat refreshed: $endpoint (via volume sync)")
                             } else {
-                                Log.d(TAG, "Reverse volume sync from non-admitted endpoint $endpoint - receiver volume saved, receiver NOT admitted")
+                                AppLogger.d(TAG, "Reverse volume sync from non-admitted endpoint $endpoint - receiver volume saved, receiver NOT admitted")
                             }
                         }
                         HatPacket.TYPE_DISCONNECT -> {
                             if (clientRegistry.containsKey(endpoint)) {
-                                Log.i(TAG, "Receiver removed: $endpoint (reason: received TYPE_DISCONNECT)")
+                                AppLogger.i(TAG, "Receiver removed: $endpoint (reason: received TYPE_DISCONNECT)")
                                 clientRegistry.remove(endpoint)
                                 clientCapabilities.remove(endpoint)
                                 clientDiag.remove(endpoint)
@@ -1301,7 +1300,7 @@ class AudioCaptureService : Service() {
                                     pauseSystemMediaPlayback()
                                 }
                             } else {
-                                Log.d(TAG, "Rejected packet from $endpoint: TYPE_DISCONNECT from non-connected client")
+                                AppLogger.d(TAG, "Rejected packet from $endpoint: TYPE_DISCONNECT from non-connected client")
                             }
                         }
                         HatPacket.TYPE_RETX_REQUEST -> {
@@ -1320,20 +1319,20 @@ class AudioCaptureService : Service() {
                         }
                         HatPacket.TYPE_MEDIA_CONTROL -> {
                             val cmd = header.volumeOrCaps
-                            Log.i(TAG, "Received TYPE_MEDIA_CONTROL from $endpoint: cmd=$cmd")
+                            AppLogger.i(TAG, "Received TYPE_MEDIA_CONTROL from $endpoint: cmd=$cmd")
                             handleMediaControlCommand(cmd)
                         }
                         else -> {
-                            Log.d(TAG, "Rejected packet from $endpoint: type $typeName (${header.packetType}) is not a receiver admission control packet")
+                            AppLogger.d(TAG, "Rejected packet from $endpoint: type $typeName (${header.packetType}) is not a receiver admission control packet")
                         }
                     }
                 } catch (e: SocketException) {
                     break
                 } catch (e: Exception) {
-                    Log.w(TAG, "Error in control listener loop: ${e.message}")
+                    AppLogger.w(TAG, "Error in control listener loop: ${e.message}")
                 }
             }
-            Log.d(TAG, "Control listener thread exited")
+            AppLogger.d(TAG, "Control listener thread exited")
         }, "AudioCaptureControlListener").apply {
             isDaemon = true
             start()
@@ -1368,18 +1367,18 @@ class AudioCaptureService : Service() {
         try {
             pipeline.audioRecord.startRecording()
         } catch (t: Throwable) {
-            Log.e(TAG, "Failed to start AudioRecord for ${config.toSummaryString()}", t)
+            AppLogger.e(TAG, "Failed to start AudioRecord for ${config.toSummaryString()}", t)
             releaseActiveCaptureResources()
             return false
         }
 
         if (pipeline.audioRecord.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-            Log.e(TAG, "AudioRecord did not enter RECORDING state for ${config.toSummaryString()}")
+            AppLogger.e(TAG, "AudioRecord did not enter RECORDING state for ${config.toSummaryString()}")
             releaseActiveCaptureResources()
             return false
         }
 
-        Log.i(
+        AppLogger.i(
             TAG,
             "Capture pipeline initialized and recording for ${config.toSummaryString()} at ${activeCaptureSampleRate} Hz"
         )
@@ -1411,7 +1410,7 @@ class AudioCaptureService : Service() {
     private fun createOpusEncoderOrNull(config: NegotiatedStreamConfig): OpusEncoder? {
         val encoder = OpusEncoder(config.sampleRateHz)
         if (encoder.isInitialized) return encoder
-        Log.e(TAG, "Opus encoder unavailable; aborting capture pipeline for ${config.toSummaryString()}")
+        AppLogger.e(TAG, "Opus encoder unavailable; aborting capture pipeline for ${config.toSummaryString()}")
         encoder.release()
         return null
     }
@@ -1420,7 +1419,7 @@ class AudioCaptureService : Service() {
     private fun createAacEncoderOrNull(config: NegotiatedStreamConfig): AacEncoder? {
         val encoder = AacEncoder(config.sampleRateHz)
         if (encoder.isInitialized) return encoder
-        Log.e(TAG, "AAC encoder unavailable; aborting capture pipeline for ${config.toSummaryString()}")
+        AppLogger.e(TAG, "AAC encoder unavailable; aborting capture pipeline for ${config.toSummaryString()}")
         encoder.release()
         return null
     }
@@ -1474,11 +1473,11 @@ class AudioCaptureService : Service() {
                             .build()
                         if (candidate.state == AudioRecord.STATE_INITIALIZED) {
                             record = candidate
-                            Log.i(TAG, "Initialized compressed capture AudioRecord at $rate Hz")
+                            AppLogger.i(TAG, "Initialized compressed capture AudioRecord at $rate Hz")
                             break
                         }
                     } catch (e: Exception) {
-                        Log.w(TAG, "Probing compressed AudioRecord at $rate Hz failed: ${e.message}")
+                        AppLogger.w(TAG, "Probing compressed AudioRecord at $rate Hz failed: ${e.message}")
                     }
                     // Never abandon a candidate that this attempt did not adopt.
                     if (record !== candidate) {
@@ -1512,14 +1511,14 @@ class AudioCaptureService : Service() {
                                 .build()
                             if (candidateRecord.state == AudioRecord.STATE_INITIALIZED) {
                                 record = candidateRecord
-                                Log.i(TAG, "Probed and initialized 24-bit packed PCM AudioRecord at $rate Hz")
+                                AppLogger.i(TAG, "Probed and initialized 24-bit packed PCM AudioRecord at $rate Hz")
                                 break
                             } else {
                                 candidateRecord.release()
                             }
                         }
                     } catch (e: Exception) {
-                        Log.w(TAG, "Probing 24-bit AudioRecord at $rate Hz failed: ${e.message}")
+                        AppLogger.w(TAG, "Probing 24-bit AudioRecord at $rate Hz failed: ${e.message}")
                     }
                 }
             }
@@ -1547,21 +1546,21 @@ class AudioCaptureService : Service() {
                                 .build()
                             if (candidateRecord.state == AudioRecord.STATE_INITIALIZED) {
                                 record = candidateRecord
-                                Log.i(TAG, "Probed and initialized 16-bit PCM AudioRecord at $rate Hz")
+                                AppLogger.i(TAG, "Probed and initialized 16-bit PCM AudioRecord at $rate Hz")
                                 break
                             } else {
                                 candidateRecord.release()
                             }
                         }
                     } catch (e: Exception) {
-                        Log.w(TAG, "Probing 16-bit AudioRecord at $rate Hz failed: ${e.message}")
+                        AppLogger.w(TAG, "Probing 16-bit AudioRecord at $rate Hz failed: ${e.message}")
                     }
                 }
             }
         }
 
         if (record == null || record.state != AudioRecord.STATE_INITIALIZED) {
-            Log.e(TAG, "AudioRecord initialization failed across all probed rates")
+            AppLogger.e(TAG, "AudioRecord initialization failed across all probed rates")
             return null
         }
         return record
@@ -1580,15 +1579,15 @@ class AudioCaptureService : Service() {
      */
     private fun resumeTransmissionPipeline(config: NegotiatedStreamConfig): Boolean {
         val record = this.audioRecord ?: run {
-            Log.e(TAG, "Cannot resume transmission: audioRecord is null")
+            AppLogger.e(TAG, "Cannot resume transmission: audioRecord is null")
             return false
         }
         val socket = this.udpSocket ?: run {
-            Log.e(TAG, "Cannot resume transmission: udpSocket is null")
+            AppLogger.e(TAG, "Cannot resume transmission: udpSocket is null")
             return false
         }
         if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-            Log.e(TAG, "Cannot resume transmission: AudioRecord is not recording for ${config.toSummaryString()}")
+            AppLogger.e(TAG, "Cannot resume transmission: AudioRecord is not recording for ${config.toSummaryString()}")
             return false
         }
 
@@ -1665,7 +1664,7 @@ class AudioCaptureService : Service() {
         }
         publishConnectedReceivers()
 
-        Log.i(TAG, "Starting producer for generation ${config.generation} at $captureSampleRate Hz (Profile: $initialProfileDisplayName, Payload: $activePayloadSize bytes, FEC: $isFecEnabled)")
+        AppLogger.i(TAG, "Starting producer for generation ${config.generation} at $captureSampleRate Hz (Profile: $initialProfileDisplayName, Payload: $activePayloadSize bytes, FEC: $isFecEnabled)")
 
         val worker = Thread({
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
@@ -1904,7 +1903,7 @@ class AudioCaptureService : Service() {
                                 // blocking read. Only a failure while the session is supposed to be live is
                                 // a real fault worth an error log + user alert.
                                 if (isRunning.get()) {
-                                    Log.e(TAG, "Fatal AudioRecord read error (compressed) after $consec consecutive errors (recordingState=${record.recordingState}): $pcmBytesRead")
+                                    AppLogger.e(TAG, "Fatal AudioRecord read error (compressed) after $consec consecutive errors (recordingState=${record.recordingState}): $pcmBytesRead")
                                     HatDiagnostics.error(
                                         "AUDIO_RECORD_ERROR",
                                         mapOf(
@@ -1916,7 +1915,7 @@ class AudioCaptureService : Service() {
                                         )
                                     )
                                 } else {
-                                    Log.i(TAG, "Capture read error during shutdown (expected), stopping producer: code=$pcmBytesRead")
+                                    AppLogger.i(TAG, "Capture read error during shutdown (expected), stopping producer: code=$pcmBytesRead")
                                 }
                                 break
                             }
@@ -2131,7 +2130,7 @@ class AudioCaptureService : Service() {
                             )
                             if (consec >= 5 || record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
                                 if (isRunning.get()) {
-                                    Log.e(TAG, "Fatal AudioRecord read error after $consec consecutive errors (recordingState=${record.recordingState}): $bytesRead")
+                                    AppLogger.e(TAG, "Fatal AudioRecord read error after $consec consecutive errors (recordingState=${record.recordingState}): $bytesRead")
                                     HatDiagnostics.error(
                                         "AUDIO_RECORD_ERROR",
                                         mapOf(
@@ -2142,7 +2141,7 @@ class AudioCaptureService : Service() {
                                         )
                                     )
                                 } else {
-                                    Log.i(TAG, "Capture read error during shutdown (expected), stopping producer: code=$bytesRead")
+                                    AppLogger.i(TAG, "Capture read error during shutdown (expected), stopping producer: code=$bytesRead")
                                 }
                                 break
                             }
@@ -2155,7 +2154,7 @@ class AudioCaptureService : Service() {
                 // Sockets/records are torn down during stop & mode-switch; an exception once
                 // isRunning is cleared is an expected teardown race, not a user-facing failure.
                 if (isRunning.get()) {
-                    Log.e(TAG, "Audio streaming exception", e)
+                    AppLogger.e(TAG, "Audio streaming exception", e)
                     HatDiagnostics.error(
                         "THREAD_FAILURE",
                         mapOf("thread" to "AudioCaptureStreamer", "generation" to negotiatedStreamConfig.generation),
@@ -2163,10 +2162,10 @@ class AudioCaptureService : Service() {
                     )
                     StreamState.update { it.copy(statusDetail = "Error: ${e.message}") }
                 } else {
-                    Log.i(TAG, "Streaming thread interrupted during shutdown: ${e.message}")
+                    AppLogger.i(TAG, "Streaming thread interrupted during shutdown: ${e.message}")
                 }
             } finally {
-                Log.i(TAG, "Audio streaming thread stopped")
+                AppLogger.i(TAG, "Audio streaming thread stopped")
                 // Only while this worker is still the active producer: a newer transaction may already have
                 // published a replacement, and nulling its reference would be wrong. This keeps streamThread
                 // null once the producer has exited, including termination immediately after startup, and keeps
@@ -2186,7 +2185,7 @@ class AudioCaptureService : Service() {
             worker.start()
         } catch (t: Throwable) {
             streamThread = null
-            Log.e(TAG, "Failed to start stream thread for generation ${config.generation}", t)
+            AppLogger.e(TAG, "Failed to start stream thread for generation ${config.generation}", t)
             HatDiagnostics.error(
                 "THREAD_FAILURE",
                 mapOf("thread" to "AudioCaptureStreamer", "stage" to "Thread.start", "generation" to config.generation),
@@ -2399,7 +2398,7 @@ class AudioCaptureService : Service() {
         if (!isRunning.getAndSet(false)) {
             return
         }
-        Log.i(TAG, "Stopping audio capture service (keepProjection=$keepProjection)")
+        AppLogger.i(TAG, "Stopping audio capture service (keepProjection=$keepProjection)")
 
         MediaSessionTracker.onStateChangedListener = null
         AudioPlaybackDetector.stopMonitoring(this)
@@ -2460,7 +2459,7 @@ class AudioCaptureService : Service() {
                 mediaProjection?.unregisterCallback(projectionCallback)
                 mediaProjection?.stop()
             } catch (e: Exception) {
-                Log.e(TAG, "Error stopping MediaProjection", e)
+                AppLogger.e(TAG, "Error stopping MediaProjection", e)
             }
             mediaProjection = null
 
@@ -2471,10 +2470,10 @@ class AudioCaptureService : Service() {
                 previousPhoneVolume?.let { savedVol ->
                     val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
                     audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, savedVol, 0)
-                    Log.i(TAG, "Restored phone media volume to $savedVol")
+                    AppLogger.i(TAG, "Restored phone media volume to $savedVol")
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Could not restore phone volume: ${e.message}")
+                AppLogger.w(TAG, "Could not restore phone volume: ${e.message}")
             }
             previousPhoneVolume = null
             clientRegistry.clear()
@@ -2520,10 +2519,10 @@ class AudioCaptureService : Service() {
             if (currentVol > 0) {
                 previousPhoneVolume = currentVol
                 audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 0, AudioManager.FLAG_REMOVE_SOUND_AND_VIBRATE)
-                Log.i(TAG, "Automatically silenced transmitter phone media volume (saved previous: $currentVol)")
+                AppLogger.i(TAG, "Automatically silenced transmitter phone media volume (saved previous: $currentVol)")
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Could not silence transmitter volume: ${e.message}")
+            AppLogger.w(TAG, "Could not silence transmitter volume: ${e.message}")
         }
     }
 
@@ -2545,7 +2544,7 @@ class AudioCaptureService : Service() {
             volumeReceiver = receiver
             registerReceiver(receiver, IntentFilter("android.media.VOLUME_CHANGED_ACTION"))
         } catch (e: Exception) {
-            Log.w(TAG, "Could not register VOLUME_CHANGED_ACTION receiver: ${e.message}")
+            AppLogger.w(TAG, "Could not register VOLUME_CHANGED_ACTION receiver: ${e.message}")
         }
 
         try {
@@ -2558,7 +2557,7 @@ class AudioCaptureService : Service() {
             volumeObserver = observer
             contentResolver.registerContentObserver(Settings.System.CONTENT_URI, true, observer)
         } catch (e: Exception) {
-            Log.w(TAG, "Could not register volume ContentObserver: ${e.message}")
+            AppLogger.w(TAG, "Could not register volume ContentObserver: ${e.message}")
         }
     }
 
@@ -2573,10 +2572,10 @@ class AudioCaptureService : Service() {
                     0,
                     AudioManager.FLAG_REMOVE_SOUND_AND_VIBRATE
                 )
-                Log.d(TAG, "Pocket mode: maintained transmitter STREAM_MUSIC at 0")
+                AppLogger.d(TAG, "Pocket mode: maintained transmitter STREAM_MUSIC at 0")
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Error in pocket mode volume clamp: ${e.message}")
+            AppLogger.w(TAG, "Error in pocket mode volume clamp: ${e.message}")
         }
     }
 
@@ -2607,7 +2606,7 @@ class AudioCaptureService : Service() {
                 acquire()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error acquiring WakeLock", e)
+            AppLogger.e(TAG, "Error acquiring WakeLock", e)
         }
 
         try {
@@ -2619,7 +2618,7 @@ class AudioCaptureService : Service() {
                 acquire()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error acquiring WifiLock", e)
+            AppLogger.e(TAG, "Error acquiring WifiLock", e)
         }
     }
 
@@ -2627,14 +2626,14 @@ class AudioCaptureService : Service() {
         try {
             wakeLock?.let { if (it.isHeld) it.release() }
         } catch (e: Exception) {
-            Log.e(TAG, "Error releasing WakeLock", e)
+            AppLogger.e(TAG, "Error releasing WakeLock", e)
         }
         wakeLock = null
 
         try {
             wifiLock?.let { if (it.isHeld) it.release() }
         } catch (e: Exception) {
-            Log.e(TAG, "Error releasing WifiLock", e)
+            AppLogger.e(TAG, "Error releasing WifiLock", e)
         }
         wifiLock = null
     }
@@ -2644,7 +2643,7 @@ class AudioCaptureService : Service() {
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
             audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PAUSE))
             audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PAUSE))
-            Log.i(TAG, "Paused system media playback via KEYCODE_MEDIA_PAUSE")
+            AppLogger.i(TAG, "Paused system media playback via KEYCODE_MEDIA_PAUSE")
             StreamState.update {
                 it.copy(
                     statusDetail = "Client disconnected - Media paused",
@@ -2652,7 +2651,7 @@ class AudioCaptureService : Service() {
                 )
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed pausing media playback: ${e.message}")
+            AppLogger.w(TAG, "Failed pausing media playback: ${e.message}")
         }
     }
 
@@ -2693,15 +2692,15 @@ class AudioCaptureService : Service() {
                 // 2x burst to ensure reliable delivery over UDP
                 try { sock.send(packet) } catch (ignored: Exception) {}
             }
-            Log.d(TAG, "MEDIA_METADATA_TX seq=${meta.mediaStateSequence} package=${meta.packageName} title='${meta.title}' artLen=${meta.artworkBytes?.size ?: 0} → ${targets.size} endpoints")
+            AppLogger.d(TAG, "MEDIA_METADATA_TX seq=${meta.mediaStateSequence} package=${meta.packageName} title='${meta.title}' artLen=${meta.artworkBytes?.size ?: 0} → ${targets.size} endpoints")
         } catch (e: Exception) {
-            Log.w(TAG, "Failed sending media metadata: ${e.message}")
+            AppLogger.w(TAG, "Failed sending media metadata: ${e.message}")
         }
     }
 
     fun handleMediaControlCommand(command: Byte) {
         val targetPkg = MediaSessionTracker.currentState?.packageName ?: "unknown"
-        Log.i(TAG, "MEDIA_COMMAND command=$command targetPackage=$targetPkg")
+        AppLogger.i(TAG, "MEDIA_COMMAND command=$command targetPackage=$targetPkg")
 
         // Primary: dispatch via MediaSessionTracker (always targets current controller)
         val handled = MediaSessionTracker.dispatchCommand(command)
@@ -2720,9 +2719,9 @@ class AudioCaptureService : Service() {
             }
             audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
             audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
-            Log.i(TAG, "MEDIA_COMMAND fallback keyEvent=$keyCode for cmd=$command")
+            AppLogger.i(TAG, "MEDIA_COMMAND fallback keyEvent=$keyCode for cmd=$command")
         } catch (e: Exception) {
-            Log.w(TAG, "Failed dispatching media key event: ${e.message}")
+            AppLogger.w(TAG, "Failed dispatching media key event: ${e.message}")
         }
     }
 
@@ -2732,7 +2731,7 @@ class AudioCaptureService : Service() {
         }
         stopStreaming()
         super.onDestroy()
-        Log.d(TAG, "AudioCaptureService destroyed")
+        AppLogger.d(TAG, "AudioCaptureService destroyed")
     }
 
     private class AacEncoder(val sampleRate: Int, val channelCount: Int = 2, val bitRate: Int = AudioConfig.AAC_BIT_RATE) {
@@ -2756,9 +2755,9 @@ class AudioCaptureService : Service() {
                 encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 encoder.start()
                 codec = encoder
-                Log.i(TAG, "Initialized AAC MediaCodec encoder: rate=$sampleRate, channels=$channelCount, bitRate=$bitRate")
+                AppLogger.i(TAG, "Initialized AAC MediaCodec encoder: rate=$sampleRate, channels=$channelCount, bitRate=$bitRate")
             } catch (e: Exception) {
-                Log.e(TAG, "Failed initializing AAC encoder", e)
+                AppLogger.e(TAG, "Failed initializing AAC encoder", e)
                 try {
                     encoder?.release()
                 } catch (ignored: Exception) {}
@@ -2787,7 +2786,7 @@ class AudioCaptureService : Service() {
                 var outIndex = encoder.dequeueOutputBuffer(bufferInfo, 1000L)
                 while (outIndex >= 0 || outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        Log.i(TAG, "AAC encoder output format changed: ${encoder.outputFormat}")
+                        AppLogger.i(TAG, "AAC encoder output format changed: ${encoder.outputFormat}")
                     } else {
                         val outBuf = encoder.getOutputBuffer(outIndex)
                         val outSize = bufferInfo.size
@@ -2805,7 +2804,7 @@ class AudioCaptureService : Service() {
                     outIndex = encoder.dequeueOutputBuffer(bufferInfo, 0L)
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "AAC encode error: ${e.message}")
+                AppLogger.w(TAG, "AAC encode error: ${e.message}")
             }
             return results
         }
@@ -2859,9 +2858,9 @@ class AudioCaptureService : Service() {
                 encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 encoder.start()
                 codec = encoder
-                Log.i(TAG, "Initialized Opus MediaCodec encoder: rate=$sampleRate, channels=$channelCount, bitRate=$bitRate")
+                AppLogger.i(TAG, "Initialized Opus MediaCodec encoder: rate=$sampleRate, channels=$channelCount, bitRate=$bitRate")
             } catch (e: Exception) {
-                Log.e(TAG, "Failed initializing Opus encoder", e)
+                AppLogger.e(TAG, "Failed initializing Opus encoder", e)
                 try {
                     encoder?.release()
                 } catch (ignored: Exception) {}
@@ -2888,7 +2887,7 @@ class AudioCaptureService : Service() {
                 var outIndex = encoder.dequeueOutputBuffer(bufferInfo, 1000L)
                 while (outIndex >= 0 || outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        Log.i(TAG, "Opus encoder output format changed: ${encoder.outputFormat}")
+                        AppLogger.i(TAG, "Opus encoder output format changed: ${encoder.outputFormat}")
                     } else {
                         val outBuf = encoder.getOutputBuffer(outIndex)
                         val outSize = bufferInfo.size
@@ -2904,7 +2903,7 @@ class AudioCaptureService : Service() {
                     outIndex = encoder.dequeueOutputBuffer(bufferInfo, 0L)
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Opus encode error: ${e.message}")
+                AppLogger.w(TAG, "Opus encode error: ${e.message}")
             }
             return results
         }
@@ -2963,7 +2962,7 @@ class CapturePipelineInitializer<R : Any, O : Any, A : Any>(
         try {
             record = createAudioRecord(config)
             if (record == null) {
-                Log.e(PIPELINE_TAG, "AudioRecord unavailable; capture pipeline not initialized for ${config.toSummaryString()}")
+                AppLogger.e(PIPELINE_TAG, "AudioRecord unavailable; capture pipeline not initialized for ${config.toSummaryString()}")
                 return null
             }
 
@@ -2986,7 +2985,7 @@ class CapturePipelineInitializer<R : Any, O : Any, A : Any>(
 
             return CapturePipeline(record, opus, aac)
         } catch (t: Throwable) {
-            Log.e(
+            AppLogger.e(
                 PIPELINE_TAG,
                 "Capture pipeline initialization failed for ${config.toSummaryString()}; releasing every created resource",
                 t
@@ -3007,21 +3006,21 @@ class CapturePipelineInitializer<R : Any, O : Any, A : Any>(
             try {
                 releaseAudioRecord(res)
             } catch (t: Throwable) {
-                Log.w(PIPELINE_TAG, "Failed releasing AudioRecord: ${t.message}")
+                AppLogger.w(PIPELINE_TAG, "Failed releasing AudioRecord: ${t.message}")
             }
         }
         opus?.let { enc ->
             try {
                 releaseOpusEncoder(enc)
             } catch (t: Throwable) {
-                Log.w(PIPELINE_TAG, "Failed releasing Opus encoder: ${t.message}")
+                AppLogger.w(PIPELINE_TAG, "Failed releasing Opus encoder: ${t.message}")
             }
         }
         aac?.let { enc ->
             try {
                 releaseAacEncoder(enc)
             } catch (t: Throwable) {
-                Log.w(PIPELINE_TAG, "Failed releasing AAC encoder: ${t.message}")
+                AppLogger.w(PIPELINE_TAG, "Failed releasing AAC encoder: ${t.message}")
             }
         }
     }

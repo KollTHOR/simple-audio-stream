@@ -2,7 +2,6 @@ package com.example.audiostreamer
 
 import android.content.ComponentName
 import android.service.notification.NotificationListenerService
-import com.example.audiostreamer.AppLogger as Log
 
 /**
  * HAT Media Notification Listener Service.
@@ -49,13 +48,13 @@ class MediaNotificationListenerService : NotificationListenerService() {
         super.onListenerConnected()
         currentInstance = this
         isServiceConnected = true
-        Log.i(TAG, "MediaNotificationListenerService connected — starting MediaSessionTracker")
+        AppLogger.i(TAG, "MediaNotificationListenerService connected — starting MediaSessionTracker")
         val cn = ComponentName(this, MediaNotificationListenerService::class.java)
         MediaSessionTracker.start(this, cn)
     }
 
     override fun onListenerDisconnected() {
-        Log.i(TAG, "MediaNotificationListenerService disconnected — stopping MediaSessionTracker")
+        AppLogger.i(TAG, "MediaNotificationListenerService disconnected — stopping MediaSessionTracker")
         MediaSessionTracker.stop()
         isServiceConnected = false
         currentInstance = null

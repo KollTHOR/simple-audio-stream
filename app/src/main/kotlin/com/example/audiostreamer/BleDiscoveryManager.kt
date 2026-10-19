@@ -29,7 +29,6 @@ import android.os.Looper
 import android.os.ParcelUuid
 import android.os.SystemClock
 import androidx.core.content.ContextCompat
-import com.example.audiostreamer.AppLogger as Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -98,7 +97,7 @@ object BleDiscoveryManager {
             gattTimeouts.remove(device.address)
             val gatt = gattClients[device.address]
             if (gatt != null) {
-                Log.w(TAG, "BLE Direct bootstrap handshake timed out for ${device.address}")
+                AppLogger.w(TAG, "BLE Direct bootstrap handshake timed out for ${device.address}")
                 finishGattClient(device.address, gatt)
             }
         }
@@ -162,7 +161,7 @@ object BleDiscoveryManager {
             val pending = pendingAdvertisement ?: return
             if (pending.generation != advertisingGeneration.get()) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                Log.e(TAG, "Failed to add BLE bootstrap GATT service (status=$status)")
+                AppLogger.e(TAG, "Failed to add BLE bootstrap GATT service (status=$status)")
                 stopAdvertising()
                 return
             }
@@ -175,7 +174,7 @@ object BleDiscoveryManager {
                     pending.callback
                 )
             } catch (e: Exception) {
-                Log.e(TAG, "Failed starting BLE bootstrap advertisement: ${e.message}", e)
+                AppLogger.e(TAG, "Failed starting BLE bootstrap advertisement: ${e.message}", e)
                 stopAdvertising()
             }
         }
@@ -214,7 +213,7 @@ object BleDiscoveryManager {
         deviceName: String = "Wi-Fi Direct Receiver"
     ) {
         if (role != "receiver" || p2pSsid.isNullOrBlank() || p2pPassphrase.isNullOrBlank() || p2pGoIp.isNullOrBlank()) {
-            Log.w(TAG, "BLE bootstrap requires an active receiver Wi-Fi Direct group")
+            AppLogger.w(TAG, "BLE bootstrap requires an active receiver Wi-Fi Direct group")
             return
         }
         val payload = BleDirectHandshakeCodec.encode(
@@ -227,13 +226,13 @@ object BleDiscoveryManager {
             )
         )
         if (payload.size > 512) {
-            Log.e(TAG, "BLE Direct bootstrap payload exceeds 512 bytes (${payload.size})")
+            AppLogger.e(TAG, "BLE Direct bootstrap payload exceeds 512 bytes (${payload.size})")
             return
         }
         if (gattCredentialPayload?.contentEquals(payload) == true && gattServer != null) return
         if (_isAdvertising.value || gattServer != null) stopAdvertising()
         if (!hasPermissions(context)) {
-            Log.w(TAG, "Cannot start BLE bootstrap: missing Bluetooth permissions")
+            AppLogger.w(TAG, "Cannot start BLE bootstrap: missing Bluetooth permissions")
             return
         }
 
@@ -241,13 +240,13 @@ object BleDiscoveryManager {
         applicationContext = appContext
         val adapter = getBluetoothAdapter(appContext) ?: return
         if (!adapter.isEnabled) {
-            Log.w(TAG, "Bluetooth adapter is disabled")
+            AppLogger.w(TAG, "Bluetooth adapter is disabled")
             return
         }
 
         advertiser = adapter.bluetoothLeAdvertiser
         if (advertiser == null) {
-            Log.w(TAG, "Device does not support BLE advertising")
+            AppLogger.w(TAG, "Device does not support BLE advertising")
             return
         }
 
@@ -271,12 +270,12 @@ object BleDiscoveryManager {
         val generation = advertisingGeneration.incrementAndGet()
         val callback = object : AdvertiseCallback() {
             override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
-                Log.i(TAG, "BLE Direct bootstrap advertising started for $deviceName")
+                AppLogger.i(TAG, "BLE Direct bootstrap advertising started for $deviceName")
                 _isAdvertising.value = true
             }
 
             override fun onStartFailure(errorCode: Int) {
-                Log.w(TAG, "BLE Direct bootstrap advertising failed with error code: $errorCode")
+                AppLogger.w(TAG, "BLE Direct bootstrap advertising failed with error code: $errorCode")
                 stopAdvertising()
             }
         }
@@ -286,7 +285,7 @@ object BleDiscoveryManager {
         val manager = appContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         val server = manager?.openGattServer(appContext, gattServerCallback)
         if (server == null) {
-            Log.e(TAG, "Unable to open BLE GATT server for Direct bootstrap")
+            AppLogger.e(TAG, "Unable to open BLE GATT server for Direct bootstrap")
             stopAdvertising()
             return
         }
@@ -301,7 +300,7 @@ object BleDiscoveryManager {
             )
         )
         if (!server.addService(service)) {
-            Log.e(TAG, "Unable to register BLE Direct bootstrap GATT service")
+            AppLogger.e(TAG, "Unable to register BLE Direct bootstrap GATT service")
             stopAdvertising()
         }
     }
@@ -320,7 +319,7 @@ object BleDiscoveryManager {
         connectedClientMtus.clear()
         try { gattServer?.close() } catch (_: Exception) {}
         gattServer = null
-        Log.i(TAG, "BLE Direct bootstrap advertising stopped")
+        AppLogger.i(TAG, "BLE Direct bootstrap advertising stopped")
     }
 
     // -------------------------------------------------------------------------
@@ -331,7 +330,7 @@ object BleDiscoveryManager {
     fun startScanning(context: Context) {
         if (_isScanning.value) return
         if (!hasPermissions(context)) {
-            Log.w(TAG, "Cannot start BLE scan: missing Bluetooth permissions")
+            AppLogger.w(TAG, "Cannot start BLE scan: missing Bluetooth permissions")
             return
         }
 
@@ -339,13 +338,13 @@ object BleDiscoveryManager {
 
         val adapter = getBluetoothAdapter(context) ?: return
         if (!adapter.isEnabled) {
-            Log.w(TAG, "Bluetooth adapter is disabled, cannot start scanning")
+            AppLogger.w(TAG, "Bluetooth adapter is disabled, cannot start scanning")
             return
         }
 
         scanner = adapter.bluetoothLeScanner
         if (scanner == null) {
-            Log.w(TAG, "BLE scanner not available")
+            AppLogger.w(TAG, "BLE scanner not available")
             return
         }
 
@@ -369,7 +368,7 @@ object BleDiscoveryManager {
             }
 
             override fun onScanFailed(errorCode: Int) {
-                Log.w(TAG, "BLE Scan failed with error code: $errorCode")
+                AppLogger.w(TAG, "BLE Scan failed with error code: $errorCode")
                 _isScanning.value = false
             }
         }
@@ -384,9 +383,9 @@ object BleDiscoveryManager {
                     pruneStaleDevices()
                 }
             }
-            Log.i(TAG, "BLE Scanning started for HAT devices")
+            AppLogger.i(TAG, "BLE Scanning started for HAT devices")
         } catch (e: Exception) {
-            Log.e(TAG, "Exception starting BLE scan: ${e.message}")
+            AppLogger.e(TAG, "Exception starting BLE scan: ${e.message}")
             _isScanning.value = false
         }
     }
@@ -403,7 +402,7 @@ object BleDiscoveryManager {
         scanCallback = null
         _isScanning.value = false
         closeGattClients()
-        Log.i(TAG, "BLE Scanning stopped")
+        AppLogger.i(TAG, "BLE Scanning stopped")
     }
 
     @SuppressLint("MissingPermission")
@@ -478,7 +477,7 @@ object BleDiscoveryManager {
             }
         } catch (e: Exception) {
             pendingGattClients.remove(device.address)
-            Log.w(TAG, "Could not connect to BLE bootstrap peer ${device.address}: ${e.message}")
+            AppLogger.w(TAG, "Could not connect to BLE bootstrap peer ${device.address}: ${e.message}")
         }
     }
 
@@ -503,10 +502,10 @@ object BleDiscoveryManager {
                     )
                 )
             } else {
-                Log.w(TAG, "BLE peer returned invalid or incomplete Direct-group credentials")
+                AppLogger.w(TAG, "BLE peer returned invalid or incomplete Direct-group credentials")
             }
         } else {
-            Log.w(TAG, "BLE Direct bootstrap read failed (status=$status)")
+            AppLogger.w(TAG, "BLE Direct bootstrap read failed (status=$status)")
         }
         finishGattClient(device.address, gatt)
     }
@@ -516,7 +515,7 @@ object BleDiscoveryManager {
         val index = current.indexOfFirst { it.bluetoothAddress == discovered.bluetoothAddress }
         if (index >= 0) current[index] = discovered else current.add(discovered)
         _bleDevices.value = current
-        Log.i(TAG, "BLE Direct bootstrap received for ${discovered.name} (${discovered.bluetoothAddress})")
+        AppLogger.i(TAG, "BLE Direct bootstrap received for ${discovered.name} (${discovered.bluetoothAddress})")
     }
 
     @SuppressLint("MissingPermission")
@@ -604,7 +603,7 @@ object BleDiscoveryManager {
             current[idx] = discovered
         } else {
             current.add(discovered)
-            Log.i(TAG, "Discovered new BLE peer: ${discovered.name} (${discovered.bluetoothAddress})")
+            AppLogger.i(TAG, "Discovered new BLE peer: ${discovered.name} (${discovered.bluetoothAddress})")
         }
         _bleDevices.value = current
     }
