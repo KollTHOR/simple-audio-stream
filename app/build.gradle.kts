@@ -45,7 +45,7 @@ android {
     }
 
     val baseVersionCode = 118
-    val baseVersionName = "1.8.15"
+    val baseVersionName = "1.9.0"
 
     val channelProp = findProp("BUILD_CHANNEL", "RELEASE_CHANNEL", "channel") ?: "stable"
     val buildChannel = channelProp.lowercase()

@@ -214,6 +214,11 @@
                         app:iconPadding="6dp"
                         app:iconSize="18dp" />
 
+                    <!--
+                        USB input is not part of the public build: it needs the desktop ASLC node
+                        and a Windows USB driver, so it is hidden rather than shipped as a dead end.
+                        Kept in the tree (and in MainActivity) so it can be re-enabled later.
+                    -->
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/btn_mode_usb"
                         style="?attr/materialButtonOutlinedStyle"
@@ -224,6 +229,7 @@
                         android:textSize="13sp"
                         android:textStyle="bold"
                         android:textColor="@color/text_primary"
+                        android:visibility="gone"
                         app:strokeColor="@color/card_stroke" />
                 </com.google.android.material.button.MaterialButtonToggleGroup>
 

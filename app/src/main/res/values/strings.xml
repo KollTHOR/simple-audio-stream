@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Audio Streamer</string>
+    <string name="app_name">Simple Audio Stream</string>
     <string name="mode_transmitter">Broadcast</string>
     <string name="mode_receiver">Receive</string>
     <string name="mode_usb">USB</string>
